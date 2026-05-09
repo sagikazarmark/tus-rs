@@ -1,0 +1,88 @@
+[package]
+name = "tus-protocol"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = "0.22"
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+fs2 = { version = "0.4", optional = true }
+http = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sync_wrapper = "1"
+thiserror = "1"
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+# Optional - native runtime
+tokio = { workspace = true, optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+
+# Optional - Checksum
+crc32fast = { version = "1", optional = true }
+md5 = { version = "0.7", optional = true }
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+
+# On wasm32, uuid's v4 RNG needs an explicit
+# randomness source. The `js` feature routes it through js-sys'
+# crypto.getRandomValues(), which workerd provides.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-test = "0.4"
+
+[features]
+default = []
+
+# Platform features
+native = ["tokio", "tokio-util"]
+# Allows local/single-threaded async runtimes to use non-Send futures and
+# trait implementations. Intended for Cloudflare Workers and similar platforms.
+local-futures = []
+
+# Storage implementations
+storage-file = ["native", "tokio/fs", "tokio/io-util"]
+storage-memory = []
+
+# State storage implementations
+state-file = ["native", "tokio/fs", "tokio/io-util"]
+state-memory = []
+
+# Locking implementations
+lock-file = ["native", "fs2", "tokio/fs", "tokio/time"]
+lock-memory = ["native", "tokio/sync", "tokio/time"]
+
+# Checksum implementations
+checksum = ["crc32fast", "md5", "sha1", "sha2"]
+
+# Internal-only hooks for fuzz harnesses.
+fuzzing = []
+
+# Full native feature set for convenience
+full-native = [
+    "native",
+    "storage-file",
+    "state-file",
+    "lock-memory",
+    "checksum",
+]
+
+[package.metadata.docs.rs]
+features = ["full-native"]
+no-default-features = true

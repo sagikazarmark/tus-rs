@@ -30,7 +30,34 @@
 
 ## Documentation
 
-TODO
+- API documentation: <https://docs.rs/tus-protocol>
+- Protocol reference: <https://tus.io/protocols/resumable-upload>
+
+This repository currently provides `tus-protocol`, the framework-neutral core
+crate. It exposes typed request headers, response values, upload state, storage,
+state-store, locking, and hook traits. HTTP adapters are expected to parse their
+framework-specific request types, call the matching `Protocol` handler, and map
+the returned `Response` or `Error` back into the framework response type.
+
+Useful entry points:
+
+- `Config` configures enabled extensions, size limits, expiration, base paths,
+  and CORS-related response behavior.
+- `Protocol` contains the core `POST`, `HEAD`, `PATCH`, `DELETE`, and `OPTIONS`
+  handlers.
+- `Storage`, `StateStore`, and `Locker` define the backend contracts.
+- `HookChain` and `Hook` provide lifecycle extension points.
+
+Feature flags enable optional built-in backends and checksum support:
+
+- `storage-memory`, `state-memory`, `lock-memory` for in-process testing and
+  development backends.
+- `storage-file`, `state-file`, `lock-file` for native filesystem-backed
+  backends.
+- `checksum` for checksum validation algorithms.
+- `full-native` for the native feature set intended for server deployments.
+- `local-futures` for single-threaded runtimes that cannot require `Send`
+  futures, such as Worker-style environments.
 
 ## License
 
