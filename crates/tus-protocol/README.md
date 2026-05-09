@@ -1,0 +1,125 @@
+# tus-protocol
+
+[![crates.io](https://img.shields.io/crates/v/tus-protocol?style=flat-square)](https://crates.io/crates/tus-protocol)
+[![docs.rs](https://img.shields.io/docsrs/tus-protocol?style=flat-square)](https://docs.rs/tus-protocol)
+
+**Framework-neutral Rust implementation of the [tus resumable upload protocol](https://tus.io/).**
+
+`tus-protocol` contains the protocol core for building tus-compatible upload
+servers. It does not depend on a web framework. Instead, adapters parse incoming
+HTTP requests, call the matching protocol handler, and convert the returned
+framework-neutral response back into their own response type.
+
+## Install
+
+Enable only the built-in backends and extensions your server needs:
+
+```toml
+[dependencies]
+tus-protocol = { version = "0.0.1", features = ["storage-memory", "state-memory"] }
+```
+
+For a native server with the bundled filesystem backends and checksum support:
+
+```toml
+[dependencies]
+tus-protocol = { version = "0.0.1", features = ["full-native"] }
+```
+
+The quick start below also uses `http` and `tokio` directly:
+
+```toml
+[dependencies]
+http = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+## Feature Flags
+
+The default feature set is empty.
+
+| Feature | Purpose |
+|---------|---------|
+| `storage-memory` | In-memory upload bytes for tests and development. |
+| `state-memory` | In-memory upload state for tests and development. |
+| `lock-memory` | In-process upload locking for native single-server deployments. |
+| `storage-file` | Native filesystem-backed upload storage. |
+| `state-file` | Native filesystem-backed upload state. |
+| `lock-file` | Native filesystem-backed upload locks. |
+| `checksum` | Checksum validation algorithms. |
+| `native` | Native async runtime support used by file and lock backends. |
+| `full-native` | Convenience set for native servers: `native`, file storage/state, memory locks, and checksums. |
+| `local-futures` | Relax `Send` bounds for single-threaded runtimes such as Worker-style environments. |
+
+The built-in memory and file backends are not exposed when `local-futures` is
+enabled. In that mode, provide runtime-specific implementations of `Storage`,
+`StateStore`, and `Locker`.
+
+## Protocol Support
+
+`tus-protocol` implements tus 1.0.0 server behavior for the native protocol path.
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Core protocol | Supported | `POST`, `HEAD`, `PATCH`, `OPTIONS`, offsets, metadata, and version negotiation. |
+| Creation | Supported | Create uploads with `POST`. |
+| Creation-With-Upload | Supported | Accept upload bytes in the initial `POST` when enabled. |
+| Creation-Defer-Length | Supported | Create uploads before the final size is known. |
+| Termination | Supported | Delete uploads with `DELETE`. |
+| Expiration | Supported | Expiration timestamps and rejection of expired uploads. |
+| Concatenation | Supported | Server-side final uploads from partial uploads. |
+| Checksum | Supported | Header and trailer checksum validation when `checksum` is enabled. |
+
+## Storage, State, And Locking
+
+The protocol is built around three backend traits:
+
+| Trait | Responsibility |
+|-------|----------------|
+| `Storage` | Stores and retrieves upload bytes. |
+| `StateStore` | Persists upload metadata, offsets, expiration, and concatenation state. |
+| `Locker` | Coordinates concurrent access to a single upload ID. |
+
+Use the built-in memory backends for tests and local development. Use the file
+backends or custom implementations for durable deployments. Third-party or
+first-party integration crates can implement these traits for object stores,
+databases, distributed locks, or platform-specific runtimes.
+
+## Hooks
+
+`HookChain` and the `Hook` trait provide lifecycle extension points:
+
+- `PreCreate` and `PostCreate`
+- `PreReceive` and `PostReceive`
+- `PreFinish` and `PostFinish`
+- `PreTerminate` and `PostTerminate`
+
+Pre-hooks can reject requests or modify upload state before an operation is
+committed. Post-hooks are best-effort notifications and should be treated as
+at-most-once side effects.
+
+## Runtime Notes
+
+By default, protocol traits use `Send` futures suitable for native multi-threaded
+async runtimes. The `local-futures` feature relaxes those bounds for
+single-threaded environments. When using `local-futures`, provide backend
+implementations that match the target runtime and concurrency model.
+
+The `NoopLocker` is useful when the hosting environment already serializes
+access per upload, or in tests. For multi-request native servers, use an actual
+locker implementation.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

@@ -5,6 +5,9 @@ all-features = true
 allow = [
   "Apache-2.0",
   "MIT",
+
+  # Required by "unicode-ident"
+  "Unicode-3.0",
 ]
 
 [bans]
