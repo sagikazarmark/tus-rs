@@ -1,0 +1,16 @@
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+  "Apache-2.0",
+  "MIT",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

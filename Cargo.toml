@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sagikazarmark/tus-rs"
+homepage = "https://github.com/sagikazarmark/tus-rs"
+keywords = ["tus", "upload", "resumable", "http", "server"]
+categories = ["web-programming::http-server", "network-programming", "asynchronous"]
+
+# [workspace.dependencies]
+
+[workspace.metadata.release]
+sign-commit = true
+sign-tag = true
+tag-message = "Release {{version}}"
+tag-prefix = ""
