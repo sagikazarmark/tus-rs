@@ -82,6 +82,7 @@ pub trait Locker: MaybeSendSync {
 ///
 /// Third-party [`Locker`] implementations can construct this guard with
 /// [`LockGuard::new`] or [`LockGuard::with_release`].
+#[must_use = "dropping the LockGuard immediately releases the lock"]
 pub struct LockGuard {
     /// The upload ID this lock is for.
     upload_id: String,

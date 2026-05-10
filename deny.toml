@@ -8,6 +8,8 @@ allow = [
 
   # Required by "unicode-ident"
   "Unicode-3.0",
+
+  "BSD-3-Clause",
 ]
 
 [bans]

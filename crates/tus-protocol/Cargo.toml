@@ -12,18 +12,18 @@ categories.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-base64 = "0.22"
+base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
 fs2 = { version = "0.4", optional = true }
-http = "1"
-serde = { workspace = true }
-serde_json = { workspace = true }
+http = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sync_wrapper = "1"
 thiserror = "1"
-tracing = { workspace = true }
-uuid = { workspace = true }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 # Optional - native runtime
 tokio = { workspace = true, optional = true }
@@ -39,13 +39,13 @@ sha2 = { version = "0.10", optional = true }
 # randomness source. The `js` feature routes it through js-sys'
 # crypto.getRandomValues(), which workerd provides.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { workspace = true, features = ["js"] }
+uuid = { version = "1", features = ["v4", "js"] }
 
 [dev-dependencies]
-proptest = "1"
-tempfile = "3"
+proptest = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tokio-test = "0.4"
+tokio-test = { workspace = true }
 
 [features]
 default = []

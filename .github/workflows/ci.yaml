@@ -8,6 +8,17 @@ on:
 permissions:
   contents: read
 
+# `--all-features` is not usable in this workspace: `local-futures` (non-Send
+# futures for single-threaded runtimes like Cloudflare Workers) is mutually
+# exclusive with the `native` / `Send`-bound features used by tus-axum and
+# the memory backends. Each job below tests two configurations:
+#
+# - Native:        full workspace, every feature except `local-futures`.
+# - local-futures: tus-protocol only (tus-axum requires Send via axum).
+env:
+  NATIVE_FEATURES: tus-protocol/full-native,tus-protocol/storage-memory,tus-protocol/state-memory,tus-protocol/fuzzing
+  LOCAL_FEATURES: local-futures,storage-memory,state-memory,checksum
+
 jobs:
   build:
     name: Build
@@ -20,8 +31,11 @@ jobs:
       - name: Set up Rust
         uses: ./.github/actions/rust/
 
-      - name: Build
-        run: cargo build --workspace --all-targets --all-features
+      - name: Build (native)
+        run: cargo build --workspace --all-targets --features "$NATIVE_FEATURES"
+
+      - name: Build (local-futures)
+        run: cargo build -p tus-protocol --all-targets --no-default-features --features "$LOCAL_FEATURES"
 
   test:
     name: Test
@@ -34,8 +48,11 @@ jobs:
       - name: Set up Rust
         uses: ./.github/actions/rust/
 
-      - name: Run tests
-        run: cargo test --workspace --all-features
+      - name: Run tests (native)
+        run: cargo test --workspace --features "$NATIVE_FEATURES"
+
+      - name: Run tests (local-futures)
+        run: cargo test -p tus-protocol --no-default-features --features "$LOCAL_FEATURES"
 
   docs:
     name: Docs
@@ -51,7 +68,7 @@ jobs:
         uses: ./.github/actions/rust/
 
       - name: Build documentation
-        run: cargo doc --workspace --all-features --no-deps
+        run: cargo doc --workspace --no-deps --features "$NATIVE_FEATURES"
 
   lint:
     name: Lint
@@ -67,8 +84,11 @@ jobs:
       - name: Run fmt
         run: cargo fmt -- --check
 
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Run clippy (native)
+        run: cargo clippy --workspace --all-targets --features "$NATIVE_FEATURES" -- -D warnings
+
+      - name: Run clippy (local-futures)
+        run: cargo clippy -p tus-protocol --all-targets --no-default-features --features "$LOCAL_FEATURES" -- -D warnings
 
   audit:
     name: Audit

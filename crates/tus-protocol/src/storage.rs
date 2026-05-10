@@ -135,16 +135,19 @@ pub enum ChunkStream {
 
 impl ChunkStream {
     /// Creates a chunk stream from buffered bytes.
+    #[must_use]
     pub fn from_bytes(bytes: Bytes) -> Self {
         ChunkStream::Buffered(bytes)
     }
 
     /// Creates a chunk stream from an async stream.
+    #[must_use]
     pub fn from_stream(stream: ByteStream) -> Self {
         ChunkStream::Stream(stream)
     }
 
     /// Creates an empty chunk stream.
+    #[must_use]
     pub fn empty() -> Self {
         ChunkStream::Buffered(Bytes::new())
     }

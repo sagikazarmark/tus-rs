@@ -37,6 +37,7 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 /// assert!(config.has_extension(Extension::Concatenation));
 /// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Config {
     /// Maximum upload size in bytes. None means unlimited.
     max_size: Option<u64>,
@@ -115,6 +116,7 @@ impl Config {
     /// be complete. If you want strict core-concatenation semantics, use
     /// [`Config::default()`] plus explicit `.with_extension(...)` calls
     /// and don't enable `ConcatenationUnfinished`.
+    #[must_use]
     pub fn with_all_extensions() -> Self {
         Self {
             extensions: Extension::supported().iter().copied().collect(),
@@ -130,6 +132,7 @@ impl Config {
     }
 
     /// Sets the maximum upload size.
+    #[must_use]
     pub fn max_size(mut self, size: u64) -> Self {
         self.max_size = Some(size);
         self
@@ -140,6 +143,7 @@ impl Config {
     /// When enabling the Checksum extension, default algorithms (sha1) are automatically
     /// added if no algorithms are already configured. Use `with_checksum()` to add
     /// additional algorithms.
+    #[must_use]
     pub fn with_extension(mut self, ext: Extension) -> Self {
         #[cfg(not(feature = "checksum"))]
         if matches!(ext, Extension::Checksum | Extension::ChecksumTrailer) {
@@ -159,12 +163,14 @@ impl Config {
     }
 
     /// Removes an extension from the enabled set.
+    #[must_use]
     pub fn without_extension(mut self, ext: Extension) -> Self {
         self.extensions.remove(&ext);
         self
     }
 
     /// Sets the expiration duration for uploads.
+    #[must_use]
     pub fn expiration(mut self, duration: Duration) -> Self {
         self.expiration = Some(duration);
         self.extensions.insert(Extension::Expiration);
@@ -172,12 +178,14 @@ impl Config {
     }
 
     /// Sets the lock acquisition timeout.
+    #[must_use]
     pub fn lock_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
         self
     }
 
     /// Sets the base path for the TUS endpoint.
+    #[must_use]
     pub fn base_path(mut self, path: impl Into<String>) -> Self {
         self.base_path = path.into();
         self
@@ -187,36 +195,42 @@ impl Config {
     ///
     /// When set, Location headers will include the full URL (e.g., "http://localhost:8080/files/abc").
     /// The base URL should not include a trailing slash.
+    #[must_use]
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = Some(url.into());
         self
     }
 
     /// Enables CORS for the specified origins.
+    #[must_use]
     pub fn cors(mut self, origins: Vec<String>) -> Self {
         self.cors_origins = origins;
         self
     }
 
     /// Enables CORS for all origins.
+    #[must_use]
     pub fn cors_all(mut self) -> Self {
         self.cors_origins = vec!["*".to_string()];
         self
     }
 
     /// Enables respect for forwarded headers.
+    #[must_use]
     pub fn respect_forwarded_headers(mut self) -> Self {
         self.respect_forwarded_headers = true;
         self
     }
 
     /// Sets the maximum chunk size per PATCH request.
+    #[must_use]
     pub fn max_chunk_size(mut self, size: u64) -> Self {
         self.max_chunk_size = Some(size);
         self
     }
 
     /// Disables the download endpoint.
+    #[must_use]
     pub fn disable_download(mut self) -> Self {
         self.disable_download = true;
         self
@@ -224,6 +238,7 @@ impl Config {
 
     /// Adds a checksum algorithm to the supported set.
     #[cfg(feature = "checksum")]
+    #[must_use]
     pub fn with_checksum(mut self, algorithm: ChecksumAlgorithm) -> Self {
         self.checksum_algorithms.insert(algorithm);
         self.checksum_algorithms.insert(ChecksumAlgorithm::Sha1);
@@ -233,6 +248,7 @@ impl Config {
     }
 
     /// Controls whether empty creation requests are allowed.
+    #[must_use]
     pub fn allow_empty_creation(mut self, allow: bool) -> Self {
         self.allow_empty_creation = allow;
         self
@@ -338,6 +354,7 @@ impl Config {
 
 /// TUS protocol extensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Extension {
     /// Creation extension - allows creating new uploads via POST.
     Creation,
@@ -411,6 +428,7 @@ impl Extension {
 
 /// Checksum algorithms supported by the checksum extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ChecksumAlgorithm {
     /// SHA-1 hash.
     Sha1,

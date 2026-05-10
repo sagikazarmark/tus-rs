@@ -172,14 +172,12 @@ impl StateStore for FileStateStore {
         while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
             let path = entry.path();
 
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if let Some(state) = self.read_state(&path).await? {
-                    if let Some(expires_at) = state.expires_at() {
-                        if *expires_at < before {
-                            expired.push(state.id().to_string());
-                        }
-                    }
-                }
+            if path.extension().is_some_and(|e| e == "json")
+                && let Some(state) = self.read_state(&path).await?
+                && let Some(expires_at) = state.expires_at()
+                && *expires_at < before
+            {
+                expired.push(state.id().to_string());
             }
         }
 

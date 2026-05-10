@@ -3,6 +3,9 @@
 //! Validates the request, acquires a lock on the upload, verifies the offset,
 //! writes the request body to storage, and fires lifecycle hooks.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use futures::StreamExt;
 use http::StatusCode;
 
@@ -16,12 +19,117 @@ use crate::storage::{ChunkStream, Storage};
 use super::recovery::reconcile_state_offset;
 use super::{Headers, Protocol, Response, UploadId};
 
-/// Appends data to an upload.
+/// Optional checksum value to verify after collecting a PATCH body.
+pub type PatchChecksum = Option<(ChecksumAlgorithm, Vec<u8>)>;
+
+/// Collected PATCH body data and the checksum the protocol should verify.
+pub struct PatchBodyData {
+    /// Collected body bytes.
+    pub bytes: bytes::Bytes,
+    /// Effective checksum from headers or trailers.
+    pub checksum: PatchChecksum,
+}
+
+#[cfg(not(feature = "local-futures"))]
+/// Future returned by a PATCH body collector.
+pub type PatchBodyCollectorFuture =
+    Pin<Box<dyn Future<Output = Result<PatchBodyData, Error>> + Send>>;
+
+#[cfg(feature = "local-futures")]
+/// Future returned by a PATCH body collector.
+pub type PatchBodyCollectorFuture = Pin<Box<dyn Future<Output = Result<PatchBodyData, Error>>>>;
+
+/// Collector for PATCH bodies that need protocol-computed size limits.
 ///
-/// `effective_checksum` is the checksum value the caller intends the server
-/// to verify: either extracted from the `Upload-Checksum` request header,
-/// or from an HTTP trailer after the body has been consumed. The adapter
-/// resolves this before calling; core just validates and writes.
+/// The collector is called after PATCH preflight validation and receives the
+/// effective body size limit. Collectors should enforce that limit while
+/// reading from their underlying transport so oversized bodies are rejected
+/// before they are fully buffered.
+pub trait PatchBodyCollector: crate::runtime::MaybeSend + 'static {
+    /// Collects the body using the computed body size limit.
+    fn collect(self, body_limit: Option<u64>) -> PatchBodyCollectorFuture;
+}
+
+impl<F, Fut> PatchBodyCollector for F
+where
+    F: FnOnce(Option<u64>) -> Fut + crate::runtime::MaybeSend + 'static,
+    Fut: Future<Output = Result<PatchBodyData, Error>> + crate::runtime::MaybeSend + 'static,
+{
+    fn collect(self, body_limit: Option<u64>) -> PatchBodyCollectorFuture {
+        Box::pin(self(body_limit))
+    }
+}
+
+#[cfg(not(feature = "local-futures"))]
+type CollectorFn = Box<dyn FnOnce(Option<u64>) -> PatchBodyCollectorFuture + Send>;
+
+#[cfg(feature = "local-futures")]
+type CollectorFn = Box<dyn FnOnce(Option<u64>) -> PatchBodyCollectorFuture>;
+
+struct PatchBodyCollectorBox {
+    collect: CollectorFn,
+}
+
+impl PatchBodyCollectorBox {
+    fn new<C>(collector: C) -> Self
+    where
+        C: PatchBodyCollector,
+    {
+        Self {
+            collect: Box::new(move |body_limit| collector.collect(body_limit)),
+        }
+    }
+
+    async fn collect(self, body_limit: Option<u64>) -> Result<PatchBodyData, Error> {
+        (self.collect)(body_limit).await
+    }
+}
+
+/// PATCH request body input.
+pub struct PatchBody {
+    kind: PatchBodyKind,
+}
+
+enum PatchBodyKind {
+    Stream {
+        body: ChunkStream,
+        checksum: PatchChecksum,
+    },
+    Collector(PatchBodyCollectorBox),
+}
+
+impl PatchBody {
+    /// Creates a regular PATCH body from a stream and optional checksum.
+    #[must_use]
+    pub fn stream(body: ChunkStream, checksum: PatchChecksum) -> Self {
+        Self {
+            kind: PatchBodyKind::Stream { body, checksum },
+        }
+    }
+
+    /// Creates a PATCH body from an adapter-provided collector.
+    #[must_use]
+    pub fn collector<C>(collector: C) -> Self
+    where
+        C: PatchBodyCollector,
+    {
+        Self {
+            kind: PatchBodyKind::Collector(PatchBodyCollectorBox::new(collector)),
+        }
+    }
+
+    async fn collect(self, body_limit: Option<u64>) -> Result<PatchBodyData, Error> {
+        match self.kind {
+            PatchBodyKind::Stream { body, checksum } => {
+                let bytes = collect_chunk_stream(body, body_limit).await?;
+                Ok(PatchBodyData { bytes, checksum })
+            }
+            PatchBodyKind::Collector(collector) => collector.collect(body_limit).await,
+        }
+    }
+}
+
+/// Appends data to an upload.
 #[allow(clippy::too_many_arguments)]
 impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
 where
@@ -32,9 +140,8 @@ where
 {
     /// Appends data to an upload.
     ///
-    /// `effective_checksum` is the checksum value the caller intends the server
-    /// to verify: either extracted from the `Upload-Checksum` request header,
-    /// or from an HTTP trailer after the body has been consumed.
+    /// `body` determines how request bytes are collected. Collection happens
+    /// only after PATCH preflight validation reaches the body collection point.
     ///
     /// # Errors
     ///
@@ -46,8 +153,7 @@ where
         &self,
         headers: Headers,
         upload_id: &UploadId,
-        body: ChunkStream,
-        effective_checksum: Option<(ChecksumAlgorithm, Vec<u8>)>,
+        body: PatchBody,
     ) -> Result<Response, Error> {
         headers.validate_patch_content_type()?;
         let upload_id = upload_id.as_str();
@@ -139,23 +245,32 @@ where
             state = modified_state;
         }
 
-        // Validate checksum algorithm is advertised.
+        // Reject unsupported header checksum algorithms before body collection.
         #[cfg(feature = "checksum")]
-        if let Some((algorithm, _)) = &effective_checksum
+        if let Some((algorithm, _)) = &headers.upload_checksum
             && self.config.has_extension(Extension::Checksum)
             && !self.config.supports_checksum_algorithm(*algorithm)
         {
             return Err(Error::UnsupportedChecksum(algorithm.as_str().to_string()));
         }
 
-        let data = collect_chunk_stream(body, body_size_limit(self.config, &state)).await?;
-        let body_len = data.len() as u64;
+        let body = body.collect(body_size_limit(self.config, &state)).await?;
+        let body_len = body.bytes.len() as u64;
         validate_content_length(&headers, body_len)?;
         validate_body_size(self.config, &state, body_len)?;
 
+        // Validate checksum algorithm is advertised.
         #[cfg(feature = "checksum")]
-        if let Some((algorithm, expected)) = effective_checksum {
-            let calculated = crate::checksum::calculate(algorithm, &data);
+        if let Some((algorithm, _)) = &body.checksum
+            && self.config.has_extension(Extension::Checksum)
+            && !self.config.supports_checksum_algorithm(*algorithm)
+        {
+            return Err(Error::UnsupportedChecksum(algorithm.as_str().to_string()));
+        }
+
+        #[cfg(feature = "checksum")]
+        if let Some((algorithm, expected)) = body.checksum {
+            let calculated = crate::checksum::calculate(algorithm, &body.bytes);
             if calculated != expected {
                 use base64::Engine;
                 return Err(Error::ChecksumMismatch {
@@ -165,7 +280,7 @@ where
             }
         }
         #[cfg(not(feature = "checksum"))]
-        let _ = effective_checksum;
+        let _ = body.checksum;
 
         let projected_offset = state.offset().saturating_add(body_len);
         if state
@@ -188,7 +303,7 @@ where
 
         let new_offset = self
             .storage
-            .append(&mut state, ChunkStream::Buffered(data))
+            .append(&mut state, ChunkStream::Buffered(body.bytes))
             .await?;
         state.set_offset(new_offset);
         self.state_store.set(&state, false).await?;
@@ -398,7 +513,7 @@ mod tests {
         let hooks = NoopHookExecutor::new();
         let upload_id: UploadId = upload_id.parse().unwrap();
         Protocol::new(config, storage, store, &locker, &hooks)
-            .patch(h, &upload_id, body(data), None)
+            .patch(h, &upload_id, PatchBody::stream(body(data), None))
             .await
     }
 
@@ -683,7 +798,11 @@ mod tests {
         let upload_id: UploadId = "test-id".parse().unwrap();
 
         let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
-            .patch(headers(0), &upload_id, body(b"Hello"), None)
+            .patch(
+                headers(0),
+                &upload_id,
+                PatchBody::stream(body(b"Hello"), None),
+            )
             .await
             .unwrap_err();
 
@@ -697,6 +816,57 @@ mod tests {
         let stored = store.get("test-id").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 0);
         assert!(!stored.is_complete());
+    }
+
+    #[tokio::test]
+    async fn collector_receives_limit_and_is_not_called_before_offset_validation() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let (storage, store) = setup(UploadState::new("test-id").with_length(10)).await;
+        let config = Config::default().max_chunk_size(4);
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let called = Arc::new(AtomicBool::new(false));
+        let called_for_collector = called.clone();
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .patch(
+                headers(5),
+                &upload_id,
+                PatchBody::collector(move |_| async move {
+                    called_for_collector.store(true, Ordering::SeqCst);
+                    Ok(PatchBodyData {
+                        bytes: Bytes::new(),
+                        checksum: None,
+                    })
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::OffsetMismatch { .. }));
+        assert!(!called.load(Ordering::SeqCst));
+
+        let received_limit = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .patch(
+                headers(0),
+                &upload_id,
+                PatchBody::collector(|body_limit| async move {
+                    Ok(PatchBodyData {
+                        bytes: Bytes::from_static(b"test"),
+                        checksum: None,
+                    })
+                    .inspect(|_| assert_eq!(body_limit, Some(4)))
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(received_limit.headers.get("upload-offset").unwrap(), "4");
     }
 
     #[tokio::test]

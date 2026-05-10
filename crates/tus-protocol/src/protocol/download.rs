@@ -1,0 +1,329 @@
+//! Framework-neutral download helper.
+//!
+//! Download is not part of the core tus protocol. This module provides shared
+//! server-side convenience behavior for framework adapters that want to expose a
+//! GET endpoint for completed uploads.
+
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+
+use crate::config::TUS_RESUMABLE;
+use crate::error::Error;
+use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::locking::Locker;
+use crate::state::{StateStore, UploadState};
+use crate::storage::ByteStream;
+use crate::storage::Storage;
+
+use super::recovery::reconcile_state_offset;
+use super::{Protocol, UploadId};
+
+/// Request inputs for the non-standard download helper.
+pub struct DownloadRequest<'a> {
+    /// Upload id to download.
+    pub upload_id: &'a UploadId,
+    /// Raw HTTP `Range` header value, if present.
+    pub range: Option<&'a str>,
+}
+
+/// Streaming response produced by the non-standard download helper.
+pub struct DownloadResponse {
+    /// HTTP status code.
+    pub status: StatusCode,
+    /// Response headers.
+    pub headers: HeaderMap,
+    /// Streaming response body.
+    pub body: ByteStream,
+}
+
+impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    L: Locker + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    /// Downloads a completed upload.
+    ///
+    /// This is a non-standard convenience endpoint for framework adapters that
+    /// expose uploaded data with HTTP GET. It is not part of the core tus
+    /// protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if downloads are disabled, the upload does not exist,
+    /// the upload is expired or incomplete, the requested byte range is invalid,
+    /// or the backing storage cannot provide the requested stream.
+    pub async fn download(&self, request: DownloadRequest<'_>) -> Result<DownloadResponse, Error> {
+        if self.config.is_download_disabled() {
+            return Err(Error::MethodNotAllowed("GET".to_string()));
+        }
+
+        let upload_id = request.upload_id.as_str();
+        let _guard = self
+            .locker
+            .lock(upload_id, self.config.lock_timeout_duration())
+            .await?;
+
+        let mut state = self
+            .state_store
+            .get(upload_id)
+            .await
+            .map_err(|err| Error::Internal(err.to_string()))?
+            .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
+
+        if state.is_expired() {
+            return Err(Error::Expired(upload_id.to_string()));
+        }
+
+        let request_info = HookRequestInfo {
+            method: "GET".to_string(),
+            path: format!("{}/{}", self.config.base_path_str(), upload_id),
+            remote_addr: None,
+            headers: std::collections::HashMap::new(),
+        };
+        reconcile_state_offset(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            &request_info,
+            &mut state,
+        )
+        .await?;
+
+        if !state.is_complete() {
+            return Err(Error::IncompleteUpload(state.id().to_string()));
+        }
+
+        let size = state.offset();
+        let range = parse_range(request.range, size)?;
+        let mut headers = download_headers(&state)?;
+
+        let (status, body) = if let Some((start, end)) = range {
+            insert_header(
+                &mut headers,
+                "content-length",
+                (end - start + 1).to_string(),
+            )?;
+            insert_header(
+                &mut headers,
+                "content-range",
+                format!("bytes {start}-{end}/{size}"),
+            )?;
+            (
+                StatusCode::PARTIAL_CONTENT,
+                self.storage.get_range(&state, start, Some(end + 1)).await?,
+            )
+        } else if size == 0 {
+            insert_header(&mut headers, "content-length", "0")?;
+            let body: ByteStream = Box::pin(futures::stream::empty());
+            (StatusCode::OK, body)
+        } else {
+            insert_header(&mut headers, "content-length", size.to_string())?;
+            (StatusCode::OK, self.storage.get_stream(&state).await?)
+        };
+
+        Ok(DownloadResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+}
+
+fn parse_range(value: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let spec = value
+        .strip_prefix("bytes=")
+        .ok_or_else(|| Error::InvalidHeader {
+            header: "Range",
+            message: "only bytes ranges are supported".to_string(),
+        })?;
+
+    if spec.contains(',') {
+        return Err(Error::InvalidHeader {
+            header: "Range",
+            message: "multiple ranges are not supported".to_string(),
+        });
+    }
+
+    if size == 0 {
+        return Err(Error::RangeNotSatisfiable { size });
+    }
+
+    let (start, end) = spec.split_once('-').ok_or_else(|| Error::InvalidHeader {
+        header: "Range",
+        message: "range must be in the form bytes=start-end".to_string(),
+    })?;
+
+    if start.is_empty() {
+        let suffix_len = end.parse::<u64>().map_err(|_| Error::InvalidHeader {
+            header: "Range",
+            message: "invalid suffix byte count".to_string(),
+        })?;
+        if suffix_len == 0 {
+            return Err(Error::RangeNotSatisfiable { size });
+        }
+
+        let start = size.saturating_sub(suffix_len.min(size));
+        return Ok(Some((start, size - 1)));
+    }
+
+    let start = start.parse::<u64>().map_err(|_| Error::InvalidHeader {
+        header: "Range",
+        message: "invalid range start".to_string(),
+    })?;
+    if start >= size {
+        return Err(Error::RangeNotSatisfiable { size });
+    }
+
+    let end = if end.is_empty() {
+        size - 1
+    } else {
+        let parsed = end.parse::<u64>().map_err(|_| Error::InvalidHeader {
+            header: "Range",
+            message: "invalid range end".to_string(),
+        })?;
+        parsed.min(size - 1)
+    };
+
+    if start > end {
+        return Err(Error::InvalidHeader {
+            header: "Range",
+            message: "range start must be less than or equal to range end".to_string(),
+        });
+    }
+
+    Ok(Some((start, end)))
+}
+
+fn download_headers(state: &UploadState) -> Result<HeaderMap, Error> {
+    let mut headers = HeaderMap::new();
+    headers.insert("tus-resumable", HeaderValue::from_static(TUS_RESUMABLE));
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    headers.insert("accept-ranges", HeaderValue::from_static("bytes"));
+    insert_header(&mut headers, "content-type", content_type(state))?;
+    Ok(headers)
+}
+
+fn insert_header(
+    headers: &mut HeaderMap,
+    name: &'static str,
+    value: impl AsRef<str>,
+) -> Result<(), Error> {
+    let value = HeaderValue::from_str(value.as_ref())
+        .map_err(|err| Error::Internal(format!("failed to build download response: {err}")))?;
+    headers.insert(HeaderName::from_static(name), value);
+    Ok(())
+}
+
+fn content_type(state: &UploadState) -> &str {
+    state
+        .metadata()
+        .get("content-type")
+        .or_else(|| state.metadata().get("mimetype"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("application/octet-stream")
+}
+
+#[cfg(all(
+    test,
+    feature = "state-memory",
+    feature = "storage-memory",
+    not(feature = "local-futures")
+))]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use futures::StreamExt;
+
+    use crate::config::Config;
+    use crate::hooks::NoopHookExecutor;
+    use crate::locking::NoopLocker;
+    use crate::protocol::Protocol;
+    use crate::state::{StateStore, UploadMetadata, UploadState, memory::MemoryStateStore};
+    use crate::storage::{ChunkStream, Storage, memory::MemoryStorage};
+
+    async fn completed_upload(bytes: &'static [u8]) -> (MemoryStorage, MemoryStateStore) {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let mut state = UploadState::new("test-id").with_length(bytes.len() as u64);
+        let mut metadata = UploadMetadata::new();
+        metadata.insert("mimetype".to_string(), "text/plain");
+        state.set_metadata(metadata);
+
+        storage.create(&mut state).await.unwrap();
+        storage
+            .append(
+                &mut state,
+                ChunkStream::from_bytes(Bytes::from_static(bytes)),
+            )
+            .await
+            .unwrap();
+        store.set(&state, true).await.unwrap();
+
+        (storage, store)
+    }
+
+    async fn body_bytes(response: DownloadResponse) -> Bytes {
+        let mut stream = response.body;
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            body.extend_from_slice(&chunk.expect("download stream should succeed"));
+        }
+        Bytes::from(body)
+    }
+
+    #[tokio::test]
+    async fn download_streams_completed_upload() {
+        let (storage, store) = completed_upload(b"hello").await;
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id = "test-id".parse().unwrap();
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .download(DownloadRequest {
+                upload_id: &upload_id,
+                range: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.headers.get("content-type").unwrap(), "text/plain");
+        assert_eq!(response.headers.get("content-length").unwrap(), "5");
+        assert_eq!(body_bytes(response).await.as_ref(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn download_serves_single_byte_range() {
+        let (storage, store) = completed_upload(b"hello world").await;
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id = "test-id".parse().unwrap();
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .download(DownloadRequest {
+                upload_id: &upload_id,
+                range: Some("bytes=6-10"),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers.get("content-range").unwrap(),
+            "bytes 6-10/11"
+        );
+        assert_eq!(response.headers.get("content-length").unwrap(), "5");
+        assert_eq!(body_bytes(response).await.as_ref(), b"world");
+    }
+
+    #[test]
+    fn parse_range_rejects_unsatisfiable_start() {
+        let err = parse_range(Some("bytes=10-20"), 5).unwrap_err();
+        assert!(matches!(err, Error::RangeNotSatisfiable { size: 5 }));
+    }
+}

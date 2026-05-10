@@ -34,11 +34,11 @@ impl MemoryLocker {
     /// Internal method to release a lock synchronously.
     /// This is called from the LockGuard's Drop implementation.
     fn release_lock(locks: &std::sync::Mutex<HashMap<String, LockEntry>>, upload_id: &str) {
-        if let Ok(mut guard) = locks.lock() {
-            if let Some(entry) = guard.get_mut(upload_id) {
-                entry.locked = false;
-                entry.notify.notify_waiters();
-            }
+        if let Ok(mut guard) = locks.lock()
+            && let Some(entry) = guard.get_mut(upload_id)
+        {
+            entry.locked = false;
+            entry.notify.notify_waiters();
         }
     }
 }

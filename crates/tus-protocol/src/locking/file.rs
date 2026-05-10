@@ -58,6 +58,7 @@ impl FileLocker {
     }
 
     /// Sets the retry interval for lock acquisition.
+    #[must_use]
     pub fn with_retry_interval(mut self, interval: Duration) -> Self {
         self.retry_interval = interval;
         self
@@ -68,6 +69,7 @@ impl FileLocker {
     /// OS advisory locks are released when the owning process exits, so this
     /// implementation does not steal locks based on file age. The setter is
     /// retained for callers that already configure it.
+    #[must_use]
     pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
         self.lease_ttl = ttl;
         self

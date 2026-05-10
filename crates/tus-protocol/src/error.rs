@@ -9,6 +9,7 @@
 
 /// Errors that can occur during TUS protocol operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Upload not found (404 Not Found).
     #[error("upload not found: {0}")]
