@@ -10,9 +10,6 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[features]
-default = []
-
 [dependencies]
 axum = "0.8"
 base64 = { workspace = true }
@@ -21,7 +18,7 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = "0.1"
 tower-http = { version = "0.6", features = ["cors"] }
-tus-protocol = { path = "../tus-protocol" }
+tus-protocol = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
@@ -33,7 +30,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-test = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
-tus-protocol = { path = "../tus-protocol", features = [
+tus-protocol = { workspace = true, features = [
     "checksum",
     "full-native",
     "lock-file",
@@ -41,6 +38,9 @@ tus-protocol = { path = "../tus-protocol", features = [
     "state-memory",
     "storage-memory",
 ] }
+
+[features]
+default = []
 
 [[bench]]
 name = "hot_path"

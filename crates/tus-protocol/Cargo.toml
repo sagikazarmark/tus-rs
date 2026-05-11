@@ -76,11 +76,11 @@ fuzzing = []
 
 # Full native feature set for convenience
 full-native = [
-    "native",
-    "storage-file",
-    "state-file",
-    "lock-memory",
-    "checksum",
+  "native",
+  "storage-file",
+  "state-file",
+  "lock-memory",
+  "checksum",
 ]
 
 [package.metadata.docs.rs]
