@@ -50,7 +50,7 @@
 // Core modules (always available)
 pub mod config;
 pub mod error;
-pub mod extensions;
+mod extensions;
 pub mod hooks;
 pub mod locking;
 pub mod protocol;
@@ -61,15 +61,21 @@ pub mod storage;
 
 // Feature-gated modules
 #[cfg(feature = "checksum")]
-pub mod checksum;
+mod checksum;
 
 // Re-export main types at crate root
 pub use config::{ChecksumAlgorithm, Config, Extension, TUS_RESUMABLE, TUS_VERSION};
 pub use error::{Error, Result};
 pub use extensions::UploadConcat;
-pub use hooks::{Hook, HookChain, HookContext, HookEvent, HookExecutor, PreHookResult};
-pub use locking::{LockGuard, Locker};
-pub use protocol::{Headers, Protocol, Response, UploadId};
+pub use hooks::{
+    Hook, HookChain, HookContext, HookEvent, HookExecutor, NoopHookExecutor, PreHookResult,
+};
+pub use locking::{LockGuard, Locker, NoopLocker};
+pub use protocol::{
+    DownloadRequest, DownloadResponse, Headers, PatchBody, PatchBodyCollector,
+    PatchBodyCollectorFuture, PatchBodyData, PatchChecksum, Protocol, ProtocolHandle, Response,
+    UploadId,
+};
 pub use state::{MetadataValue, StateStore, UploadMetadata, UploadState};
 pub use storage::ByteStream;
 pub use storage::{ChunkStream, Storage};
@@ -80,7 +86,11 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::hooks::{HookChain, HookContext, HookEvent, HookExecutor};
     pub use crate::locking::Locker;
-    pub use crate::protocol::{Headers, Protocol, Response, UploadId};
+    pub use crate::protocol::{
+        DownloadRequest, DownloadResponse, Headers, PatchBody, PatchBodyCollector,
+        PatchBodyCollectorFuture, PatchBodyData, PatchChecksum, Protocol, ProtocolHandle, Response,
+        UploadId,
+    };
     pub use crate::state::{StateStore, UploadState};
     pub use crate::storage::Storage;
 }

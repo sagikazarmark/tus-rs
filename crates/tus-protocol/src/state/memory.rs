@@ -28,16 +28,19 @@ impl MemoryStateStore {
     }
 
     /// Returns the number of uploads currently stored.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.states.read().unwrap().len()
     }
 
     /// Returns whether the store is empty.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.states.read().unwrap().is_empty()
     }
 
     /// Clears all stored state.
+    #[cfg(test)]
     pub fn clear(&self) {
         self.states.write().unwrap().clear();
     }

@@ -7,6 +7,7 @@
 /// Used by the Concatenation extension to identify partial uploads
 /// and final uploads that combine multiple partials.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UploadConcat {
     /// This is a partial upload that will be concatenated later.
     Partial,

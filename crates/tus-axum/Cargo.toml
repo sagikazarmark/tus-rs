@@ -1,0 +1,47 @@
+[package]
+name = "tus-axum"
+description = "axum integration for the tus-protocol TUS resumable upload implementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+axum = "0.8"
+base64 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+http-body-util = "0.1"
+tower-http = { version = "0.6", features = ["cors"] }
+tus-protocol = { path = "../tus-protocol" }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+criterion = { version = "0.5", features = ["async_tokio"] }
+proptest = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-test = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+tus-protocol = { path = "../tus-protocol", features = [
+    "checksum",
+    "full-native",
+    "lock-file",
+    "lock-memory",
+    "state-memory",
+    "storage-memory",
+] }
+
+[[bench]]
+name = "hot_path"
+harness = false

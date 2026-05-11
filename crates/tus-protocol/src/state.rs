@@ -163,36 +163,35 @@ impl UploadState {
     }
 
     /// Sets the upload length.
+    #[must_use]
     pub fn with_length(mut self, length: u64) -> Self {
         self.length = Some(length);
         self
     }
 
-    /// Sets the upload as having deferred length.
-    pub fn with_deferred_length(mut self) -> Self {
-        self.length = None;
-        self
-    }
-
     /// Sets the expiration time.
+    #[must_use]
     pub fn with_expiration(mut self, expires_at: DateTime<Utc>) -> Self {
         self.expires_at = Some(expires_at);
         self
     }
 
     /// Sets the metadata.
+    #[must_use]
     pub fn with_metadata(mut self, metadata: impl Into<UploadMetadata>) -> Self {
         self.metadata = metadata.into();
         self
     }
 
     /// Marks as a partial upload.
+    #[must_use]
     pub fn as_partial(mut self) -> Self {
         self.is_partial = true;
         self
     }
 
     /// Marks as a final concatenated upload.
+    #[must_use]
     pub fn as_final(mut self, parts: Vec<String>) -> Self {
         self.is_final = true;
         self.parts = Some(parts);
@@ -224,11 +223,6 @@ impl UploadState {
         self.length = Some(length);
     }
 
-    /// Clears the declared upload length, marking it as deferred.
-    pub fn defer_length(&mut self) {
-        self.length = None;
-    }
-
     /// Returns the storage backend key/path, if assigned.
     pub fn storage_key(&self) -> Option<&str> {
         self.storage_key.as_deref()
@@ -237,11 +231,6 @@ impl UploadState {
     /// Sets the storage backend key/path.
     pub fn set_storage_key(&mut self, storage_key: impl Into<String>) {
         self.storage_key = Some(storage_key.into());
-    }
-
-    /// Clears the storage backend key/path.
-    pub fn clear_storage_key(&mut self) {
-        self.storage_key = None;
     }
 
     /// Returns when the upload was created.

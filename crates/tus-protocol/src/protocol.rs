@@ -11,7 +11,10 @@
 //!
 //! - [`Headers`]: a typed view over TUS-specific request headers
 //! - A validated [`UploadId`] path parameter
-//! - A [`ChunkStream`](crate::storage::ChunkStream) for the request body
+//! - A [`PatchBody`] for PATCH request bodies, usually created with
+//!   [`PatchBody::stream`] and a [`ChunkStream`],
+//!   or [`PatchBody::collector`] when an adapter must collect bytes later
+//!   (for example to read HTTP trailers)
 //!
 //! They return `Result<Response, Error>`; adapters convert the
 //! response into their framework's response type.
@@ -41,6 +44,7 @@
 //! ```
 
 mod delete;
+mod download;
 mod head;
 mod headers;
 mod options;
@@ -50,7 +54,11 @@ mod recovery;
 mod response;
 mod upload_id;
 
+pub use download::{DownloadRequest, DownloadResponse};
 pub use headers::Headers;
+pub use patch::{
+    PatchBody, PatchBodyCollector, PatchBodyCollectorFuture, PatchBodyData, PatchChecksum,
+};
 pub use response::Response;
 pub use upload_id::UploadId;
 
@@ -59,11 +67,13 @@ pub use headers::{
     fuzz_parse_upload_checksum, fuzz_parse_upload_concat, fuzz_parse_upload_metadata,
 };
 
+use std::sync::Arc;
+
 use crate::config::Config;
 use crate::hooks::HookExecutor;
 use crate::locking::Locker;
 use crate::state::StateStore;
-use crate::storage::Storage;
+use crate::storage::{ChunkStream, Storage};
 
 /// Framework-neutral TUS protocol facade.
 ///
@@ -105,5 +115,273 @@ where
             locker,
             hooks,
         }
+    }
+}
+
+/// Owned, cloneable handle for framework adapters and services.
+///
+/// [`Protocol`] is a lightweight borrowed facade. Frameworks usually need an
+/// owned, cheap-to-clone state value; this type owns shared handles to the
+/// protocol dependencies and exposes the same protocol methods directly.
+pub struct ProtocolHandle<S, I, L, H>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    config: Arc<Config>,
+    storage: Arc<S>,
+    state_store: Arc<I>,
+    locker: Arc<L>,
+    hooks: Arc<H>,
+}
+
+impl<S, I, L, H> ProtocolHandle<S, I, L, H>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    /// Creates a new protocol handle from owned dependencies.
+    pub fn new(config: Config, storage: S, state_store: I, locker: L, hooks: H) -> Self {
+        Self {
+            config: Arc::new(config),
+            storage: Arc::new(storage),
+            state_store: Arc::new(state_store),
+            locker: Arc::new(locker),
+            hooks: Arc::new(hooks),
+        }
+    }
+
+    /// Creates a new protocol handle from Arc-wrapped dependencies.
+    pub fn from_arcs(
+        config: Arc<Config>,
+        storage: Arc<S>,
+        state_store: Arc<I>,
+        locker: Arc<L>,
+        hooks: Arc<H>,
+    ) -> Self {
+        Self {
+            config,
+            storage,
+            state_store,
+            locker,
+            hooks,
+        }
+    }
+
+    /// Returns the configuration.
+    pub fn config(&self) -> &Config {
+        self.config.as_ref()
+    }
+
+    /// Returns the shared configuration handle.
+    pub fn config_arc(&self) -> Arc<Config> {
+        self.config.clone()
+    }
+
+    /// Returns the shared storage handle.
+    pub fn storage_arc(&self) -> Arc<S> {
+        self.storage.clone()
+    }
+
+    /// Returns the shared state-store handle.
+    pub fn state_store_arc(&self) -> Arc<I> {
+        self.state_store.clone()
+    }
+
+    /// Returns the shared locker handle.
+    pub fn locker_arc(&self) -> Arc<L> {
+        self.locker.clone()
+    }
+
+    /// Returns the shared hook-executor handle.
+    pub fn hooks_arc(&self) -> Arc<H> {
+        self.hooks.clone()
+    }
+
+    /// Returns a borrowed protocol facade over the stored components.
+    pub fn protocol(&self) -> Protocol<'_, S, I, L, H> {
+        Protocol::new(
+            self.config.as_ref(),
+            self.storage.as_ref(),
+            self.state_store.as_ref(),
+            self.locker.as_ref(),
+            self.hooks.as_ref(),
+        )
+    }
+
+    /// Builds the OPTIONS response advertising server capabilities.
+    pub fn options(&self) -> Response {
+        self.protocol().options()
+    }
+
+    /// Creates a new upload.
+    pub async fn post(
+        &self,
+        headers: Headers,
+        body: ChunkStream,
+    ) -> Result<Response, crate::Error> {
+        self.protocol().post(headers, body).await
+    }
+
+    /// Returns the status of an upload.
+    pub async fn head(&self, upload_id: &UploadId) -> Result<Response, crate::Error> {
+        self.protocol().head(upload_id).await
+    }
+
+    /// Downloads a completed upload.
+    ///
+    /// This is a non-standard convenience endpoint, not part of the core tus
+    /// protocol.
+    pub async fn download(
+        &self,
+        request: DownloadRequest<'_>,
+    ) -> Result<DownloadResponse, crate::Error> {
+        self.protocol().download(request).await
+    }
+
+    /// Appends data to an upload.
+    pub async fn patch(
+        &self,
+        headers: Headers,
+        upload_id: &UploadId,
+        body: PatchBody,
+    ) -> Result<Response, crate::Error> {
+        self.protocol().patch(headers, upload_id, body).await
+    }
+
+    /// Terminates an upload.
+    pub async fn delete(
+        &self,
+        headers: &Headers,
+        upload_id: &UploadId,
+    ) -> Result<Response, crate::Error> {
+        self.protocol().delete(headers, upload_id).await
+    }
+}
+
+impl<S, I, L, H> Clone for ProtocolHandle<S, I, L, H>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            storage: self.storage.clone(),
+            state_store: self.state_store.clone(),
+            locker: self.locker.clone(),
+            hooks: self.hooks.clone(),
+        }
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "storage-memory",
+    feature = "state-memory",
+    feature = "lock-memory",
+    not(feature = "local-futures")
+))]
+mod handle_tests {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use http::StatusCode;
+
+    use crate::hooks::NoopHookExecutor;
+    use crate::locking::memory::MemoryLocker;
+    use crate::state::{StateStore, UploadState, memory::MemoryStateStore};
+    use crate::storage::{ChunkStream, Storage, memory::MemoryStorage};
+    use crate::{Config, DownloadRequest, ProtocolHandle, UploadId};
+
+    #[test]
+    fn handle_clone_shares_backend_arcs_without_cloning_backends() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        let locker = Arc::new(MemoryLocker::new());
+        let hooks = Arc::new(NoopHookExecutor::new());
+
+        let handle = ProtocolHandle::from_arcs(
+            Arc::new(Config::default()),
+            storage.clone(),
+            state_store.clone(),
+            locker.clone(),
+            hooks.clone(),
+        );
+        let clone = handle.clone();
+
+        assert!(Arc::ptr_eq(&handle.storage_arc(), &clone.storage_arc()));
+        assert!(Arc::ptr_eq(&storage, &clone.storage_arc()));
+        assert_eq!(Arc::strong_count(&storage), 3);
+    }
+
+    #[tokio::test]
+    async fn handle_exposes_protocol_methods_directly() {
+        let storage = MemoryStorage::new();
+        let state_store = MemoryStateStore::new();
+        let upload = UploadState::new("test-id").with_length(42);
+        state_store.set(&upload, true).await.unwrap();
+
+        let handle = ProtocolHandle::new(
+            Config::default(),
+            storage,
+            state_store,
+            MemoryLocker::new(),
+            NoopHookExecutor::new(),
+        );
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let response = handle.head(&upload_id).await.unwrap();
+
+        assert_eq!(response.headers.get("upload-length").unwrap(), "42");
+    }
+
+    #[tokio::test]
+    async fn handle_download_delegates_to_protocol() {
+        let storage = MemoryStorage::new();
+        let state_store = MemoryStateStore::new();
+        let mut upload = UploadState::new("test-id").with_length(5);
+        storage.create(&mut upload).await.unwrap();
+        storage
+            .append(
+                &mut upload,
+                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+            )
+            .await
+            .unwrap();
+        state_store.set(&upload, true).await.unwrap();
+
+        let handle = ProtocolHandle::new(
+            Config::default(),
+            storage,
+            state_store,
+            MemoryLocker::new(),
+            NoopHookExecutor::new(),
+        );
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let mut response = handle
+            .download(DownloadRequest {
+                upload_id: &upload_id,
+                range: None,
+            })
+            .await
+            .unwrap();
+
+        let mut body = Vec::new();
+        while let Some(chunk) = response.body.next().await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.headers.get("content-length").unwrap(), "5");
+        assert_eq!(body, b"hello");
     }
 }

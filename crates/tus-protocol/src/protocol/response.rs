@@ -18,6 +18,7 @@ use crate::config::TUS_RESUMABLE;
 /// The adapter layer is responsible for turning this into a
 /// framework-specific response (e.g. `axum::response::Response`).
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Response {
     /// HTTP status code.
     pub status: StatusCode,
@@ -45,6 +46,7 @@ impl Response {
     ///
     /// Silently drops the header if the name or value is invalid; the
     /// caller is expected to pass well-formed values.
+    #[must_use]
     pub fn with_header(mut self, name: &'static str, value: impl AsRef<str>) -> Self {
         if let Ok(v) = HeaderValue::from_str(value.as_ref()) {
             self.headers.insert(HeaderName::from_static(name), v);
@@ -53,6 +55,7 @@ impl Response {
     }
 
     /// Sets a header by owned name (for caller-supplied strings from hooks).
+    #[must_use]
     pub fn with_header_owned(mut self, name: String, value: String) -> Self {
         if let (Ok(n), Ok(v)) = (
             HeaderName::try_from(name.as_str()),
@@ -64,6 +67,7 @@ impl Response {
     }
 
     /// Sets the response body.
+    #[must_use]
     pub fn with_body(mut self, body: Bytes) -> Self {
         self.body = body;
         self

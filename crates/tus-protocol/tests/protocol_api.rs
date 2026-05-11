@@ -6,11 +6,11 @@
 
 use bytes::Bytes;
 use http::StatusCode;
-use tus_protocol::hooks::NoopHookExecutor;
-use tus_protocol::locking::NoopLocker;
 use tus_protocol::state::{StateStore, UploadState, memory::MemoryStateStore};
 use tus_protocol::storage::{ChunkStream, Storage, memory::MemoryStorage};
-use tus_protocol::{Config, Error, Headers, Protocol, Response, UploadId};
+use tus_protocol::{
+    Config, Error, Headers, NoopHookExecutor, NoopLocker, Protocol, Response, UploadId,
+};
 
 #[tokio::test]
 async fn protocol_head_uses_bundled_dependencies() {

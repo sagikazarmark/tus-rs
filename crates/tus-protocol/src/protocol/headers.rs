@@ -1,9 +1,8 @@
 //! Framework-neutral parsing of TUS-specific request headers.
 //!
 //! Adapters extract an [`http::HeaderMap`] from the underlying framework's
-//! request and call [`Headers::from_headers`] (or
-//! [`Headers::from_headers_optional`] for OPTIONS) to get a typed view
-//! over the TUS-relevant headers.
+//! request and call [`Headers::from_headers`] to get a typed view over the
+//! TUS-relevant headers.
 
 use http::HeaderMap;
 #[cfg(feature = "fuzzing")]
@@ -16,6 +15,7 @@ use crate::state::{MetadataValue, UploadMetadata};
 
 /// Parsed TUS-specific request headers.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Headers {
     /// Upload-Offset header value.
     pub upload_offset: Option<u64>,
@@ -50,7 +50,7 @@ impl Headers {
     /// `Tus-Resumable` header is present and supported.
     ///
     /// Use this for handlers where Tus-Resumable is mandatory (POST, PATCH,
-    /// HEAD, DELETE). For OPTIONS, use [`Headers::from_headers_optional`].
+    /// HEAD, DELETE). OPTIONS does not parse headers at all.
     ///
     /// # Errors
     ///
@@ -64,24 +64,6 @@ impl Headers {
             None => return Err(Error::MissingTusResumable),
         }
 
-        Self::parse_without_version_check(headers)
-    }
-
-    /// Parses TUS headers from an HTTP [`HeaderMap`] without validating
-    /// `Tus-Resumable`.
-    ///
-    /// Used by handlers (like OPTIONS) that per the TUS spec must not require
-    /// the resumable header.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any present TUS-specific header value cannot be
-    /// parsed or validated.
-    pub fn from_headers_optional(headers: &HeaderMap) -> Result<Self, Error> {
-        Self::parse_without_version_check(headers)
-    }
-
-    fn parse_without_version_check(headers: &HeaderMap) -> Result<Self, Error> {
         let upload_offset = parse_u64_header(headers, "upload-offset")?;
         let upload_length = parse_u64_header(headers, "upload-length")?;
         let upload_defer_length = headers
@@ -396,13 +378,6 @@ mod tests {
             Headers::from_headers(&headers),
             Err(Error::UnsupportedTusVersion(_))
         ));
-    }
-
-    #[test]
-    fn from_headers_optional_skips_version_check() {
-        let headers = HeaderMap::new();
-        let tus = Headers::from_headers_optional(&headers).unwrap();
-        assert!(tus.upload_offset.is_none());
     }
 
     #[test]

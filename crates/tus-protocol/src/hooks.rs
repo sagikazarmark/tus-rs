@@ -195,10 +195,6 @@ pub struct HookContext {
 
     /// HTTP request metadata.
     pub request: HookRequestInfo,
-
-    /// Additional context data (extensible).
-    #[serde(default)]
-    pub extra: HashMap<String, String>,
 }
 
 impl HookContext {
@@ -208,14 +204,7 @@ impl HookContext {
             event,
             upload,
             request,
-            extra: HashMap::new(),
         }
-    }
-
-    /// Adds extra context data.
-    pub fn with_extra(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.extra.insert(key.into(), value.into());
-        self
     }
 }
 
@@ -266,6 +255,7 @@ pub struct PreHookResult {
 
 impl PreHookResult {
     /// Creates a result that allows the operation to proceed.
+    #[must_use]
     pub fn proceed() -> Self {
         Self {
             proceed: true,
@@ -274,6 +264,7 @@ impl PreHookResult {
     }
 
     /// Creates a result that proceeds with a modified upload state.
+    #[must_use]
     pub fn proceed_with(upload: UploadState) -> Self {
         Self {
             proceed: true,
@@ -283,6 +274,7 @@ impl PreHookResult {
     }
 
     /// Creates a result that rejects the operation.
+    #[must_use]
     pub fn reject(status: u16, message: impl Into<String>) -> Self {
         Self {
             proceed: false,
@@ -293,6 +285,7 @@ impl PreHookResult {
     }
 
     /// Adds a response header.
+    #[must_use]
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.response_headers.insert(name.into(), value.into());
         self
@@ -328,12 +321,14 @@ impl HookChain {
     }
 
     /// Adds a hook to the chain.
+    #[must_use]
     pub fn with_hook<H: Hook + 'static>(mut self, hook: H) -> Self {
         self.hooks.push(Arc::new(hook));
         self
     }
 
     /// Adds a shared hook to the chain.
+    #[must_use]
     pub fn add_shared(mut self, hook: Arc<dyn Hook>) -> Self {
         self.hooks.push(hook);
         self
@@ -404,6 +399,7 @@ impl FnHook {
     }
 
     /// Subscribes this hook to a single event.
+    #[must_use]
     pub fn for_event(mut self, event: HookEvent) -> Self {
         if !self.events.contains(&event) {
             self.events.push(event);
@@ -412,6 +408,7 @@ impl FnHook {
     }
 
     /// Subscribes this hook to multiple events.
+    #[must_use]
     pub fn for_events(mut self, events: impl IntoIterator<Item = HookEvent>) -> Self {
         for event in events {
             if !self.events.contains(&event) {
@@ -422,6 +419,7 @@ impl FnHook {
     }
 
     /// Sets the pre-hook closure. Only fires on pre-events.
+    #[must_use]
     pub fn with_pre<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(HookContext) -> Fut + MaybeSendSync + 'static,
@@ -432,6 +430,7 @@ impl FnHook {
     }
 
     /// Sets the post-hook closure. Only fires on post-events.
+    #[must_use]
     pub fn with_post<F, Fut>(mut self, f: F) -> Self
     where
         F: Fn(HookContext) -> Fut + MaybeSendSync + 'static,
@@ -480,6 +479,7 @@ macro_rules! hook_chain_on_methods {
         impl HookChain {
             $(
                 #[doc = concat!("Registers a closure to run on [`HookEvent::", stringify!($pre_event), "`].")]
+                #[must_use]
                 pub fn $pre_name<F, Fut>(self, f: F) -> Self
                 where
                     F: Fn(HookContext) -> Fut + MaybeSendSync + 'static,
@@ -495,6 +495,7 @@ macro_rules! hook_chain_on_methods {
 
             $(
                 #[doc = concat!("Registers a closure to run on [`HookEvent::", stringify!($post_event), "`].")]
+                #[must_use]
                 pub fn $post_name<F, Fut>(self, f: F) -> Self
                 where
                     F: Fn(HookContext) -> Fut + MaybeSendSync + 'static,
