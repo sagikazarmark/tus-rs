@@ -419,12 +419,30 @@ impl From<HashMap<String, MetadataValue>> for UploadMetadata {
     }
 }
 
+impl From<&HashMap<String, MetadataValue>> for UploadMetadata {
+    fn from(metadata: &HashMap<String, MetadataValue>) -> Self {
+        metadata.clone().into()
+    }
+}
+
 impl From<HashMap<String, String>> for UploadMetadata {
     fn from(metadata: HashMap<String, String>) -> Self {
         metadata
             .into_iter()
             .map(|(key, value)| (key, MetadataValue::from(value)))
             .collect()
+    }
+}
+
+impl From<&HashMap<String, String>> for UploadMetadata {
+    fn from(metadata: &HashMap<String, String>) -> Self {
+        metadata.clone().into()
+    }
+}
+
+impl From<&UploadMetadata> for UploadMetadata {
+    fn from(metadata: &UploadMetadata) -> Self {
+        metadata.clone()
     }
 }
 
@@ -610,6 +628,37 @@ mod tests {
             inner.get("filename").and_then(|v| v.as_str()),
             Some("test.txt")
         );
+    }
+
+    #[test]
+    fn upload_metadata_clones_from_borrowed_upload_metadata() {
+        let mut metadata = UploadMetadata::new();
+        metadata.insert("filename", "test.txt");
+
+        let cloned = UploadMetadata::from(&metadata);
+
+        assert_eq!(cloned, metadata);
+    }
+
+    #[test]
+    fn upload_metadata_converts_from_borrowed_text_map() {
+        let metadata = HashMap::from([("filename".to_string(), "test.txt".to_string())]);
+
+        let converted = UploadMetadata::from(&metadata);
+
+        assert_eq!(
+            converted.get("filename").and_then(|value| value.as_str()),
+            Some("test.txt")
+        );
+    }
+
+    #[test]
+    fn upload_metadata_converts_from_borrowed_binary_map() {
+        let metadata = HashMap::from([("bin".to_string(), MetadataValue::from(&b"\xFF\xFE"[..]))]);
+
+        let converted = UploadMetadata::from(&metadata);
+
+        assert_eq!(converted.get("bin").unwrap().as_bytes(), b"\xFF\xFE");
     }
 
     #[test]

@@ -1,0 +1,120 @@
+# tus-client
+
+[![crates.io](https://img.shields.io/crates/v/tus-client?style=flat-square)](https://crates.io/crates/tus-client)
+[![docs.rs](https://img.shields.io/docsrs/tus-client?style=flat-square)](https://docs.rs/tus-client)
+
+**Async Rust client for the [tus resumable upload protocol](https://tus.io/).**
+
+`tus-client` drives uploads to tus-compatible servers from Rust applications. It
+provides a resource-oriented API for creating upload resources, resuming existing
+upload URLs, uploading offset-addressable sources, retrying transient PATCH
+failures, and using custom transports.
+
+The default transport is backed by [`reqwest`](https://crates.io/crates/reqwest).
+The client core is transport-agnostic and can also be used with platform-specific
+transports or single-threaded runtimes.
+
+## Quick Start
+
+```rust,no_run
+use std::collections::HashMap;
+
+use tus_client::Client;
+use url::Url;
+
+#[tokio::main]
+async fn main() -> tus_client::Result<()> {
+    let endpoint = Url::parse("http://127.0.0.1:8080/files")?;
+
+    let mut metadata = HashMap::new();
+    metadata.insert("filename".to_string(), "hello.txt".to_string());
+
+    let upload = Client::new(endpoint)
+        .upload_from(b"hello world".to_vec(), &metadata)
+        .await?;
+
+    println!("uploaded {} bytes to {}", upload.offset, upload.url);
+
+    Ok(())
+}
+```
+
+The repository also includes a native file upload example:
+
+```bash
+cargo run -p tus-client --example upload_file -- http://127.0.0.1:8080/files ./hello.txt
+```
+
+## Client API
+
+`Client` exposes two styles of upload operation:
+
+| API | Purpose |
+|-----|---------|
+| `Client::upload_from(source, metadata)` | Create a new upload resource and upload a source to it. |
+| `Client::upload_from_with_progress(source, metadata, progress)` | Create and upload while reporting remote offset advances. |
+| `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. |
+| `Client::upload(upload_url)` | Attach to an existing remote upload URL and return an `Upload`. |
+| `Upload::info()` | Read the current remote offset, length, and metadata. |
+| `Upload::delete()` | Terminate an upload when the server supports termination. |
+
+`Vec<u8>` implements `UploadSource` out of the box. Larger or platform-specific
+sources can implement `UploadSource` to provide offset-addressable reads.
+
+## Feature Flags
+
+The default feature set enables the reqwest transport and checksum support.
+
+| Feature | Purpose |
+|---------|---------|
+| `checksum` | Enable per-chunk checksum support through `tus-protocol/checksum`. |
+| `transport-reqwest` | Enable the default reqwest-backed transport and `Client::new`. |
+| `transport-reqwest-middleware` | Accept `reqwest_middleware::ClientWithMiddleware` as a reqwest transport client. |
+| `local-futures` | Relax `Send` bounds for single-threaded runtimes such as Worker-style environments. |
+
+Disable default features when providing a custom transport or when building for a
+runtime that should not pull in reqwest.
+
+## Protocol Support
+
+`tus-client` targets tus 1.0.0 upload workflows.
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Core protocol | Supported | `OPTIONS`, `POST`, `HEAD`, and `PATCH` requests with offsets, metadata, and version negotiation. |
+| Creation | Supported | Create upload resources with `Client::create_upload` or as part of `Client::upload_from`. |
+| Creation-With-Upload | Supported | Small sources can be sent in the initial `POST` when the server advertises support. |
+| Termination | Supported | Delete upload resources with `Upload::delete`. |
+| Concatenation | Supported on native | `Client::upload_parallel` creates partial uploads and concatenates them. |
+| Checksum | Supported | Header checksums are supported; trailer checksums require native reqwest transport support. |
+
+## Runtime Notes
+
+On native targets, the default reqwest transport uses Tokio and supports regular
+reqwest middleware when `transport-reqwest-middleware` is enabled. The
+`upload_parallel` helper is native-only because it uses native task spawning and
+the tus concatenation extension.
+
+On `wasm32`, sequential upload and resume APIs work with `UploadSource`. The
+reqwest transport uses the browser `fetch` backend, so request trailers and
+manually setting `Content-Length` are not available. Middleware can be used on
+wasm when the middleware implementation itself is wasm-compatible.
+
+Use `local-futures` for single-threaded runtimes that cannot require `Send`
+futures. Custom transports and upload sources should match the target runtime's
+concurrency model.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
