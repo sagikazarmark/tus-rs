@@ -14,6 +14,7 @@
 //! per iteration — otherwise `MemoryStorage` would accumulate gigabytes of
 //! written bytes across the thousands of iterations criterion runs.
 
+use std::hint::black_box;
 use std::time::Duration;
 
 use axum::{
@@ -22,9 +23,7 @@ use axum::{
     http::{Method, Request},
 };
 use bytes::Bytes;
-use criterion::{
-    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
-};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 use tower::ServiceExt;
 
