@@ -37,6 +37,12 @@ jobs:
       - name: Build (local-futures)
         run: cargo build -p tus-protocol --all-targets --no-default-features --features "$LOCAL_FEATURES"
 
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Check reqwest middleware (wasm)
+        run: cargo check -p tus-client --target wasm32-unknown-unknown --no-default-features --features transport-reqwest-middleware --example wasm_reqwest_middleware
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -53,6 +59,15 @@ jobs:
 
       - name: Run tests (local-futures)
         run: cargo test -p tus-protocol --no-default-features --features "$LOCAL_FEATURES"
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm test runner
+        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+
+      - name: Run tests (wasm)
+        run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test -p tus-client --target wasm32-unknown-unknown --no-default-features --lib
 
   docs:
     name: Docs

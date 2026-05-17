@@ -64,6 +64,8 @@ pub mod storage;
 mod checksum;
 
 // Re-export main types at crate root
+#[cfg(feature = "checksum")]
+pub use checksum::calculate as calculate_checksum;
 pub use config::{ChecksumAlgorithm, Config, Extension, TUS_RESUMABLE, TUS_VERSION};
 pub use error::{Error, Result};
 pub use extensions::UploadConcat;

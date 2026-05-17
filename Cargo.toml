@@ -14,16 +14,23 @@ keywords = ["tus", "upload", "resumable", "http", "server"]
 categories = ["web-programming::http-server", "network-programming", "asynchronous"]
 
 [workspace.dependencies]
+tus-axum = { path = "crates/tus-axum", version = "0.0.1" }
+tus-client = { path = "crates/tus-client", version = "0.0.1" }
 tus-protocol = { path = "crates/tus-protocol", version = "0.0.1" }
 
 async-trait = "0.1"
+axum = "0.8"
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 http = "1"
+http-body-util = "0.1"
+reqwest = { version = "0.13", default-features = false }
+reqwest-middleware = { version = "0.5", default-features = false }
 proptest = "1"
 tempfile = "3"
+thiserror = "1"
 tokio = { version = "1" }
 tokio-test = "0.4"
 
