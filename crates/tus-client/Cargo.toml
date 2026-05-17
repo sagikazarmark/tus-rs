@@ -19,7 +19,7 @@ http = { workspace = true }
 reqwest = { workspace = true, default-features = false, optional = true }
 reqwest-middleware = { workspace = true, default-features = false, optional = true }
 thiserror = { workspace = true }
-url = "2"
+url = { workspace = true }
 
 # tokio's `fs`/`io-util`/`time`/`rt` features all gate on functionality used
 # only on native (FS-backed methods, native retry sleep, JoinSet). Keeping
@@ -48,9 +48,10 @@ wasm-bindgen-test = "0.3"
 default = ["checksum", "transport-reqwest", "reqwest?/default"]
 checksum = ["tus-protocol/checksum"]
 local-futures = []
+source-file = []
 transport-reqwest = ["dep:bytes", "dep:http-body-util", "dep:reqwest"]
 transport-reqwest-middleware = ["transport-reqwest", "dep:reqwest-middleware"]
 
 [[example]]
 name = "upload_file"
-required-features = ["transport-reqwest"]
+required-features = ["source-file", "transport-reqwest"]

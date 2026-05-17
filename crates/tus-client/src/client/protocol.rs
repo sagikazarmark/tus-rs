@@ -175,12 +175,21 @@ where
     }
 
     /// Creates a final concatenated upload from already completed partials.
-    pub async fn concatenate_uploads(
+    pub async fn concatenate_uploads<S>(
         &self,
-        part_urls: &[String],
+        part_urls: &[S],
         metadata: impl Into<UploadMetadata>,
-    ) -> Result<UploadInfo> {
+    ) -> Result<UploadInfo>
+    where
+        S: AsRef<str>,
+    {
         let metadata = metadata.into();
+        let part_urls = part_urls
+            .iter()
+            .map(|url| {
+                resolve_upload_location(&self.endpoint, url.as_ref()).map(|url| url.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
         let upload_concat = format!("final;{}", part_urls.join(" "));
         let mut request = self.request(Method::POST, self.endpoint.as_str())?;
         insert_request_header(&mut request, "upload-concat", upload_concat)?;
@@ -294,13 +303,13 @@ where
     }
 
     /// Terminates an existing upload.
-    pub(super) async fn delete_upload_at(&self, upload_url: &Url) -> Result<()> {
+    pub(super) async fn terminate_upload_at(&self, upload_url: &Url) -> Result<()> {
         let response = self
             .transport
             .send(self.request(Method::DELETE, upload_url.as_str())?)
             .await?;
         if response.status().as_u16() != 204 {
-            Err(unexpected_response("delete upload", response).await)
+            Err(unexpected_response("terminate upload", response).await)
         } else {
             Ok(())
         }
@@ -451,7 +460,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn create_upload_resolves_relative_location_with_standard_url_resolution() {
+    async fn create_upload_resolves_relative_location_against_endpoint_path() {
         let transport = MockTransport::default();
         transport
             .responses
@@ -473,7 +482,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(upload.url.as_str(), "http://example.test/upload-1");
+        assert_eq!(upload.url.as_str(), "http://example.test/files/upload-1");
     }
 
     #[async_test]
@@ -496,7 +505,7 @@ mod tests {
             .unwrap();
         let url: &url::Url = &upload.url;
 
-        assert_eq!(url.as_str(), "http://example.test/upload-1");
+        assert_eq!(url.as_str(), "http://example.test/files/upload-1");
     }
 
     #[async_test]
@@ -703,7 +712,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn delete_upload_rejects_non_204_success_status() {
+    async fn terminate_upload_rejects_non_204_success_status() {
         let transport = MockTransport::default();
         transport
             .responses
@@ -712,9 +721,40 @@ mod tests {
             .push_back(Ok(transport_response(200, HeaderMap::new(), Vec::new())));
 
         let client = Client::with_transport(endpoint_url(), transport);
-        let result = client.delete_upload_at(&upload_url("upload-1")).await;
+        let result = client.terminate_upload_at(&upload_url("upload-1")).await;
 
-        expect_unexpected_status(result, "delete upload", 200);
+        expect_unexpected_status(result, "terminate upload", 200);
+    }
+
+    #[async_test]
+    async fn concatenate_uploads_resolves_part_references_against_endpoint() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("Location", "/files/final")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(8, 8)));
+        }
+
+        let client = Client::with_transport(endpoint_url(), transport.clone());
+        client
+            .concatenate_uploads(&["part-1"], UploadMetadata::new())
+            .await
+            .unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .first()
+                .unwrap()
+                .headers()
+                .get("upload-concat")
+                .and_then(|value| value.to_str().ok()),
+            Some("final;http://example.test/files/part-1")
+        );
     }
 
     #[async_test]

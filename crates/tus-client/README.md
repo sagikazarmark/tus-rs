@@ -54,12 +54,20 @@ cargo run -p tus-client --example upload_file -- http://127.0.0.1:8080/files ./h
 | `Client::upload_from(source, metadata)` | Create a new upload resource and upload a source to it. |
 | `Client::upload_from_with_progress(source, metadata, progress)` | Create and upload while reporting remote offset advances. |
 | `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. |
-| `Client::upload(upload_url)` | Attach to an existing remote upload URL and return an `Upload`. |
+| `Client::upload(upload_url)` | Resolve an existing upload URL reference and return an `Upload`. |
 | `Upload::info()` | Read the current remote offset, length, and metadata. |
-| `Upload::delete()` | Terminate an upload when the server supports termination. |
+| `Upload::terminate()` | Terminate an upload when the server supports termination. |
 
-`Vec<u8>` implements `UploadSource` out of the box. Larger or platform-specific
-sources can implement `UploadSource` to provide offset-addressable reads.
+Existing upload references may be absolute URLs, absolute paths on the endpoint
+origin, or paths relative to the configured endpoint collection. For example,
+with endpoint `http://127.0.0.1:8080/files`, `upload-1` resolves to
+`http://127.0.0.1:8080/files/upload-1` and `/files/upload-1` resolves to
+`http://127.0.0.1:8080/files/upload-1`.
+
+`Vec<u8>` implements `UploadSource` out of the box. On native targets, enabling
+`source-file` also exposes `FileSource`, a Tokio path-backed source that supports
+resume and parallel uploads. Larger or platform-specific sources can implement
+`UploadSource` to provide offset-addressable reads.
 
 ## Feature Flags
 
@@ -68,6 +76,7 @@ The default feature set enables the reqwest transport and checksum support.
 | Feature | Purpose |
 |---------|---------|
 | `checksum` | Enable per-chunk checksum support through `tus-protocol/checksum`. |
+| `source-file` | Expose native Tokio filesystem upload sources. |
 | `transport-reqwest` | Enable the default reqwest-backed transport and `Client::new`. |
 | `transport-reqwest-middleware` | Accept `reqwest_middleware::ClientWithMiddleware` as a reqwest transport client. |
 | `local-futures` | Relax `Send` bounds for single-threaded runtimes such as Worker-style environments. |
@@ -84,7 +93,7 @@ runtime that should not pull in reqwest.
 | Core protocol | Supported | `OPTIONS`, `POST`, `HEAD`, and `PATCH` requests with offsets, metadata, and version negotiation. |
 | Creation | Supported | Create upload resources with `Client::create_upload` or as part of `Client::upload_from`. |
 | Creation-With-Upload | Supported | Small sources can be sent in the initial `POST` when the server advertises support. |
-| Termination | Supported | Delete upload resources with `Upload::delete`. |
+| Termination | Supported | Terminate upload resources with `Upload::terminate`. |
 | Concatenation | Supported on native | `Client::upload_parallel` creates partial uploads and concatenates them. |
 | Checksum | Supported | Header checksums are supported; trailer checksums require native reqwest transport support. |
 
