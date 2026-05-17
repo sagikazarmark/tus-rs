@@ -6,11 +6,10 @@ allow = [
   "Apache-2.0",
   "MIT",
 
-  # Required by "unicode-ident"
   "Unicode-3.0",
-
   "BSD-3-Clause",
   "ISC",
+  "CDLA-Permissive-2.0",
 ]
 
 [bans]
