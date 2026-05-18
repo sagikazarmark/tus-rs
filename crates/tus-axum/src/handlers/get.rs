@@ -68,14 +68,12 @@ mod tests {
     use http::HeaderValue;
     use http::StatusCode;
     use http_body_util::BodyExt;
-    use tus_protocol::Error as ProtocolError;
-    use tus_protocol::hooks::NoopHookExecutor;
-    use tus_protocol::locking::NoopLocker;
     use tus_protocol::state::memory::MemoryStateStore;
-    use tus_protocol::state::{UploadMetadata, UploadState};
     use tus_protocol::storage::memory::MemoryStorage;
-    use tus_protocol::storage::{ChunkStream, Storage};
-    use tus_protocol::{Config, ProtocolHandle};
+    use tus_protocol::{
+        ChunkStream, Config, Error as ProtocolError, NoopHookExecutor, NoopLocker, ProtocolHandle,
+        Storage, UploadMetadata, UploadState,
+    };
 
     #[tokio::test]
     async fn axum_adapter_streams_completed_upload() {

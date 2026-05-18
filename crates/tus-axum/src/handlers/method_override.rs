@@ -86,12 +86,10 @@ mod tests {
         response::IntoResponse,
     };
     use std::sync::Arc;
-    use tus_protocol::hooks::NoopHookExecutor;
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::memory::MemoryStateStore;
-    use tus_protocol::state::{StateStore, UploadState};
     use tus_protocol::storage::memory::MemoryStorage;
-    use tus_protocol::{Config, ProtocolHandle};
+    use tus_protocol::{Config, NoopHookExecutor, ProtocolHandle, StateStore, UploadState};
 
     #[tokio::test]
     async fn missing_override_returns_405_without_validating_tus_headers() {

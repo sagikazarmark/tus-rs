@@ -1,0 +1,57 @@
+# Canonical TOML config covering every top-level tus-server setting
+# that is part of the documented config-file schema. This file is used
+# by crates/tus-server/tests/schema.rs to enforce that the schema does
+# not change without a deliberate update. Keep it alphabetised within
+# each logical section so diffs stay readable.
+#
+# Notes:
+# - `config` itself is deliberately absent (it would be self-referential).
+# Address + state layout
+addr = "unix:/tmp/tus-kitchen-sink.sock"
+state_dir = "./state-ks"
+max_size = 104857600
+base_path = "/files"
+base_url = "https://tus.example.com"
+
+# Extension toggles
+all_extensions = true
+disable_checksum_trailer = false
+disable_concatenation_unfinished = false
+disable_download = false
+
+# Expiration background sweep
+cleanup = true
+expiration = 3600
+expiration_scan_interval = 60
+
+# Shutdown + lame-duck drain
+shutdown_grace = 30
+drain_delay = 5
+
+# CORS
+cors = false
+cors_origins = ["https://app.example.com", "https://admin.example.com"]
+
+# Auth
+auth_token = ["token-one", "token-two"]
+
+# HTTP body limits
+max_request_body_bytes = 0
+request_body_read_timeout = 0
+
+# Logging
+log_format = "text"
+
+# Webhook hooks
+[hook]
+url = "http://127.0.0.1:65535/hooks"
+timeout = 30
+header = ["Authorization: Bearer webhook-secret"]
+retry = false
+max_retries = 3
+signing_secret = "hmac-secret"
+
+# Storage backend
+[storage]
+uri = "fs://"
+root = "./uploads-ks"

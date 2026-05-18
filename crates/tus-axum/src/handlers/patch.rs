@@ -134,13 +134,11 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    use tus_protocol::ProtocolHandle;
-    use tus_protocol::config::{Config, TUS_RESUMABLE};
-    use tus_protocol::hooks::NoopHookExecutor;
-    use tus_protocol::locking::NoopLocker;
-    use tus_protocol::state::UploadState;
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
+    use tus_protocol::{
+        Config, NoopHookExecutor, NoopLocker, ProtocolHandle, TUS_RESUMABLE, UploadState,
+    };
 
     #[tokio::test]
     async fn axum_adapter_writes_bytes() {

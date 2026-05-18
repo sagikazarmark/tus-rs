@@ -18,12 +18,12 @@ chrono = { workspace = true }
 futures = { workspace = true }
 fs2 = { version = "0.4", optional = true }
 http = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 sync_wrapper = "1"
 thiserror = { workspace = true }
 tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }
 
 # Optional - native runtime
 tokio = { workspace = true, optional = true }
@@ -39,7 +39,7 @@ sha2 = { version = "0.11", optional = true }
 # randomness source. The `js` feature routes it through js-sys'
 # crypto.getRandomValues(), which workerd provides.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { version = "1", features = ["v4", "js"] }
+uuid = { workspace = true, features = ["v4", "js"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

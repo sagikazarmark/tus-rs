@@ -30,7 +30,7 @@
 //! ```rust
 //! # fn main() -> tus_protocol::Result<()> {
 //! use http::{HeaderMap, HeaderValue};
-//! use tus_protocol::protocol::{Headers, UploadId};
+//! use tus_protocol::{Headers, UploadId};
 //!
 //! let mut raw_headers = HeaderMap::new();
 //! raw_headers.insert("tus-resumable", HeaderValue::from_static("1.0.0"));

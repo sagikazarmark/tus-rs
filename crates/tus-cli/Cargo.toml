@@ -18,20 +18,20 @@ path = "src/main.rs"
 tus-client = { workspace = true }
 
 anyhow = { workspace = true }
-clap = { version = "4", features = ["derive", "env"] }
-figment = { version = "0.10", features = ["env", "json", "toml", "yaml"] }
+clap = { workspace = true, features = ["derive", "env"] }
+figment = { workspace = true, features = ["env", "json", "toml", "yaml"] }
 indicatif = "0.18"
 parse-size = "1.1"
 reqwest = { workspace = true }
 serde = { workspace = true }
-serde_json = "1"
-tokio = { workspace = true, features = ["full"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread"] }
 url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 tus-axum = { workspace = true }
 tus-client = { workspace = true }
-tus-protocol = { workspace = true, features = ["full-native", "storage-memory", "state-memory"] }
+tus-protocol = { workspace = true, features = ["lock-memory", "state-memory", "storage-memory"] }
 
 axum = { workspace = true }
 tempfile = { workspace = true }

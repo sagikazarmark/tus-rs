@@ -15,7 +15,7 @@ use tokio::net::TcpListener;
 use tus_axum::TusState;
 use tus_client::{Client, NewUpload};
 use tus_protocol::{
-    Config, ProtocolHandle, UploadMetadata, hooks::NoopHookExecutor, locking::memory::MemoryLocker,
+    Config, NoopHookExecutor, ProtocolHandle, UploadMetadata, locking::memory::MemoryLocker,
     state::memory::MemoryStateStore, storage::memory::MemoryStorage,
 };
 

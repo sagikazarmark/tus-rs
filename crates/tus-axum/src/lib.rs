@@ -31,8 +31,7 @@
 //! ```rust,no_run
 //! # use tus_axum::{create_router, TusState};
 //! # use tus_protocol::{
-//! #     Config, ProtocolHandle,
-//! #     hooks::NoopHookExecutor,
+//! #     Config, NoopHookExecutor, ProtocolHandle,
 //! #     locking::memory::MemoryLocker,
 //! #     state::memory::MemoryStateStore,
 //! #     storage::memory::MemoryStorage,

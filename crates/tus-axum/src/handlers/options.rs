@@ -30,12 +30,10 @@ mod tests {
     use chrono::Utc;
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use tus_protocol::ProtocolHandle;
-    use tus_protocol::config::{Config, Extension, TUS_RESUMABLE};
-    use tus_protocol::hooks::NoopHookExecutor;
-    use tus_protocol::locking::NoopLocker;
-    use tus_protocol::state::UploadState;
-    use tus_protocol::storage::ChunkStream;
+    use tus_protocol::{
+        ByteStream, ChunkStream, Config, Extension, NoopHookExecutor, NoopLocker, ProtocolHandle,
+        Result as TusResult, TUS_RESUMABLE, UploadState,
+    };
 
     struct MockStorage;
 
@@ -44,35 +42,28 @@ mod tests {
         fn name(&self) -> &'static str {
             "mock"
         }
-        async fn create(&self, state: &mut UploadState) -> tus_protocol::error::Result<String> {
+        async fn create(&self, state: &mut UploadState) -> TusResult<String> {
             let key = format!("uploads/{}", state.id());
             state.set_storage_key(key.clone());
             Ok(key)
         }
-        async fn append(
-            &self,
-            _state: &mut UploadState,
-            _data: ChunkStream,
-        ) -> tus_protocol::error::Result<u64> {
+        async fn append(&self, _state: &mut UploadState, _data: ChunkStream) -> TusResult<u64> {
             Ok(0)
         }
-        async fn get_stream(
-            &self,
-            _state: &UploadState,
-        ) -> tus_protocol::error::Result<tus_protocol::storage::ByteStream> {
+        async fn get_stream(&self, _state: &UploadState) -> TusResult<ByteStream> {
             unimplemented!()
         }
         async fn concat(
             &self,
             _target: &mut UploadState,
             _parts: Vec<UploadState>,
-        ) -> tus_protocol::error::Result<()> {
+        ) -> TusResult<()> {
             Ok(())
         }
-        async fn delete(&self, _state: &UploadState) -> tus_protocol::error::Result<()> {
+        async fn delete(&self, _state: &UploadState) -> TusResult<()> {
             Ok(())
         }
-        async fn size(&self, _state: &UploadState) -> tus_protocol::error::Result<Option<u64>> {
+        async fn size(&self, _state: &UploadState) -> TusResult<Option<u64>> {
             Ok(None)
         }
     }
@@ -94,31 +85,24 @@ mod tests {
         fn name(&self) -> &'static str {
             "mock"
         }
-        async fn set(&self, state: &UploadState, _create: bool) -> tus_protocol::error::Result<()> {
+        async fn set(&self, state: &UploadState, _create: bool) -> TusResult<()> {
             self.states
                 .lock()
                 .unwrap()
                 .insert(state.id().to_string(), state.clone());
             Ok(())
         }
-        async fn get(&self, id: &str) -> tus_protocol::error::Result<Option<UploadState>> {
+        async fn get(&self, id: &str) -> TusResult<Option<UploadState>> {
             Ok(self.states.lock().unwrap().get(id).cloned())
         }
-        async fn delete(&self, id: &str) -> tus_protocol::error::Result<()> {
+        async fn delete(&self, id: &str) -> TusResult<()> {
             self.states.lock().unwrap().remove(id);
             Ok(())
         }
-        async fn list_expired(
-            &self,
-            _before: chrono::DateTime<Utc>,
-        ) -> tus_protocol::error::Result<Vec<String>> {
+        async fn list_expired(&self, _before: chrono::DateTime<Utc>) -> TusResult<Vec<String>> {
             Ok(vec![])
         }
-        async fn list(
-            &self,
-            _limit: usize,
-            _offset: usize,
-        ) -> tus_protocol::error::Result<Vec<String>> {
+        async fn list(&self, _limit: usize, _offset: usize) -> TusResult<Vec<String>> {
             Ok(self.states.lock().unwrap().keys().cloned().collect())
         }
     }

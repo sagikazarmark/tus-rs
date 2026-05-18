@@ -22,11 +22,9 @@ use tower::ServiceExt;
 use async_trait::async_trait;
 use tus_axum::{TusState, create_router};
 use tus_protocol::{
-    Config, Extension, ProtocolHandle, Result as TusResult, TUS_RESUMABLE,
-    hooks::{HookContext, HookExecutor, NoopHookExecutor, PreHookResult},
-    locking::memory::MemoryLocker,
-    state::memory::MemoryStateStore,
-    storage::memory::MemoryStorage,
+    Config, Extension, HookContext, HookExecutor, NoopHookExecutor, PreHookResult, ProtocolHandle,
+    Result as TusResult, TUS_RESUMABLE, locking::memory::MemoryLocker,
+    state::memory::MemoryStateStore, storage::memory::MemoryStorage,
 };
 
 // ---------------------------------------------------------------------------

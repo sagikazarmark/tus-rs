@@ -14,7 +14,7 @@ use proptest::{
 use tower::ServiceExt;
 use tus_axum::{TusState, create_router};
 use tus_protocol::{
-    Config, ProtocolHandle, TUS_RESUMABLE, hooks::NoopHookExecutor, locking::memory::MemoryLocker,
+    Config, NoopHookExecutor, ProtocolHandle, TUS_RESUMABLE, locking::memory::MemoryLocker,
     state::memory::MemoryStateStore, storage::memory::MemoryStorage,
 };
 

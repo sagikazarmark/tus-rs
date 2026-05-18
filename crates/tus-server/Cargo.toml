@@ -1,0 +1,49 @@
+[package]
+name = "tus-server"
+description = "TUS resumable upload server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "tus-server"
+path = "src/main.rs"
+
+[features]
+default = ["opendal-fs"]
+opendal-fs = ["opendal/services-fs"]
+opendal-s3 = ["opendal/services-s3"]
+
+[dependencies]
+tus-axum = { workspace = true }
+tus-hook-http = { workspace = true }
+tus-protocol = { workspace = true, features = ["checksum", "lock-memory", "state-file"] }
+tus-storage-opendal = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+figment = { workspace = true, features = ["toml", "yaml"] }
+http-body-util = { workspace = true }
+humantime = { workspace = true }
+hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2"] }
+opendal = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["limit", "timeout"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+reqwest = { workspace = true, default-features = false, features = ["rustls"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tus-client = { workspace = true }
