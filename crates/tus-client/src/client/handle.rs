@@ -3,6 +3,7 @@ use url::Url;
 use super::{Client, NewUpload, UploadInfo};
 use super::{UploadProgress, UploadSource};
 use crate::error::Result;
+use crate::helpers::resolve_upload_url;
 use crate::transport::Transport;
 
 /// A remote upload resource.
@@ -27,8 +28,8 @@ where
     }
 
     /// Terminates this upload resource.
-    pub async fn delete(&self) -> Result<()> {
-        self.client.delete_upload_at(&self.url).await
+    pub async fn terminate(&self) -> Result<()> {
+        self.client.terminate_upload_at(&self.url).await
     }
 
     /// Uploads one chunk to this upload resource and returns the new server offset.
@@ -64,19 +65,22 @@ impl<T> Client<T>
 where
     T: Transport,
 {
-    /// Creates a resource reference for an existing remote upload URL.
-    pub fn upload(&self, upload_url: Url) -> Upload<T> {
-        Upload {
+    /// Creates a resource reference for an existing remote upload URL reference.
+    ///
+    /// Absolute URLs are used as-is. Absolute paths resolve against the endpoint
+    /// origin, and relative paths resolve under the endpoint path.
+    pub fn upload(&self, upload_url: impl AsRef<str>) -> Result<Upload<T>> {
+        Ok(Upload {
             client: (*self).clone(),
-            url: upload_url,
-        }
+            url: resolve_upload_url(&self.endpoint, upload_url.as_ref())?,
+        })
     }
 
     /// Creates a new remote upload resource and returns a resource reference for it.
     pub async fn create_upload(&self, upload: NewUpload) -> Result<Upload<T>> {
         let upload = self.create_upload_info(upload).await?;
 
-        Ok(self.upload(upload.url))
+        self.upload(upload.url.as_str())
     }
 }
 
@@ -102,9 +106,24 @@ mod tests {
         let client = Client::with_transport(endpoint_url(), MockTransport::default());
         let url = upload_url();
 
-        let handle: crate::Upload<_> = client.upload(url.clone());
+        let handle: crate::Upload<_> = client.upload(url.clone()).unwrap();
 
         assert_eq!(handle.url(), &url);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn upload_accepts_absolute_path_and_relative_path() {
+        let client = Client::with_transport(endpoint_url(), MockTransport::default());
+
+        assert_eq!(
+            client.upload("/files/upload-1").unwrap().url().as_str(),
+            "http://example.test/files/upload-1"
+        );
+        assert_eq!(
+            client.upload("upload-1").unwrap().url().as_str(),
+            "http://example.test/files/upload-1"
+        );
     }
 
     #[async_test]
@@ -126,7 +145,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(handle.url().as_str(), "http://example.test/upload-1");
+        assert_eq!(handle.url().as_str(), "http://example.test/files/upload-1");
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.first().unwrap().method(), Method::POST);
     }
@@ -141,7 +160,7 @@ mod tests {
             .push_back(Ok(mock_head_response(3, 5)));
         let client = Client::with_transport(endpoint_url(), transport.clone());
 
-        let info = client.upload(upload_url()).info().await.unwrap();
+        let info = client.upload(upload_url()).unwrap().info().await.unwrap();
 
         assert_eq!(info.url.as_str(), "http://example.test/files/upload-1");
         assert_eq!(info.offset, 3);
@@ -164,7 +183,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn upload_delete_uses_resource_url() {
+    async fn upload_terminate_uses_resource_url() {
         let transport = MockTransport::default();
         transport
             .responses
@@ -177,7 +196,12 @@ mod tests {
             )));
         let client = Client::with_transport(endpoint_url(), transport.clone());
 
-        client.upload(upload_url()).delete().await.unwrap();
+        client
+            .upload(upload_url())
+            .unwrap()
+            .terminate()
+            .await
+            .unwrap();
 
         let requests = transport.requests.lock().unwrap();
         let request = requests.first().unwrap();
@@ -208,6 +232,7 @@ mod tests {
 
         let offset = client
             .upload(upload_url())
+            .unwrap()
             .upload_chunk(b"hello".to_vec(), 0)
             .await
             .unwrap();
@@ -258,6 +283,7 @@ mod tests {
 
         let info = client
             .upload(upload_url())
+            .unwrap()
             .upload(b"data".to_vec())
             .await
             .unwrap();
@@ -292,6 +318,7 @@ mod tests {
 
         let info = client
             .upload(upload_url())
+            .unwrap()
             .upload_with_progress(b"data".to_vec(), &mut |uploaded, total| {
                 progress.push((uploaded, total));
             })

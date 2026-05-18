@@ -1,0 +1,517 @@
+type Rust {
+  let source: Directory!
+  let workspacePath: String!
+  pub container: Container!
+  let targets: [String!]!
+
+  let useCargoChef: Boolean!
+  let cargoChefVersion: String!
+
+  let cargoRegistryIndexCache: CacheVolume
+  let cargoRegistryArchiveCache: CacheVolume
+  let cargoGitDbCache: CacheVolume
+  let cargoTargetCache: CacheVolume
+
+  new(
+    workspace: Workspace!,
+    """
+    Path within the workspace boundary where the Rust project (or workspace) is located.
+    """
+    workspacePath: String! = "/",
+    """
+    Version (image tag) to use from the official image repository as a base container.
+    """
+    version: String! = "latest",
+    """
+    Custom container to use as a base container.
+    """
+    container: Container! = Dagger.container.from("rust:" + version),
+    """
+    Default targets.
+    """
+    targets: [String!]! = [""],
+    """
+    Whether to use cargo-chef for dependency caching.
+    Recommended for maximum cache efficiency.
+    Note: requires curl or wget to be installed in the base container.
+    """
+    useCargoChef: Boolean! = true,
+    """
+    Version of cargo-chef to use.
+    """
+    cargoChefVersion: String! = "latest",
+    """
+    Whether to disable automatically mounted cache volumes.
+    Useful if you want to mount cache volumes manually or use a different cache volume strategy.
+    """
+    noCache: Boolean! = false,
+    """
+    Cache volume for cargo registry index.
+    """
+    cargoRegistryIndexCache: CacheVolume = if (!noCache) {
+      Dagger.cacheVolume("cargo-registry-index")
+    } else {
+      null
+    },
+    """
+    Cache volume for cargo registry archive.
+    """
+    cargoRegistryArchiveCache: CacheVolume = if (!noCache) {
+      Dagger.cacheVolume("cargo-registry-cache")
+    } else {
+      null
+    },
+    """
+    Cache volume for cargo git db.
+    """
+    cargoGitDbCache: CacheVolume = if (!noCache) {
+      Dagger.cacheVolume("cargo-git-db")
+    } else {
+      null
+    },
+    """
+    Cache volume for cargo target.
+    """
+    cargoTargetCache: CacheVolume = if (!noCache) {
+      Dagger.cacheVolume("cargo-target")
+    } else {
+      null
+    },
+  ) {
+    self.source = workspace.directory(workspacePath, gitignore: true)
+    self.workspacePath = workspacePath
+    self.container = container
+    self.targets = targets
+
+    self.useCargoChef = useCargoChef
+    self.cargoChefVersion = cargoChefVersion
+
+    self.cargoRegistryIndexCache = cargoRegistryIndexCache
+    self.cargoRegistryArchiveCache = cargoRegistryArchiveCache
+    self.cargoGitDbCache = cargoGitDbCache
+    self.cargoTargetCache = cargoTargetCache
+
+    self
+  }
+
+  let cargoChefInstaller: File! {
+    if (self.cargoChefVersion == "latest") {
+      Dagger.http("https://github.com/LukeMathWalker/cargo-chef/releases/latest/download/cargo-chef-installer.sh")
+    } else {
+      Dagger.http("https://github.com/LukeMathWalker/cargo-chef/releases/download/v" + self.cargoChefVersion.trimPrefix("v") + "/cargo-chef-installer.sh")
+    }
+  }
+
+  let toolCache(tool: String!, version: String!): CacheVolume! {
+    Dagger.cacheVolume("cargo-tool-" + tool + "-" + version)
+  }
+
+  """
+  Container with project caches mounted (if configured); no source, no target, no components.
+  """
+  let baseContainer(
+    target: String! = "",
+  ): Container! {
+    let container = self.withTarget(self.container, target)
+
+    let cargoRegistryIndexCache = self.cargoRegistryIndexCache
+    if (cargoRegistryIndexCache != null) {
+      container = container
+        .withMountedCache("/usr/local/cargo/registry/index", cargoRegistryIndexCache)
+    }
+
+    let cargoRegistryArchiveCache = self.cargoRegistryArchiveCache
+    if (cargoRegistryArchiveCache != null) {
+      container = container
+        .withMountedCache("/usr/local/cargo/registry/cache", cargoRegistryArchiveCache)
+    }
+
+    let cargoGitDbCache = self.cargoGitDbCache
+    if (cargoGitDbCache != null) {
+      container = container
+        .withMountedCache("/usr/local/cargo/git/db", cargoGitDbCache)
+    }
+
+    container
+  }
+
+  let withTargetCache(container: Container!): Container! {
+    let cargoTargetCache = self.cargoTargetCache
+    if (cargoTargetCache != null) {
+      container = container
+        .withMountedCache("/target", cargoTargetCache)
+    }
+
+    container.withEnvVariable("CARGO_TARGET_DIR", "/target")
+  }
+
+  let withTarget(container: Container!, target: String!): Container! {
+    if (target == "" or target == "current") {
+      container
+    } else {
+      container
+        .withExec(["rustup", "target", "add", target])
+        .withEnvVariable("CARGO_BUILD_TARGET", target)
+    }
+  }
+
+  """
+  Rust base container with cargo-chef installed from its prebuilt release artifact.
+  """
+  let cargoChef: Container! {
+    self
+      .baseContainer
+      .withMountedFile("/tmp/cargo-chef-installer.sh", self.cargoChefInstaller)
+      .withEnvVariable("CARGO_CHEF_INSTALL_DIR", "/usr/local/cargo")
+      .withEnvVariable("CARGO_CHEF_NO_MODIFY_PATH", "1")
+      .withExec(["sh", "/tmp/cargo-chef-installer.sh", "--quiet"])
+  }
+
+  """
+  Dependency recipe generated from the full source tree.
+  """
+  let cargoChefRecipe: File! {
+    self
+      .withSource(self.cargoChef)
+      .withExec(["cargo", "chef", "prepare", "--recipe-path", "recipe.json"])
+      .file("recipe.json")
+  }
+
+  """
+  Recipe marker extracted after the cargo-chef skeleton has fetched dependencies.
+  """
+  let warmedCargoChefRecipe: File! {
+    self
+      .cargoChef
+      .withWorkdir("/work")
+      .withFile("recipe.json", self.cargoChefRecipe)
+      .withExec(["cargo", "chef", "cook", "--recipe-path", "recipe.json", "--no-build"])
+      .withExec(["cargo", "fetch", "--locked"])
+      .file("recipe.json")
+  }
+
+  """
+  Rust base container with warmed dependency cache.
+  """
+  let warmedBaseContainer(target: String! = ""): Container! {
+    self.baseContainer(target).withFile("/cargo-chef/recipe.json", self.warmedCargoChefRecipe)
+  }
+
+  let dependencyBaseContainer(target: String! = ""): Container! {
+    if (self.useCargoChef) {
+      self.warmedBaseContainer(target)
+    } else {
+      self.baseContainer(target)
+    }
+  }
+
+  pub buildContainer(target: String! = ""): Container! {
+    self.withSource(self.withTargetCache(self.dependencyBaseContainer(target)))
+  }
+
+  let toolContainer(tool: String!, version: String! = ""): Container! {
+    let args = ["cargo", "install", tool, "--locked"]
+
+    if (version != "") {
+      args += ["--version", version]
+    }
+
+    self
+      .baseContainer
+      .withMountedCache("/tool-target", self.toolCache(tool, version))
+      .withEnvVariable("CARGO_TARGET_DIR", "/tool-target")
+      .withExec(args)
+  }
+
+  let withSource(c: Container!): Container! {
+    c.withWorkdir("/work").withMountedDirectory(".", self.source)
+  }
+
+  let withSourceCopy(c: Container!): Container! {
+    c.withWorkdir("/work").withDirectory(".", self.source)
+  }
+
+  let resolveTargets(targets: [String!]!): [String!]! {
+    if (targets.length == 0) { self.targets } else { targets }
+  }
+
+  let cargoArgs(
+    args: [String!]! = [],
+    features: [String!]! = [],
+    trailingArgs: [String!]! = [],
+  ): [String!]! {
+    features.each { feature =>
+      args += ["--features", feature]
+    }
+
+    args + trailingArgs
+  }
+
+  let cargoCoreArgs(
+    args: [String!]! = [],
+    features: [String!]! = [],
+    trailingArgs: [String!]! = [],
+  ): [String!]! {
+    let args = self.cargoArgs(args, features)
+
+    args += ["--frozen"]
+
+    args + trailingArgs
+  }
+
+  """
+  Run `cargo build` for each configured target.
+  """
+  pub build(
+    """
+    Cargo features to enable, comma-separated.
+    """
+    feature: [String!]! = [],
+    """
+    Override targets. Empty list inherits the globally configured `targets`.
+    """
+    targets: [String!]! = [],
+  ): Void! @check {
+    self.resolveTargets(targets).each { target =>
+      self.buildContainer(target).withExec(
+        self.cargoCoreArgs(["cargo", "build"], feature),
+      ).sync
+    }
+
+    null
+  }
+
+  """
+  Run `cargo build` for a single binary.
+  """
+  pub binary(
+    """
+    Name of the binary to build.
+    """
+    name: String!,
+    """
+    Package to build.
+    """
+    package: String! = "",
+    """
+    Release mode (optimized binary).
+    """
+    release: Boolean! = false,
+    """
+    Cargo features to enable, comma-separated.
+    """
+    feature: [String!]! = [],
+    """
+    Override target.
+    """
+    target: String! = "",
+  ): File! @check {
+    let args = ["cargo", "build", "--frozen", "--bin", name]
+    let channel = if (release) { "release" } else { "debug" }
+    let targetPath = if (target == "" or target == "current") { "" } else { target + "/" }
+
+    if (release) {
+      args += ["--release"]
+    }
+    if (package != "") {
+      args += ["--package", package]
+    }
+
+    let epoch = self.buildContainer(target).withExec(["git", "log", "-1", "--format=%ct"]).stdout
+
+    self
+      .buildContainer(target)
+      .withEnvVariable("SOURCE_DATE_EPOCH", epoch)
+      .withEnvVariable(
+        "RUSTFLAGS",
+        "--remap-path-prefix=${CARGO_HOME}=/cargo",
+        expand: true,
+      )
+      .withExec(self.cargoArgs(args, feature))
+      .withExec(["mkdir", "/artifacts"])
+      .withExec(["cp", "-RH", "/target/" + targetPath + channel + "/" + name, "/artifacts"])
+      .file("/artifacts/" + name)
+  }
+
+  """
+  Run `cargo test` for each configured target.
+  """
+  pub test(
+    """
+    Cargo features to enable, comma-separated.
+    """
+    feature: [String!]! = [],
+    """
+    Override targets. Empty list inherits the globally configured `targets`.
+    """
+    targets: [String!]! = [],
+  ): Void! @check {
+    self.resolveTargets(targets).each { target =>
+      self.buildContainer(target).withExec(
+        self.cargoCoreArgs(["cargo", "test"], feature),
+      ).sync
+    }
+    null
+  }
+
+  """
+  Runs `cargo audit` against Cargo.lock.
+  """
+  pub audit(
+    workspace: Workspace!,
+    """
+    Cargo.lock file to audit and use for dependency cache warming.
+    """
+    file: File! = workspace.directory(self.workspacePath, gitignore: true).file("Cargo.lock"),
+    """
+    Exit with an error on any violation.
+    """
+    deny: CargoAuditDeny = null,
+    """
+    Advisory id to ignore (can be specified multiple times).
+    """
+    ignore: [String!]! = [],
+    """
+    cargo-audit version to install.
+    """
+    version: String! = "",
+    """
+    Directory containing the advisory database.
+    """
+    db: Directory! = Dagger.git("https://github.com/rustsec/advisory-db.git").head.tree,
+  ): Container! @check {
+    let DB_PATH = "/var/advisory-db"
+
+    let args = [
+      "cargo", "audit",
+      "--no-fetch", "--stale", "--db", DB_PATH,
+      "--file", "Cargo.lock",
+    ]
+
+    if (deny != null) {
+      args += ["--deny", toString(deny)]
+    }
+
+    ignore.each { advisory =>
+      args += ["--ignore", advisory]
+    }
+
+    self
+      .withAudit(self.dependencyBaseContainer, version)
+      .withMountedDirectory(DB_PATH, db)
+      .withWorkdir("/work")
+      .withMountedDirectory(
+        ".",
+        workspace
+          .directory(self.workspacePath, gitignore: true, include: [".cargo"])
+          .withFile("Cargo.lock", file),
+      )
+      .withExec(args)
+  }
+
+  let withAudit(c: Container!, version: String!): Container! {
+    c.withFile(
+      "/usr/local/cargo/bin/cargo-audit",
+      self.toolContainer("cargo-audit", version).file("/usr/local/cargo/bin/cargo-audit"),
+    )
+  }
+
+  """
+  Checks Rust source formatting with `cargo fmt --check`.
+  """
+  pub fmt: String! @check {
+    self
+      .withSource(self.withFmt(self.baseContainer))
+      .withExec(["cargo", "fmt", "--", "--check"])
+      .stdout
+  }
+
+  let withFmt(c: Container!): Container! {
+    c.withExec(["rustup", "component", "add", "rustfmt"])
+  }
+
+  """
+  Runs `cargo clippy --all-targets -- -D warnings` for each configured target.
+  """
+  pub clippy(
+    """
+    Cargo features to enable, comma-separated.
+    """
+    feature: [String!]! = [],
+    """
+    Override targets. Empty list inherits the globally configured `targets`.
+    """
+    targets: [String!]! = [],
+  ): Void! @check {
+    self.resolveTargets(targets).each { target =>
+      self.withClippy(self.buildContainer(target)).withExec(
+        self.cargoCoreArgs(
+          ["cargo", "clippy", "--all-targets"],
+          feature,
+          ["--", "-D", "warnings"],
+        ),
+      ).sync
+    }
+    null
+  }
+
+  let withClippy(c: Container!): Container! {
+    c.withExec(["rustup", "component", "add", "clippy"])
+  }
+
+  """
+  Builds rustdoc and treats warnings as errors.
+  """
+  pub doc(
+    """
+    Cargo features to enable, comma-separated.
+    """
+    feature: [String!]! = [],
+  ): String! @check {
+    self
+      .buildContainer
+      .withEnvVariable("RUSTDOCFLAGS", "-D warnings")
+      .withExec(self.cargoCoreArgs(["cargo", "doc", "--no-deps"], feature))
+      .stdout
+  }
+
+  """
+  Runs a fixer and returns a changeset that can be inspected or applied.
+  """
+  pub fix(
+    """
+    Tool to run: clippy.
+    """
+    tool: String! = "clippy",
+    """
+    Cargo features to enable when running the fixer.
+    """
+    features: [String!]! = [],
+  ): Changeset! {
+    let container = self.withSourceCopy(self.dependencyBaseContainer)
+    let valid = false
+
+    if (tool == "clippy") {
+      valid = true
+      container = self
+        .withClippy(container)
+        .withExec(self.cargoCoreArgs(
+          ["cargo", "clippy", "--fix", "--allow-dirty", "--allow-staged", "--allow-no-vcs", "--all-targets"],
+          features,
+        ) + ["--", "-D", "warnings"])
+    }
+
+    assert { valid }
+
+    container
+      .directory("/work")
+      .changes(self.source)
+  }
+}
+
+enum CargoAuditDeny {
+  WARNINGS
+  UNMAINTAINED
+  UNSOUND
+  YANKED
+}

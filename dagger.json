@@ -1,0 +1,23 @@
+{
+  "name": "tus",
+  "engineVersion": "v0.20.8",
+  "sdk": {
+    "source": "dang"
+  },
+  "toolchains": [
+    {
+      "name": "rust",
+      "source": "dagger/rust"
+    }
+  ],
+  "include": [
+    "!./.devenv",
+    "!./target"
+  ],
+  "dependencies": [
+    {
+      "name": "rust",
+      "source": "dagger/rust"
+    }
+  ]
+}

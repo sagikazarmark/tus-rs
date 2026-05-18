@@ -1,7 +1,15 @@
 use async_trait::async_trait;
 
+#[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+use std::path::{Path, PathBuf};
+
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::task::JoinSet;
+#[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
+};
 
 use super::{Client, NewUpload, ServerCapabilities, UploadInfo};
 use crate::error::Error;
@@ -54,6 +62,52 @@ impl UploadSource for Vec<u8> {
         };
         let len = bytes.len().min(max_len);
         Ok(bytes[..len].to_vec())
+    }
+}
+
+/// Path-backed upload content for native Tokio applications.
+#[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone)]
+pub struct FileSource {
+    path: PathBuf,
+    len: u64,
+}
+
+#[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+impl FileSource {
+    /// Opens a file source and records its current length.
+    pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let len = tokio::fs::metadata(&path).await?.len();
+        Ok(Self { path, len })
+    }
+
+    /// Returns the path read by this source.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+#[cfg_attr(not(feature = "local-futures"), async_trait)]
+#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+impl UploadSource for FileSource {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    async fn read_chunk(&mut self, offset: u64, max_len: usize) -> Result<Vec<u8>> {
+        if max_len == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut file = File::open(&self.path).await?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+
+        let mut buffer = vec![0; max_len];
+        let read = file.read(&mut buffer).await?;
+        buffer.truncate(read);
+        Ok(buffer)
     }
 }
 
@@ -159,12 +213,12 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload_parallel<S>(
         &self,
-        source: S,
+        mut source: S,
         metadata: impl Into<UploadMetadata>,
         options: ParallelUpload,
     ) -> Result<UploadInfo>
     where
-        S: UploadSource + Clone + 'static,
+        S: UploadSource,
     {
         let source_length = source.len();
         if source_length == 0 {
@@ -186,19 +240,15 @@ where
 
             while next_index < part_count && join_set.len() < max_concurrency {
                 let client = self.clone();
-                let source = source.clone();
                 let capabilities = capabilities.clone();
                 let index = next_index;
+                let bytes =
+                    Self::read_parallel_part(&mut source, index, source_length, options.part_size)
+                        .await?;
                 next_index += 1;
                 let task = async move {
                     client
-                        .upload_parallel_part(
-                            source,
-                            index,
-                            source_length,
-                            options.part_size,
-                            capabilities,
-                        )
+                        .upload_parallel_part(index, bytes, capabilities)
                         .await
                 };
 
@@ -211,19 +261,19 @@ where
 
                 if next_index < part_count {
                     let client = self.clone();
-                    let source = source.clone();
                     let capabilities = capabilities.clone();
                     let index = next_index;
+                    let bytes = Self::read_parallel_part(
+                        &mut source,
+                        index,
+                        source_length,
+                        options.part_size,
+                    )
+                    .await?;
                     next_index += 1;
                     let task = async move {
                         client
-                            .upload_parallel_part(
-                                source,
-                                index,
-                                source_length,
-                                options.part_size,
-                                capabilities,
-                            )
+                            .upload_parallel_part(index, bytes, capabilities)
                             .await
                     };
 
@@ -242,19 +292,19 @@ where
 
                 while next_index < part_count && join_set.len() < max_concurrency {
                     let client = self.clone();
-                    let source = source.clone();
                     let capabilities = capabilities.clone();
                     let index = next_index;
+                    let bytes = Self::read_parallel_part(
+                        &mut source,
+                        index,
+                        source_length,
+                        options.part_size,
+                    )
+                    .await?;
                     next_index += 1;
                     let task = async move {
                         client
-                            .upload_parallel_part(
-                                source,
-                                index,
-                                source_length,
-                                options.part_size,
-                                capabilities,
-                            )
+                            .upload_parallel_part(index, bytes, capabilities)
                             .await
                     };
 
@@ -267,19 +317,19 @@ where
 
                     if next_index < part_count {
                         let client = self.clone();
-                        let source = source.clone();
                         let capabilities = capabilities.clone();
                         let index = next_index;
+                        let bytes = Self::read_parallel_part(
+                            &mut source,
+                            index,
+                            source_length,
+                            options.part_size,
+                        )
+                        .await?;
                         next_index += 1;
                         let task = async move {
                             client
-                                .upload_parallel_part(
-                                    source,
-                                    index,
-                                    source_length,
-                                    options.part_size,
-                                    capabilities,
-                                )
+                                .upload_parallel_part(index, bytes, capabilities)
                                 .await
                         };
 
@@ -402,20 +452,27 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn upload_parallel_part<S>(
-        &self,
-        mut source: S,
+    async fn read_parallel_part<S>(
+        source: &mut S,
         index: usize,
         source_length: u64,
         part_size: usize,
-        capabilities: Option<ServerCapabilities>,
-    ) -> Result<(usize, String)>
+    ) -> Result<Vec<u8>>
     where
         S: UploadSource,
     {
         let start = index as u64 * part_size as u64;
         let length = (source_length - start).min(part_size as u64);
-        let bytes = Self::read_source_exact(&mut source, start, length).await?;
+        Self::read_source_exact(source, start, length).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn upload_parallel_part(
+        &self,
+        index: usize,
+        bytes: Vec<u8>,
+        capabilities: Option<ServerCapabilities>,
+    ) -> Result<(usize, String)> {
         let upload = self
             .upload_partial_with_capabilities(bytes, UploadMetadata::new(), capabilities.as_ref())
             .await?;
@@ -875,6 +932,157 @@ mod tests {
             other => panic!("expected byte body, got {other:?}"),
         };
         assert_eq!(body, b"data");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct NonCloneSource<'a> {
+        bytes: &'a [u8],
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(not(feature = "local-futures"), async_trait)]
+    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    impl UploadSource for NonCloneSource<'_> {
+        fn len(&self) -> u64 {
+            self.bytes.len() as u64
+        }
+
+        async fn read_chunk(&mut self, offset: u64, max_len: usize) -> Result<Vec<u8>> {
+            let offset = offset as usize;
+            let Some(bytes) = self.bytes.get(offset..) else {
+                return Ok(Vec::new());
+            };
+            let len = bytes.len().min(max_len);
+            Ok(bytes[..len].to_vec())
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_accepts_non_clone_sources() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload"),
+                ]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-2"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/final")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(8, 8)));
+        }
+        let bytes = *b"abcdefgh";
+        let source = NonCloneSource { bytes: &bytes };
+        let client =
+            Client::with_transport(endpoint_url(), transport).with_max_initial_upload_size(1024);
+
+        let upload = client
+            .upload_parallel(
+                source,
+                UploadMetadata::new(),
+                ParallelUpload::new(4).with_max_concurrency(2),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(upload.offset, 8);
+    }
+
+    #[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+    #[async_test]
+    async fn file_source_reads_offset_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upload.bin");
+        tokio::fs::write(&path, b"abcdef").await.unwrap();
+
+        let mut source = FileSource::open(&path).await.unwrap();
+
+        assert_eq!(source.len(), 6);
+        assert_eq!(source.path(), path.as_path());
+        assert_eq!(source.read_chunk(2, 3).await.unwrap(), b"cde");
+        assert_eq!(source.read_chunk(6, 3).await.unwrap(), b"");
+    }
+
+    #[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+    #[async_test]
+    async fn upload_parallel_accepts_file_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upload.bin");
+        tokio::fs::write(&path, b"abcdefgh").await.unwrap();
+
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload"),
+                ]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-2"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/final")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(8, 8)));
+        }
+        let source = FileSource::open(&path).await.unwrap();
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_initial_upload_size(1024);
+
+        let upload = client
+            .upload_parallel(
+                source,
+                UploadMetadata::new(),
+                ParallelUpload::new(4).with_max_concurrency(2),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(upload.offset, 8);
+        let requests = transport.requests.lock().unwrap();
+        let mut bodies: Vec<Vec<u8>> = requests
+            .iter()
+            .filter(|request| {
+                request
+                    .headers()
+                    .get("upload-concat")
+                    .and_then(|value| value.to_str().ok())
+                    == Some("partial")
+            })
+            .map(|request| body_bytes(request.body()).clone())
+            .collect();
+        bodies.sort();
+        assert_eq!(bodies, vec![b"abcd".to_vec(), b"efgh".to_vec()]);
     }
 
     #[async_test]

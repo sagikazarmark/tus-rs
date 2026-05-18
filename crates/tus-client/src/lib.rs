@@ -13,6 +13,8 @@ mod transport;
 
 #[cfg(feature = "checksum")]
 pub use client::ChecksumMode;
+#[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
+pub use client::FileSource;
 pub use client::{
     Client, HeaderProvider, NewUpload, ParallelUpload, RetryHook, ServerCapabilities, Upload,
     UploadInfo, UploadProgress, UploadSource,

@@ -113,8 +113,18 @@ pub(crate) fn optional_header_u64(
         })
 }
 
+pub(crate) fn resolve_upload_url(endpoint: &Url, reference: &str) -> Result<Url> {
+    let mut base = endpoint.clone();
+    if !base.path().ends_with('/') {
+        let path = format!("{}/", base.path());
+        base.set_path(&path);
+    }
+
+    Ok(base.join(reference)?)
+}
+
 pub(crate) fn resolve_upload_location(endpoint: &Url, location: &str) -> Result<Url> {
-    Ok(endpoint.join(location)?)
+    resolve_upload_url(endpoint, location)
 }
 
 pub(crate) fn validate_offset_not_beyond_source(offset: u64, source_len: u64) -> Result<()> {
@@ -246,6 +256,30 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn resolve_upload_url_accepts_absolute_url_absolute_path_and_relative_path() {
+        let endpoint = Url::parse("http://example.test/files").unwrap();
+        let cases = [
+            (
+                "http://uploads.example.test/upload-1",
+                "http://uploads.example.test/upload-1",
+            ),
+            ("/files/upload-1", "http://example.test/files/upload-1"),
+            ("upload-1", "http://example.test/files/upload-1"),
+            (
+                "nested/upload-1",
+                "http://example.test/files/nested/upload-1",
+            ),
+        ];
+
+        for (reference, expected) in cases {
+            let url = resolve_upload_url(&endpoint, reference).unwrap();
+
+            assert_eq!(url.as_str(), expected);
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn parse_csv_header_handles_trim_and_empties() {
         assert_eq!(
             parse_csv_header("creation, creation-with-upload, termination"),
@@ -258,12 +292,12 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    fn resolve_upload_location_delegates_to_standard_url_resolution() {
+    fn resolve_upload_location_uses_endpoint_collection_semantics() {
         let cases = [
             (
                 "http://example.test/files",
                 "upload-1",
-                "http://example.test/upload-1",
+                "http://example.test/files/upload-1",
             ),
             (
                 "http://example.test/files/",

@@ -459,6 +459,7 @@ mod tests {
 
         let resumed = client
             .upload(upload.url().clone())
+            .unwrap()
             .upload(b"abcdefghij".to_vec())
             .await
             .unwrap();
@@ -556,7 +557,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_upload_terminates_remote_upload() {
+    async fn terminate_upload_terminates_remote_upload() {
         let (endpoint, server_handle) = spawn_test_server().await;
         let client = Client::new(endpoint_url(&endpoint));
         let upload = client
@@ -564,8 +565,8 @@ mod tests {
             .await
             .unwrap();
 
-        let handle = client.upload(upload.url().clone());
-        handle.delete().await.unwrap();
+        let handle = client.upload(upload.url().clone()).unwrap();
+        handle.terminate().await.unwrap();
 
         let err = handle.info().await.unwrap_err();
         assert!(matches!(err, Error::UnexpectedResponse { status: 404, .. }));
