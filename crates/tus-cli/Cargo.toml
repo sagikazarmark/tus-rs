@@ -20,7 +20,7 @@ tus-client = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 figment = { version = "0.10", features = ["env", "json", "toml", "yaml"] }
-indicatif = "0.17"
+indicatif = "0.18"
 parse-size = "1.1"
 reqwest = { workspace = true }
 serde = { workspace = true }
