@@ -19,7 +19,7 @@
 
 use tus_axum::{TusState, create_router};
 use tus_protocol::{
-    Config, ProtocolHandle, hooks::NoopHookExecutor, locking::memory::MemoryLocker,
+    Config, NoopHookExecutor, ProtocolHandle, locking::memory::MemoryLocker,
     state::memory::MemoryStateStore, storage::memory::MemoryStorage,
 };
 

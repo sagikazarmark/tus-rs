@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! # #[cfg(all(feature = "storage-memory", feature = "state-memory"))] async fn _demo() {
-//! use tus_protocol::hooks::{HookChain, PreHookResult};
+//! use tus_protocol::{HookChain, PreHookResult};
 //!
 //! let hooks = HookChain::new()
 //!     .on_pre_create(|ctx| async move {

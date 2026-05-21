@@ -39,8 +39,7 @@ tus-protocol = { version = "0.0.1", features = ["full-native"] }
 ```rust,no_run
 use tus_axum::{TusState, create_router};
 use tus_protocol::{
-    Config, ProtocolHandle,
-    hooks::NoopHookExecutor,
+    Config, NoopHookExecutor, ProtocolHandle,
     locking::memory::MemoryLocker,
     state::memory::MemoryStateStore,
     storage::memory::MemoryStorage,

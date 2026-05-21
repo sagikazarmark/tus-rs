@@ -16,8 +16,7 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 /// ```rust,no_run
 /// # use tus_axum::{create_router, TusState};
 /// # use tus_protocol::{
-/// #     Config, ProtocolHandle,
-/// #     hooks::NoopHookExecutor,
+/// #     Config, NoopHookExecutor, ProtocolHandle,
 /// #     locking::memory::MemoryLocker,
 /// #     state::memory::MemoryStateStore,
 /// #     storage::memory::MemoryStorage,
@@ -148,11 +147,10 @@ where
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tus_protocol::hooks::NoopHookExecutor;
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
-    use tus_protocol::{Config, ProtocolHandle};
+    use tus_protocol::{Config, NoopHookExecutor, ProtocolHandle};
 
     type Backends = TusState<MemoryStorage, MemoryStateStore, MemoryLocker, NoopHookExecutor>;
 

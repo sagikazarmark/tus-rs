@@ -29,8 +29,7 @@ use crate::state::TusState;
 /// ```rust,no_run
 /// # use tus_axum::{create_router, TusState};
 /// # use tus_protocol::{
-/// #     Config, ProtocolHandle,
-/// #     hooks::NoopHookExecutor,
+/// #     Config, NoopHookExecutor, ProtocolHandle,
 /// #     locking::memory::MemoryLocker,
 /// #     state::memory::MemoryStateStore,
 /// #     storage::memory::MemoryStorage,
@@ -114,6 +113,7 @@ pub fn build_cors_layer(config: &Config) -> CorsLayer {
         ])
         .allow_headers(vec![
             // Request-side headers the client sends.
+            HeaderName::from_static("authorization"),
             HeaderName::from_static("tus-resumable"),
             HeaderName::from_static("upload-length"),
             HeaderName::from_static("upload-offset"),
@@ -228,5 +228,45 @@ mod tests {
             .unwrap()
             .to_ascii_lowercase();
         assert!(allow_headers.contains("trailer"));
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_authorization_header() {
+        use axum::body::Body;
+        use axum::http::{Request, Response, StatusCode};
+        use tower::{ServiceBuilder, ServiceExt, service_fn};
+
+        let service = ServiceBuilder::new()
+            .layer(build_cors_layer(&Config::default().cors_all()))
+            .service(service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "PATCH")
+                    .header(
+                        "access-control-request-headers",
+                        "authorization, tus-resumable, upload-offset",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let allow_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(allow_headers.contains("authorization"));
     }
 }

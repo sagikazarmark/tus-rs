@@ -58,14 +58,13 @@ use axum::Router;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tus_axum::{TusState, create_router};
-use tus_protocol::error::Result as TusResult;
-use tus_protocol::hooks::NoopHookExecutor;
 use tus_protocol::locking::memory::MemoryLocker;
-use tus_protocol::state::UploadState;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
-use tus_protocol::storage::{ByteStream, ChunkStream, Storage};
-use tus_protocol::{Config, ProtocolHandle};
+use tus_protocol::{
+    ByteStream, ChunkStream, Config, NoopHookExecutor, ProtocolHandle, Result as TusResult,
+    Storage, UploadState,
+};
 
 /// Wraps `MemoryStorage` and inserts a configurable sleep inside
 /// `append`. The sleep widens the window in which the handler is

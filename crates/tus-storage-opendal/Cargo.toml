@@ -1,0 +1,24 @@
+[package]
+name = "tus-storage-opendal"
+description = "OpenDAL storage backend for TUS resumable uploads"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tus-protocol = { workspace = true }
+
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+opendal = { workspace = true }
+
+[dev-dependencies]
+opendal = { workspace = true, features = ["services-memory"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { workspace = true }

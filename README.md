@@ -33,6 +33,43 @@
 - API documentation: <https://docs.rs/tus-protocol>
 - Protocol reference: <https://tus.io/protocols/resumable-upload>
 
+## Standalone Server Storage
+
+The `tus-server` binary stores uploaded bytes through OpenDAL. The default build enables the `opendal-fs` feature and uses local filesystem storage rooted at `./uploads`:
+
+```bash
+cargo run -p tus-server -- serve
+```
+
+Use `--storage-uri` / `TUS_STORAGE_URI` to select an OpenDAL service:
+
+```bash
+tus-server serve --storage-uri fs:///var/lib/tus/uploads
+```
+
+Set storage backend options with `TUS_STORAGE_<KEY>` environment variables or direct keys under `[storage]` in the server config file. For example, use `TUS_STORAGE_ROOT=uploads` with `fs://` for a relative filesystem root.
+
+S3 support requires building the server with `opendal-s3`:
+
+```bash
+cargo build -p tus-server --features opendal-s3
+cargo build -p tus-server --no-default-features --features opendal-s3
+```
+
+```bash
+TUS_STORAGE_URI=s3:// \
+TUS_STORAGE_BUCKET=my-bucket \
+TUS_STORAGE_REGION=us-east-1 \
+TUS_STORAGE_ROOT=/uploads \
+AWS_ACCESS_KEY_ID=... \
+AWS_SECRET_ACCESS_KEY=... \
+cargo run -p tus-server --features opendal-s3 -- serve
+```
+
+Object storage only covers uploaded bytes. Upload state remains file-backed under `--state-dir`, and locking remains process-local through the in-memory locker.
+
+Expired upload reclamation is explicit. `tus-server serve` rejects expired uploads according to protocol configuration, but it only deletes expired upload data and state when started with `--cleanup`. To run one cleanup sweep and exit, use `tus-server cleanup` with the same storage and state configuration. The cleanup command is not safe to run concurrently with a live `serve` process until cross-process locking is available.
+
 This repository currently provides `tus-protocol`, the framework-neutral core
 crate. It exposes typed request headers, response values, upload state, storage,
 state-store, locking, and hook traits. HTTP adapters are expected to parse their

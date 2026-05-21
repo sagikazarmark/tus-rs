@@ -19,15 +19,16 @@ bytes = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { workspace = true, features = ["cors"] }
 
 [dev-dependencies]
 tus-protocol = { workspace = true, features = [
     "checksum",
-    "full-native",
     "lock-file",
     "lock-memory",
+    "state-file",
     "state-memory",
+    "storage-file",
     "storage-memory",
 ] }
 
@@ -37,9 +38,9 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 
 [features]
 default = []

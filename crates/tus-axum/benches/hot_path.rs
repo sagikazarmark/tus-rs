@@ -28,13 +28,13 @@ use tokio::runtime::Runtime;
 use tower::ServiceExt;
 
 use tus_axum::{TusState, create_router};
-use tus_protocol::PatchBody;
-use tus_protocol::hooks::NoopHookExecutor;
 use tus_protocol::locking::memory::MemoryLocker;
-use tus_protocol::protocol::Protocol;
-use tus_protocol::state::{StateStore, UploadState, memory::MemoryStateStore};
-use tus_protocol::storage::{ChunkStream, Storage, memory::MemoryStorage};
-use tus_protocol::{Config, Headers, ProtocolHandle, TUS_RESUMABLE};
+use tus_protocol::state::memory::MemoryStateStore;
+use tus_protocol::storage::memory::MemoryStorage;
+use tus_protocol::{
+    ChunkStream, Config, Headers, NoopHookExecutor, PatchBody, Protocol, ProtocolHandle,
+    StateStore, Storage, TUS_RESUMABLE, UploadState,
+};
 
 // ---------------------------------------------------------------------------
 // Harness

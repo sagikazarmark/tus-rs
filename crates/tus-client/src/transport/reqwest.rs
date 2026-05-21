@@ -188,7 +188,7 @@ mod tests {
     #[cfg(feature = "checksum")]
     use tus_protocol::ChecksumAlgorithm;
     use tus_protocol::{
-        Config, Extension, ProtocolHandle, UploadMetadata, hooks::NoopHookExecutor,
+        Config, Extension, NoopHookExecutor, ProtocolHandle, UploadMetadata,
         locking::memory::MemoryLocker, state::memory::MemoryStateStore,
         storage::memory::MemoryStorage,
     };

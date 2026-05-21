@@ -6,10 +6,11 @@
 
 use bytes::Bytes;
 use http::StatusCode;
-use tus_protocol::state::{StateStore, UploadState, memory::MemoryStateStore};
-use tus_protocol::storage::{ChunkStream, Storage, memory::MemoryStorage};
+use tus_protocol::state::memory::MemoryStateStore;
+use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    Config, Error, Headers, NoopHookExecutor, NoopLocker, Protocol, Response, UploadId,
+    ChunkStream, Config, Error, Headers, NoopHookExecutor, NoopLocker, Protocol, Response,
+    StateStore, Storage, UploadId, UploadState,
 };
 
 #[tokio::test]

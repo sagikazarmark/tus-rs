@@ -16,16 +16,17 @@
 
 use std::sync::Arc;
 
-use axum::Router;
-use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
+use axum::{
+    Router,
+    body::Body,
+    http::{Method, Request, StatusCode},
+};
 use tower::ServiceExt;
 use tus_axum::{TusState, create_router};
-use tus_protocol::hooks::NoopHookExecutor;
 use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
-use tus_protocol::{Config, ProtocolHandle};
+use tus_protocol::{Config, NoopHookExecutor, ProtocolHandle};
 
 const TUS_RESUMABLE: &str = "1.0.0";
 

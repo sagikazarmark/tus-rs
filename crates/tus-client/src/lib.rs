@@ -8,6 +8,8 @@
 mod client;
 mod error;
 mod helpers;
+#[cfg(feature = "transport-reqwest")]
+mod legacy;
 mod runtime;
 mod transport;
 
@@ -20,6 +22,8 @@ pub use client::{
     UploadInfo, UploadProgress, UploadSource,
 };
 pub use error::{Error, Result};
+#[cfg(feature = "transport-reqwest")]
+pub use legacy::{ClientError, TusClient, TusUpload};
 pub use transport::{Transport, TransportBody, TransportRequest, TransportResponse};
 pub use tus_protocol::{MetadataValue, UploadMetadata};
 
