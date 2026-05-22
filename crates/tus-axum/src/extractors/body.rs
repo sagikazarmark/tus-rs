@@ -1,7 +1,7 @@
 //! TUS body extractor.
 //!
-//! This module provides the [`TusBody`] extractor that handles both streaming
-//! bodies and checksum-trailer intent detection.
+//! This module maps Axum request body frames into framework-neutral protocol
+//! body frames. Protocol policy remains in `tus_protocol`.
 
 use axum::{
     body::Body,
@@ -9,108 +9,40 @@ use axum::{
     http::{HeaderMap, Request},
 };
 use bytes::Bytes;
+use futures::stream;
+use http_body_util::BodyExt;
 
-use tus_protocol::{ChecksumAlgorithm, Error};
+use tus_protocol::{BodyFrame, RequestBody};
 
 use crate::error::Error as AxumError;
 
-/// The type of body data extracted.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum BodyData {
-    /// Streaming body - data is read on demand.
-    Stream(Body),
-    /// Buffered body - data was collected to extract trailers.
-    Buffered(Bytes),
-}
-
-/// Extracted TUS body with optional trailers.
-///
-/// This extractor handles the TUS checksum-trailer extension by:
-/// - Detecting the `Trailer: Upload-Checksum` header
-/// - Recording checksum-trailer intent without buffering the body
-/// - Returning the body as a stream so handlers can enforce protocol limits
-#[derive(Debug)]
+/// Extracted TUS body mapped to protocol body frames.
 #[non_exhaustive]
 pub struct TusBody {
-    /// The body data (streaming or buffered).
-    pub data: BodyData,
-    /// Trailer headers extracted from the body.
-    pub trailers: Option<HeaderMap>,
-    /// Whether the request declared or supplied an Upload-Checksum trailer.
-    pub checksum_trailer_declared: bool,
+    body: RequestBody,
 }
 
 impl TusBody {
     /// Creates a new TusBody with buffered data and optional trailers.
     pub fn buffered(bytes: Bytes, trailers: Option<HeaderMap>) -> Self {
-        let checksum_trailer_declared = trailers
-            .as_ref()
-            .map(|trailers| trailers.contains_key("upload-checksum"))
-            .unwrap_or(false)
-            || trailers.is_some();
-
-        Self {
-            data: BodyData::Buffered(bytes),
-            trailers,
-            checksum_trailer_declared,
-        }
-    }
-
-    /// Returns true if the request declared checksum trailers or has trailers.
-    pub fn has_trailers(&self) -> bool {
-        self.checksum_trailer_declared || self.trailers.is_some()
-    }
-
-    /// Extracts the Upload-Checksum from trailers if present.
-    pub fn trailer_checksum(&self) -> Result<Option<(ChecksumAlgorithm, Vec<u8>)>, Error> {
-        let trailers = match &self.trailers {
-            Some(t) => t,
-            None => return Ok(None),
+        let body = match trailers {
+            Some(trailers) => {
+                let frames = stream::iter([
+                    Ok(BodyFrame::Data(bytes)),
+                    Ok(BodyFrame::Trailers(trailers)),
+                ]);
+                RequestBody::from_stream(Box::pin(frames))
+            }
+            None => RequestBody::from_bytes(bytes),
         };
 
-        let value = match trailers
-            .get("upload-checksum")
-            .and_then(|v| v.to_str().ok())
-        {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-
-        let parts: Vec<&str> = value.splitn(2, ' ').collect();
-        if parts.len() != 2 {
-            return Err(Error::InvalidHeader {
-                header: "Upload-Checksum",
-                message: "expected 'algorithm checksum' format".to_string(),
-            });
-        }
-
-        let algorithm = ChecksumAlgorithm::parse(parts[0])
-            .ok_or_else(|| Error::UnsupportedChecksum(parts[0].to_string()))?;
-
-        use base64::Engine;
-        let checksum = base64::engine::general_purpose::STANDARD
-            .decode(parts[1])
-            .map_err(|e| Error::InvalidHeader {
-                header: "Upload-Checksum",
-                message: format!("invalid base64: {}", e),
-            })?;
-
-        Ok(Some((algorithm, checksum)))
+        Self { body }
     }
-}
 
-/// Checks if the request has a Trailer header indicating Upload-Checksum.
-fn has_checksum_trailer(headers: &HeaderMap) -> bool {
-    headers
-        .get("trailer")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| {
-            v.split(',')
-                .map(|s| s.trim().to_lowercase())
-                .any(|s| s == "upload-checksum")
-        })
-        .unwrap_or(false)
+    /// Returns the protocol request body.
+    pub fn into_body(self) -> RequestBody {
+        self.body
+    }
 }
 
 impl<S> FromRequest<S> for TusBody
@@ -120,12 +52,25 @@ where
     type Rejection = AxumError;
 
     async fn from_request(req: Request<Body>, _state: &S) -> Result<Self, Self::Rejection> {
-        let (parts, body) = req.into_parts();
+        let (_parts, body) = req.into_parts();
+        let stream = stream::unfold(body, |mut body| async {
+            body.frame().await.map(|frame| {
+                let frame = frame.map_err(std::io::Error::other).and_then(|frame| {
+                    match frame.into_data() {
+                        Ok(bytes) => Ok(BodyFrame::Data(bytes)),
+                        Err(frame) => frame
+                            .into_trailers()
+                            .map(BodyFrame::Trailers)
+                            .map_err(|_| std::io::Error::other("unsupported body frame")),
+                    }
+                });
+
+                (frame, body)
+            })
+        });
 
         Ok(TusBody {
-            data: BodyData::Stream(body),
-            trailers: None,
-            checksum_trailer_declared: has_checksum_trailer(&parts.headers),
+            body: RequestBody::from_stream(Box::pin(stream)),
         })
     }
 }
@@ -133,45 +78,62 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::header::HeaderValue;
+    use axum::http::HeaderValue;
+    use futures::StreamExt;
+    use http_body_util::{BodyExt, Full};
+    use std::convert::Infallible;
+    use tus_protocol::{BodyFrame, RequestBody};
 
-    #[test]
-    fn test_has_checksum_trailer() {
-        let mut headers = HeaderMap::new();
-        headers.insert("trailer", HeaderValue::from_static("Upload-Checksum"));
-        assert!(has_checksum_trailer(&headers));
-
-        let mut headers = HeaderMap::new();
-        headers.insert("trailer", HeaderValue::from_static("upload-checksum"));
-        assert!(has_checksum_trailer(&headers));
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "trailer",
-            HeaderValue::from_static("Content-MD5, Upload-Checksum"),
+    #[tokio::test]
+    async fn buffered_body_can_include_trailers() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            "upload-checksum",
+            HeaderValue::from_static("sha1 qvTGHdzF6KLavt4PO0gs2a6pQ00="),
         );
-        assert!(has_checksum_trailer(&headers));
 
-        let headers = HeaderMap::new();
-        assert!(!has_checksum_trailer(&headers));
+        let body = TusBody::buffered(Bytes::from_static(b"hello"), Some(trailers)).into_body();
+        let RequestBody::Stream(mut stream) = body else {
+            panic!("buffered body with trailers should be streamed as protocol frames");
+        };
 
-        let mut headers = HeaderMap::new();
-        headers.insert("trailer", HeaderValue::from_static("Content-MD5"));
-        assert!(!has_checksum_trailer(&headers));
+        let first = stream.next().await.unwrap().unwrap();
+        assert!(matches!(first, BodyFrame::Data(bytes) if bytes == Bytes::from_static(b"hello")));
+
+        let second = stream.next().await.unwrap().unwrap();
+        assert!(
+            matches!(second, BodyFrame::Trailers(headers) if headers.contains_key("upload-checksum"))
+        );
+        assert!(stream.next().await.is_none());
     }
 
     #[tokio::test]
-    async fn checksum_trailer_request_remains_streaming() {
-        let request = Request::builder()
-            .header("trailer", "Upload-Checksum")
-            .body(Body::from(Bytes::from_static(b"hello")))
-            .unwrap();
+    async fn axum_body_frames_are_mapped_to_protocol_frames() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            "upload-checksum",
+            HeaderValue::from_static("sha1 qvTGHdzF6KLavt4PO0gs2a6pQ00="),
+        );
+        let body = Full::new(Bytes::from_static(b"hello"))
+            .with_trailers(std::future::ready(Some(Ok::<_, Infallible>(trailers))))
+            .map_err(|never| match never {});
+        let request = Request::builder().body(Body::new(body)).unwrap();
 
-        let body = TusBody::from_request(request, &()).await.unwrap();
+        let body = TusBody::from_request(request, &())
+            .await
+            .unwrap()
+            .into_body();
+        let RequestBody::Stream(mut stream) = body else {
+            panic!("extracted axum body should be streamed as protocol frames");
+        };
 
-        assert!(matches!(body.data, BodyData::Stream(_)));
-        assert!(body.checksum_trailer_declared);
-        assert!(body.has_trailers());
-        assert!(body.trailers.is_none());
+        let first = stream.next().await.unwrap().unwrap();
+        assert!(matches!(first, BodyFrame::Data(bytes) if bytes == Bytes::from_static(b"hello")));
+
+        let second = stream.next().await.unwrap().unwrap();
+        assert!(
+            matches!(second, BodyFrame::Trailers(headers) if headers.contains_key("upload-checksum"))
+        );
+        assert!(stream.next().await.is_none());
     }
 }

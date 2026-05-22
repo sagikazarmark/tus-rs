@@ -154,7 +154,7 @@ Useful entry points:
 - `create_router` builds the complete tus route table for the configured base path.
 - `build_cors_layer` builds the CORS layer used when CORS origins are configured.
 - `Error` converts `tus_protocol::Error` into an axum response.
-- `BodyData`, `Headers`, `TusBody`, and `UploadId` are axum extractors used by the handlers.
+- `Headers`, `TusBody`, and `UploadId` are axum extractors used by the handlers.
 
 Use `tus-protocol` directly to configure protocol extensions, upload limits,
 expiration, storage, state, locking, hooks, and checksum support.

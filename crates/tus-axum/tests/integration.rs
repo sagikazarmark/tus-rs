@@ -16,6 +16,7 @@ use axum::{
     http::{Method, Request, Response, StatusCode},
 };
 use base64::Engine;
+use bytes::Bytes;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
@@ -820,6 +821,50 @@ async fn patch_checksum_mismatch_returns_460() {
     )
     .await;
     assert_eq!(response.status().as_u16(), 460);
+}
+
+#[tokio::test]
+async fn patch_accepts_checksum_trailer_through_axum_body_frames() {
+    use http_body_util::Full;
+    use tus_protocol::ChecksumAlgorithm;
+
+    let router = build_router();
+    let post = send(
+        router.clone(),
+        tus_request(Method::POST, "/files")
+            .header("upload-length", "5")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(post.status(), StatusCode::CREATED);
+    let item = format!(
+        "/files/{}",
+        upload_id_from_location(post.headers().get("location").unwrap().to_str().unwrap())
+    );
+    let checksum = tus_protocol::calculate_checksum(ChecksumAlgorithm::Sha1, b"hello");
+    let checksum = base64::engine::general_purpose::STANDARD.encode(checksum);
+    let mut trailers = axum::http::HeaderMap::new();
+    trailers.insert(
+        "upload-checksum",
+        format!("sha1 {checksum}").parse().unwrap(),
+    );
+    let body =
+        Full::new(Bytes::from_static(b"hello")).with_trailers(async move { Some(Ok(trailers)) });
+
+    let response = send(
+        router,
+        tus_request(Method::PATCH, &item)
+            .header("content-type", "application/offset+octet-stream")
+            .header("upload-offset", "0")
+            .header("content-length", "5")
+            .body(Body::new(body))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers().get("upload-offset").unwrap(), "5");
 }
 
 // ---------------------------------------------------------------------------

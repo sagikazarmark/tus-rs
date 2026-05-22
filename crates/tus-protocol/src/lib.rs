@@ -52,6 +52,7 @@ pub mod config;
 pub mod error;
 mod extensions;
 pub mod hooks;
+pub mod lifecycle;
 pub mod locking;
 pub mod protocol;
 #[doc(hidden)]
@@ -70,13 +71,19 @@ pub use config::{ChecksumAlgorithm, Config, Extension, TUS_RESUMABLE, TUS_VERSIO
 pub use error::{Error, Result};
 pub use extensions::UploadConcat;
 pub use hooks::{
-    Hook, HookChain, HookContext, HookEvent, HookExecutor, NoopHookExecutor, PreHookResult,
+    Hook, HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo, NoopHookExecutor,
+    PreHookResult,
+};
+pub use lifecycle::{
+    CreationRequest, CreationTransition, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
+    ReceiveRequest, apply_receive_offset, ensure_active, load_final_upload_plan,
+    load_final_upload_status, prepare_creation, prepare_receive, receive_body_size_limit,
+    run_pre_finish, summarize_final_parts, validate_receive_body,
 };
 pub use locking::{LockGuard, Locker, NoopLocker};
 pub use protocol::{
-    DownloadRequest, DownloadResponse, Headers, PatchBody, PatchBodyCollector,
-    PatchBodyCollectorFuture, PatchBodyData, PatchChecksum, Protocol, ProtocolHandle, Response,
-    UploadId,
+    BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
+    ProtocolHandle, RequestBody, Response, UploadId,
 };
 pub use state::{MetadataValue, StateStore, UploadMetadata, UploadState};
 pub use storage::ByteStream;
@@ -86,12 +93,15 @@ pub use storage::{ChunkStream, Storage};
 pub mod prelude {
     pub use crate::config::{Config, Extension};
     pub use crate::error::{Error, Result};
-    pub use crate::hooks::{HookChain, HookContext, HookEvent, HookExecutor};
+    pub use crate::hooks::{HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo};
+    pub use crate::lifecycle::{
+        CreationRequest, CreationTransition, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
+        ReceiveRequest, prepare_creation, prepare_receive, run_pre_finish,
+    };
     pub use crate::locking::Locker;
     pub use crate::protocol::{
-        DownloadRequest, DownloadResponse, Headers, PatchBody, PatchBodyCollector,
-        PatchBodyCollectorFuture, PatchBodyData, PatchChecksum, Protocol, ProtocolHandle, Response,
-        UploadId,
+        BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
+        ProtocolHandle, RequestBody, Response, UploadId,
     };
     pub use crate::state::{StateStore, UploadState};
     pub use crate::storage::Storage;

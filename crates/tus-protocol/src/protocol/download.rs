@@ -9,6 +9,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use crate::config::TUS_RESUMABLE;
 use crate::error::Error;
 use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::lifecycle::ensure_active;
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::ByteStream;
@@ -71,9 +72,7 @@ where
             .map_err(|err| Error::Internal(err.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        if state.is_expired() {
-            return Err(Error::Expired(upload_id.to_string()));
-        }
+        ensure_active(&state)?;
 
         let request_info = HookRequestInfo {
             method: "GET".to_string(),

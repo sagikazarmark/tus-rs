@@ -197,8 +197,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut stale_state = state.clone();
-        stale_state.set_offset(0);
+        let stale_state = state.clone();
         store.set(&stale_state, true).await.unwrap();
 
         let protocol = TusProtocol::new(ProtocolHandle::new(
@@ -238,8 +237,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut stale_state = state.clone();
-        stale_state.set_offset(0);
+        let stale_state = state.clone();
         store.set(&stale_state, true).await.unwrap();
 
         let protocol = TusProtocol::new(ProtocolHandle::new(

@@ -3064,6 +3064,7 @@ dependencies = [
  "bytes",
  "futures",
  "opendal",
+ "serde_json",
  "tokio",
  "tus-protocol",
  "uuid",
