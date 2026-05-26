@@ -230,7 +230,6 @@ impl tus_protocol::Storage for Storage {
 
         state.set_internal(INTERNAL_NEXT_PART, (part_number + 1).to_string());
         let new_offset = state.offset().saturating_add(incoming_len);
-        state.set_offset(new_offset);
 
         // Finalize once the declared length is reached. Deferred-length
         // uploads stay in staging until the client declares a length via
@@ -384,6 +383,12 @@ mod tests {
         Storage::new(operator, "")
     }
 
+    fn with_offset(state: &UploadState, offset: u64) -> UploadState {
+        let mut value = serde_json::to_value(state).unwrap();
+        value["offset"] = serde_json::json!(offset);
+        serde_json::from_value(value).unwrap()
+    }
+
     #[tokio::test]
     async fn test_create_and_append() {
         let storage = create_test_storage();
@@ -398,6 +403,7 @@ mod tests {
         let data = ChunkStream::from_bytes(Bytes::from("hello world"));
         let offset = storage.append(&mut state, data).await.unwrap();
         assert_eq!(offset, 11);
+        assert_eq!(state.offset(), 0);
 
         // After finalize the main key holds the bytes.
         assert_eq!(storage.size(&state).await.unwrap(), Some(11));
@@ -410,10 +416,13 @@ mod tests {
 
         storage.create(&mut state).await.unwrap();
 
-        storage
+        let offset = storage
             .append(&mut state, ChunkStream::from_bytes(Bytes::from("hello ")))
             .await
             .unwrap();
+        assert_eq!(offset, 6);
+        assert_eq!(state.offset(), 0);
+        state = with_offset(&state, offset);
 
         let offset = storage
             .append(&mut state, ChunkStream::from_bytes(Bytes::from("world")))
@@ -451,10 +460,10 @@ mod tests {
             .await
             .unwrap();
 
-        state.set_offset(0);
+        state = with_offset(&state, 0);
         assert_eq!(storage.size(&state).await.unwrap(), Some(5));
 
-        state.set_offset(99);
+        state = with_offset(&state, 99);
         assert_eq!(storage.size(&state).await.unwrap(), Some(5));
     }
 
@@ -479,7 +488,7 @@ mod tests {
             .unwrap();
 
         let recovered_offset = storage.size(&recovered_state).await.unwrap().unwrap();
-        recovered_state.set_offset(recovered_offset);
+        recovered_state = with_offset(&recovered_state, recovered_offset);
 
         storage
             .append(

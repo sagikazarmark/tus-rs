@@ -143,7 +143,6 @@ impl Storage for FileStorage {
         file.sync_data().await.map_err(Error::Io)?;
 
         let new_offset = current_size.saturating_add(bytes.len() as u64);
-        state.set_offset(new_offset);
         Ok(new_offset)
     }
 
@@ -294,6 +293,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(offset, 6);
+        assert_eq!(state.offset(), 0);
         state.set_offset(offset);
 
         let offset = storage

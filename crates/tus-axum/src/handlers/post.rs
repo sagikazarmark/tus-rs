@@ -1,12 +1,11 @@
 //! Axum adapter for the POST handler.
 
-use axum::{body::Body, extract::State};
-use futures::TryStreamExt;
+use axum::extract::State;
 
-use tus_protocol::{ChunkStream, HookExecutor, Locker, StateStore, Storage};
+use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
 
 use crate::error::Error;
-use crate::extractors::Headers;
+use crate::extractors::{Headers, TusBody};
 use crate::response::TusResponse;
 use crate::state::TusProtocol;
 
@@ -14,7 +13,7 @@ use crate::state::TusProtocol;
 pub async fn handle_post<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     Headers(headers): Headers,
-    body: Body,
+    body: TusBody,
 ) -> Result<TusResponse, Error>
 where
     S: Storage + Send + Sync + 'static,
@@ -22,17 +21,14 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let body_stream = ChunkStream::from_stream(Box::pin(
-        body.into_data_stream().map_err(std::io::Error::other),
-    ));
-
-    Ok(protocol.post(headers, body_stream).await?.into())
+    Ok(protocol.post(headers, body.into_body()).await?.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use bytes::Bytes;
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
     use tus_protocol::{Config, NoopHookExecutor, NoopLocker, ProtocolHandle, TUS_RESUMABLE};
@@ -50,10 +46,14 @@ mod tests {
         let mut inner = tus_protocol::Headers::default();
         inner.upload_length = Some(1000);
         let headers = Headers(inner);
-        let response = handle_post(State(protocol), headers, Body::empty())
-            .await
-            .unwrap()
-            .into_response();
+        let response = handle_post(
+            State(protocol),
+            headers,
+            TusBody::buffered(Bytes::new(), None),
+        )
+        .await
+        .unwrap()
+        .into_response();
 
         assert_eq!(response.status(), axum::http::StatusCode::CREATED);
         assert_eq!(

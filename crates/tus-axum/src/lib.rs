@@ -60,7 +60,7 @@ pub mod router;
 mod state;
 
 pub use error::Error;
-pub use extractors::{BodyData, Headers, TusBody, UploadId};
+pub use extractors::{Headers, TusBody, UploadId};
 pub use response::TusResponse;
 pub use router::{build_cors_layer, create_router};
 pub use state::{TusProtocol, TusState};

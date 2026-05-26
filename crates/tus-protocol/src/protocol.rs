@@ -11,13 +11,15 @@
 //!
 //! - [`Headers`]: a typed view over TUS-specific request headers
 //! - A validated [`UploadId`] path parameter
-//! - A [`PatchBody`] for PATCH request bodies, usually created with
-//!   [`PatchBody::stream`] and a [`ChunkStream`],
-//!   or [`PatchBody::collector`] when an adapter must collect bytes later
-//!   (for example to read HTTP trailers)
+//! - A [`RequestBody`] for PATCH and POST request bodies, usually created from bytes,
+//!   a body-frame stream, or a [`ChunkStream`](crate::ChunkStream)
 //!
 //! They return `Result<Response, Error>`; adapters convert the
 //! response into their framework's response type.
+//!
+//! Upload lifecycle decisions live in [`crate::lifecycle`]. Protocol handlers
+//! map parsed HTTP inputs into lifecycle requests, then adapt lifecycle results
+//! into storage, state-store, hook, and response operations.
 //!
 //! Upload ID validation is exposed through [`UploadId`] parsing, not through
 //! lower-level validation helpers.
@@ -43,6 +45,7 @@
 //! # }
 //! ```
 
+mod body;
 mod delete;
 mod download;
 mod head;
@@ -54,13 +57,14 @@ mod recovery;
 mod response;
 mod upload_id;
 
+pub use body::{BodyFrame, BodyStream, RequestBody};
 pub use download::{DownloadRequest, DownloadResponse};
 pub use headers::Headers;
-pub use patch::{
-    PatchBody, PatchBodyCollector, PatchBodyCollectorFuture, PatchBodyData, PatchChecksum,
-};
 pub use response::Response;
 pub use upload_id::UploadId;
+
+/// PATCH request body input.
+pub type PatchBody = RequestBody;
 
 #[cfg(feature = "fuzzing")]
 pub use headers::{
@@ -73,7 +77,7 @@ use crate::config::Config;
 use crate::hooks::HookExecutor;
 use crate::locking::Locker;
 use crate::state::StateStore;
-use crate::storage::{ChunkStream, Storage};
+use crate::storage::Storage;
 
 /// Framework-neutral TUS protocol facade.
 ///
@@ -222,7 +226,7 @@ where
     pub async fn post(
         &self,
         headers: Headers,
-        body: ChunkStream,
+        body: RequestBody,
     ) -> Result<Response, crate::Error> {
         self.protocol().post(headers, body).await
     }

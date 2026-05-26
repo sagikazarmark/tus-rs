@@ -60,10 +60,11 @@ pub trait Storage: MaybeSendSync {
     /// Appends data to an existing upload.
     ///
     /// Data should be appended starting at `state.offset`. After successful
-    /// append, the new offset should be returned. The `state` may be modified
-    /// to store backend-specific information via its internal-state helpers.
-    /// The returned offset is the source of truth the protocol persists in the
-    /// state store after the append succeeds.
+    /// append, the new offset should be returned. Implementations may modify
+    /// backend-specific values through `UploadState` internal-state helpers, but
+    /// must not advance protocol fields such as offset or length directly. The
+    /// protocol lifecycle verifies and applies the returned offset after the
+    /// append succeeds.
     async fn append(&self, state: &mut UploadState, data: ChunkStream) -> Result<u64>;
 
     /// Retrieves a stream of the upload data for download.

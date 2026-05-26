@@ -8,6 +8,7 @@ use http::StatusCode;
 use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::lifecycle::ensure_active;
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
 use crate::storage::Storage;
@@ -50,9 +51,7 @@ where
             .map_err(|e| Error::Internal(e.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        if upload_state.is_expired() {
-            return Err(Error::Expired(upload_id.to_string()));
-        }
+        ensure_active(&upload_state)?;
 
         let request_info = HookRequestInfo {
             method: "HEAD".to_string(),
@@ -575,6 +574,30 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(concat, "final;/files/a /files/b");
+    }
+
+    #[tokio::test]
+    async fn materialized_final_upload_does_not_require_partial_state_records() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let mut final_upload = UploadState::new("final-1");
+        storage.create(&mut final_upload).await.unwrap();
+        storage
+            .append(
+                &mut final_upload,
+                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
+            )
+            .await
+            .unwrap();
+        final_upload.mark_final(vec!["missing-part".to_string()]);
+        final_upload.set_length(4);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let response = call(&config, &storage, &store, "final-1").await.unwrap();
+
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "4");
     }
 
     #[tokio::test]

@@ -209,7 +209,7 @@ impl UploadState {
     }
 
     /// Sets the current offset.
-    pub fn set_offset(&mut self, offset: u64) {
+    pub(crate) fn set_offset(&mut self, offset: u64) {
         self.offset = offset;
     }
 
@@ -219,7 +219,7 @@ impl UploadState {
     }
 
     /// Sets the declared upload length.
-    pub fn set_length(&mut self, length: u64) {
+    pub(crate) fn set_length(&mut self, length: u64) {
         self.length = Some(length);
     }
 
@@ -244,7 +244,7 @@ impl UploadState {
     }
 
     /// Sets the expiration time.
-    pub fn set_expiration(&mut self, expires_at: DateTime<Utc>) {
+    pub(crate) fn set_expiration(&mut self, expires_at: DateTime<Utc>) {
         self.expires_at = Some(expires_at);
     }
 
@@ -254,7 +254,7 @@ impl UploadState {
     }
 
     /// Marks the upload as partial.
-    pub fn mark_partial(&mut self) {
+    pub(crate) fn mark_partial(&mut self) {
         self.is_partial = true;
     }
 
@@ -264,7 +264,7 @@ impl UploadState {
     }
 
     /// Marks the upload as final and stores the concatenated part IDs.
-    pub fn mark_final(&mut self, parts: Vec<String>) {
+    pub(crate) fn mark_final(&mut self, parts: Vec<String>) {
         self.is_final = true;
         self.parts = Some(parts);
     }

@@ -5,7 +5,8 @@
 //! exposing or validating upload offsets.
 
 use crate::error::Error;
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::lifecycle::{load_final_upload_status, run_pre_finish};
 use crate::state::{StateStore, UploadState};
 use crate::storage::Storage;
 
@@ -64,58 +65,20 @@ where
         }
     }
 
-    let Some(part_ids) = state.parts().map(|parts| parts.to_vec()) else {
+    let Some(final_plan) = load_final_upload_status(state_store, state).await? else {
         return reconcile_storage_offset(storage, state_store, state).await;
     };
 
-    let mut parts = Vec::with_capacity(part_ids.len());
-    let mut total_length = 0_u64;
-    let mut current_offset = 0_u64;
-    let mut all_complete = true;
-    let mut length_known = true;
-
-    for part_id in part_ids {
-        let part_state = state_store
-            .get(&part_id)
-            .await
-            .map_err(|err| Error::Internal(err.to_string()))?
-            .ok_or_else(|| {
-                Error::Internal(format!(
-                    "final upload {} references missing partial {}",
-                    state.id(),
-                    part_id
-                ))
-            })?;
-
-        if part_state.is_expired() {
-            return Err(Error::Expired(part_id));
-        }
-
-        current_offset = current_offset.saturating_add(part_state.offset());
-
-        match part_state.length() {
-            Some(length) => total_length = total_length.saturating_add(length),
-            None => {
-                length_known = false;
-                all_complete = false;
-            }
-        }
-
-        if !part_state.is_complete() {
-            all_complete = false;
-        }
-
-        parts.push(part_state);
-    }
-
     let mut changed = false;
 
-    if length_known && state.length() != Some(total_length) {
+    if state.length() != final_plan.status.total_length
+        && let Some(total_length) = final_plan.status.total_length
+    {
         state.set_length(total_length);
         changed = true;
     }
 
-    let actual_size = if all_complete && length_known {
+    let actual_size = if final_plan.status.ready_to_materialize() {
         Some(
             storage
                 .size(state)
@@ -126,26 +89,27 @@ where
     } else {
         None
     };
-    let needs_materialization = actual_size.is_some_and(|actual_size| actual_size != total_length);
+    let needs_materialization = actual_size
+        .zip(final_plan.status.total_length)
+        .is_some_and(|(actual_size, total_length)| actual_size != total_length);
 
-    if all_complete && length_known && (!state.is_complete() || needs_materialization) {
+    if final_plan.status.ready_to_materialize() && (!state.is_complete() || needs_materialization) {
         let mut completed_state = state.clone();
+        let total_length = final_plan
+            .status
+            .total_length
+            .expect("ready final upload has total length");
         completed_state.set_length(total_length);
         completed_state.set_offset(total_length);
-        execute_pre_finish(hooks, request_info, completed_state).await?;
+        run_pre_finish(hooks, request_info, completed_state).await?;
     }
 
     if needs_materialization {
-        storage.concat(state, parts).await?;
+        storage.concat(state, final_plan.parts).await?;
         changed = true;
     }
 
-    let expected_offset = if all_complete && length_known {
-        total_length
-    } else {
-        current_offset
-    };
-
+    let expected_offset = final_plan.status.expected_offset();
     if state.offset() != expected_offset {
         state.set_offset(expected_offset);
         changed = true;
@@ -156,27 +120,6 @@ where
             .set(state, false)
             .await
             .map_err(|err| Error::Internal(err.to_string()))?;
-    }
-
-    Ok(())
-}
-
-async fn execute_pre_finish<H>(
-    hooks: &H,
-    request_info: &HookRequestInfo,
-    state: UploadState,
-) -> Result<(), Error>
-where
-    H: HookExecutor + ?Sized,
-{
-    let pre_finish_ctx = HookContext::new(HookEvent::PreFinish, state, request_info.clone());
-    let pre_finish_result = hooks.execute_pre(&pre_finish_ctx).await?;
-
-    if !pre_finish_result.proceed {
-        return Err(Error::HookRejected {
-            status_code: pre_finish_result.reject_status.unwrap_or(400),
-            message: pre_finish_result.reject_message.unwrap_or_default(),
-        });
     }
 
     Ok(())

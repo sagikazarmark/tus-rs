@@ -9,8 +9,8 @@ use http::StatusCode;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    ChunkStream, Config, Error, Headers, NoopHookExecutor, NoopLocker, Protocol, Response,
-    StateStore, Storage, UploadId, UploadState,
+    ChunkStream, Config, Error, Headers, HookRequestInfo, NoopHookExecutor, NoopLocker, Protocol,
+    Response, StateStore, Storage, UploadId, UploadState,
 };
 
 #[tokio::test]
@@ -31,10 +31,10 @@ async fn protocol_head_uses_bundled_dependencies() {
         .await
         .unwrap();
 
-    state.set_offset(0);
     state_store.set(&state, true).await.unwrap();
 
     let _headers = Headers::default();
+    let _request_info = HookRequestInfo::default();
     let _response = Response::new(StatusCode::NO_CONTENT);
     let _error = Error::NotFound("missing".to_string());
 

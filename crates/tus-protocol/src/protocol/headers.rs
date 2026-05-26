@@ -226,7 +226,7 @@ fn is_valid_metadata_key(key: &str) -> bool {
         })
 }
 
-fn parse_upload_checksum(
+pub(super) fn parse_upload_checksum(
     headers: &HeaderMap,
 ) -> Result<Option<(ChecksumAlgorithm, Vec<u8>)>, Error> {
     let value = match headers.get("upload-checksum").and_then(|v| v.to_str().ok()) {
@@ -234,6 +234,12 @@ fn parse_upload_checksum(
         None => return Ok(None),
     };
 
+    parse_upload_checksum_value(value).map(Some)
+}
+
+pub(super) fn parse_upload_checksum_value(
+    value: &str,
+) -> Result<(ChecksumAlgorithm, Vec<u8>), Error> {
     let parts: Vec<&str> = value.splitn(2, ' ').collect();
     if parts.len() != 2 {
         return Err(Error::InvalidHeader {
@@ -253,7 +259,7 @@ fn parse_upload_checksum(
             message: format!("invalid base64: {}", e),
         })?;
 
-    Ok(Some((algorithm, checksum)))
+    Ok((algorithm, checksum))
 }
 
 fn parse_upload_concat(headers: &HeaderMap) -> Result<Option<UploadConcat>, Error> {
@@ -517,6 +523,40 @@ mod tests {
         let tus = Headers::from_headers(&headers).unwrap();
         let md = tus.upload_metadata.expect("metadata present");
         assert_eq!(md.get("bin").unwrap().as_bytes(), bytes);
+    }
+
+    #[test]
+    fn upload_checksum_value_parser_accepts_valid_value() {
+        let parsed = parse_upload_checksum_value("sha1 AAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+
+        assert_eq!(parsed.0, ChecksumAlgorithm::Sha1);
+        assert_eq!(parsed.1.len(), 20);
+    }
+
+    #[test]
+    fn upload_checksum_value_parser_rejects_invalid_shape() {
+        let err = parse_upload_checksum_value("sha1").unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidHeader {
+                header: "Upload-Checksum",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn upload_checksum_value_parser_rejects_invalid_base64() {
+        let err = parse_upload_checksum_value("sha1 not-base64").unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidHeader {
+                header: "Upload-Checksum",
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -32,7 +32,7 @@ use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    ChunkStream, Config, Headers, NoopHookExecutor, PatchBody, Protocol, ProtocolHandle,
+    ChunkStream, Config, Headers, NoopHookExecutor, Protocol, ProtocolHandle, RequestBody,
     StateStore, Storage, TUS_RESUMABLE, UploadState,
 };
 
@@ -168,7 +168,7 @@ fn bench_protocol_patch(c: &mut Criterion) {
                         .patch(
                             patch_headers(0, size as u64),
                             &upload_id,
-                            PatchBody::stream(ChunkStream::from_bytes(payload), None),
+                            RequestBody::from_chunk_stream(ChunkStream::from_bytes(payload)),
                         )
                         .await
                         .unwrap();

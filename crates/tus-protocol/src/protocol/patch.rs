@@ -3,131 +3,22 @@
 //! Validates the request, acquires a lock on the upload, verifies the offset,
 //! writes the request body to storage, and fires lifecycle hooks.
 
-use std::future::Future;
-use std::pin::Pin;
-
-use futures::StreamExt;
 use http::StatusCode;
 
-use crate::config::{ChecksumAlgorithm, Config, Extension};
+use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::lifecycle::{
+    ReceiveRequest, apply_receive_offset, ensure_active, ensure_committed_offset, prepare_receive,
+    receive_body_size_limit, run_pre_finish, validate_receive_body,
+};
 use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::{ChunkStream, Storage};
 
+use super::body::RequestBody;
 use super::recovery::reconcile_state_offset;
 use super::{Headers, Protocol, Response, UploadId};
-
-/// Optional checksum value to verify after collecting a PATCH body.
-pub type PatchChecksum = Option<(ChecksumAlgorithm, Vec<u8>)>;
-
-/// Collected PATCH body data and the checksum the protocol should verify.
-pub struct PatchBodyData {
-    /// Collected body bytes.
-    pub bytes: bytes::Bytes,
-    /// Effective checksum from headers or trailers.
-    pub checksum: PatchChecksum,
-}
-
-#[cfg(not(feature = "local-futures"))]
-/// Future returned by a PATCH body collector.
-pub type PatchBodyCollectorFuture =
-    Pin<Box<dyn Future<Output = Result<PatchBodyData, Error>> + Send>>;
-
-#[cfg(feature = "local-futures")]
-/// Future returned by a PATCH body collector.
-pub type PatchBodyCollectorFuture = Pin<Box<dyn Future<Output = Result<PatchBodyData, Error>>>>;
-
-/// Collector for PATCH bodies that need protocol-computed size limits.
-///
-/// The collector is called after PATCH preflight validation and receives the
-/// effective body size limit. Collectors should enforce that limit while
-/// reading from their underlying transport so oversized bodies are rejected
-/// before they are fully buffered.
-pub trait PatchBodyCollector: crate::runtime::MaybeSend + 'static {
-    /// Collects the body using the computed body size limit.
-    fn collect(self, body_limit: Option<u64>) -> PatchBodyCollectorFuture;
-}
-
-impl<F, Fut> PatchBodyCollector for F
-where
-    F: FnOnce(Option<u64>) -> Fut + crate::runtime::MaybeSend + 'static,
-    Fut: Future<Output = Result<PatchBodyData, Error>> + crate::runtime::MaybeSend + 'static,
-{
-    fn collect(self, body_limit: Option<u64>) -> PatchBodyCollectorFuture {
-        Box::pin(self(body_limit))
-    }
-}
-
-#[cfg(not(feature = "local-futures"))]
-type CollectorFn = Box<dyn FnOnce(Option<u64>) -> PatchBodyCollectorFuture + Send>;
-
-#[cfg(feature = "local-futures")]
-type CollectorFn = Box<dyn FnOnce(Option<u64>) -> PatchBodyCollectorFuture>;
-
-struct PatchBodyCollectorBox {
-    collect: CollectorFn,
-}
-
-impl PatchBodyCollectorBox {
-    fn new<C>(collector: C) -> Self
-    where
-        C: PatchBodyCollector,
-    {
-        Self {
-            collect: Box::new(move |body_limit| collector.collect(body_limit)),
-        }
-    }
-
-    async fn collect(self, body_limit: Option<u64>) -> Result<PatchBodyData, Error> {
-        (self.collect)(body_limit).await
-    }
-}
-
-/// PATCH request body input.
-pub struct PatchBody {
-    kind: PatchBodyKind,
-}
-
-enum PatchBodyKind {
-    Stream {
-        body: ChunkStream,
-        checksum: PatchChecksum,
-    },
-    Collector(PatchBodyCollectorBox),
-}
-
-impl PatchBody {
-    /// Creates a regular PATCH body from a stream and optional checksum.
-    #[must_use]
-    pub fn stream(body: ChunkStream, checksum: PatchChecksum) -> Self {
-        Self {
-            kind: PatchBodyKind::Stream { body, checksum },
-        }
-    }
-
-    /// Creates a PATCH body from an adapter-provided collector.
-    #[must_use]
-    pub fn collector<C>(collector: C) -> Self
-    where
-        C: PatchBodyCollector,
-    {
-        Self {
-            kind: PatchBodyKind::Collector(PatchBodyCollectorBox::new(collector)),
-        }
-    }
-
-    async fn collect(self, body_limit: Option<u64>) -> Result<PatchBodyData, Error> {
-        match self.kind {
-            PatchBodyKind::Stream { body, checksum } => {
-                let bytes = collect_chunk_stream(body, body_limit).await?;
-                Ok(PatchBodyData { bytes, checksum })
-            }
-            PatchBodyKind::Collector(collector) => collector.collect(body_limit).await,
-        }
-    }
-}
 
 /// Appends data to an upload.
 #[allow(clippy::too_many_arguments)]
@@ -153,7 +44,7 @@ where
         &self,
         headers: Headers,
         upload_id: &UploadId,
-        body: PatchBody,
+        body: RequestBody,
     ) -> Result<Response, Error> {
         headers.validate_patch_content_type()?;
         let upload_id = upload_id.as_str();
@@ -173,9 +64,7 @@ where
             .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        if state.is_expired() {
-            return Err(Error::Expired(upload_id.to_string()));
-        }
+        ensure_active(&state)?;
 
         let request_info = make_hook_request_info(&headers, upload_id);
 
@@ -188,48 +77,14 @@ where
         )
         .await?;
 
-        if state.is_final() {
-            return Err(Error::FinalUploadModificationForbidden(
-                upload_id.to_string(),
-            ));
-        }
-
-        if client_offset != state.offset() {
-            return Err(Error::OffsetMismatch {
-                expected: state.offset(),
-                actual: client_offset,
-            });
-        }
-
-        if state.is_complete() {
-            return Err(Error::CompletedUploadModificationForbidden(
-                upload_id.to_string(),
-            ));
-        }
-
-        if let Some(length) = headers.upload_length {
-            if let Some(existing) = state.length() {
-                if length != existing {
-                    return Err(Error::InvalidHeader {
-                        header: "Upload-Length",
-                        message: format!(
-                            "cannot change Upload-Length after it is set (existing: {}, provided: {})",
-                            existing, length
-                        ),
-                    });
-                }
-            } else {
-                if let Some(max_size) = self.config.max_size_limit()
-                    && length > max_size
-                {
-                    return Err(Error::SizeExceeded {
-                        size: length,
-                        max: max_size,
-                    });
-                }
-                state.set_length(length);
-            }
-        }
+        prepare_receive(
+            self.config,
+            &mut state,
+            ReceiveRequest {
+                client_offset,
+                upload_length: headers.upload_length,
+            },
+        )?;
 
         let pre_ctx = HookContext::new(HookEvent::PreReceive, state.clone(), request_info.clone());
         let pre_result = self.hooks.execute_pre(&pre_ctx).await?;
@@ -245,67 +100,28 @@ where
             state = modified_state;
         }
 
-        // Reject unsupported header checksum algorithms before body collection.
-        #[cfg(feature = "checksum")]
-        if let Some((algorithm, _)) = &headers.upload_checksum
-            && self.config.has_extension(Extension::Checksum)
-            && !self.config.supports_checksum_algorithm(*algorithm)
-        {
-            return Err(Error::UnsupportedChecksum(algorithm.as_str().to_string()));
-        }
-
-        let body = body.collect(body_size_limit(self.config, &state)).await?;
+        let body = super::body::collect(
+            self.config,
+            &headers,
+            receive_body_size_limit(self.config, &state),
+            body,
+        )
+        .await?;
         let body_len = body.bytes.len() as u64;
-        validate_content_length(&headers, body_len)?;
-        validate_body_size(self.config, &state, body_len)?;
+        let receive_projection = validate_receive_body(self.config, &state, body_len)?;
 
-        // Validate checksum algorithm is advertised.
-        #[cfg(feature = "checksum")]
-        if let Some((algorithm, _)) = &body.checksum
-            && self.config.has_extension(Extension::Checksum)
-            && !self.config.supports_checksum_algorithm(*algorithm)
-        {
-            return Err(Error::UnsupportedChecksum(algorithm.as_str().to_string()));
-        }
-
-        #[cfg(feature = "checksum")]
-        if let Some((algorithm, expected)) = body.checksum {
-            let calculated = crate::checksum::calculate(algorithm, &body.bytes);
-            if calculated != expected {
-                use base64::Engine;
-                return Err(Error::ChecksumMismatch {
-                    expected: base64::engine::general_purpose::STANDARD.encode(&expected),
-                    actual: base64::engine::general_purpose::STANDARD.encode(&calculated),
-                });
-            }
-        }
-        #[cfg(not(feature = "checksum"))]
-        let _ = body.checksum;
-
-        let projected_offset = state.offset().saturating_add(body_len);
-        if state
-            .length()
-            .is_some_and(|length| projected_offset == length)
-        {
+        if receive_projection.completes_upload {
             let mut completed_state = state.clone();
-            completed_state.set_offset(projected_offset);
-            let pre_finish_ctx =
-                HookContext::new(HookEvent::PreFinish, completed_state, request_info.clone());
-            let pre_finish_result = self.hooks.execute_pre(&pre_finish_ctx).await?;
-
-            if !pre_finish_result.proceed {
-                return Err(Error::HookRejected {
-                    status_code: pre_finish_result.reject_status.unwrap_or(400),
-                    message: pre_finish_result.reject_message.unwrap_or_default(),
-                });
-            }
+            completed_state.set_offset(receive_projection.projected_offset);
+            run_pre_finish(self.hooks, &request_info, completed_state).await?;
         }
 
         let new_offset = self
             .storage
             .append(&mut state, ChunkStream::Buffered(body.bytes))
             .await?;
-        state.set_offset(new_offset);
+        ensure_committed_offset(new_offset, receive_projection.projected_offset)?;
+        apply_receive_offset(&mut state, new_offset);
         self.state_store.set(&state, false).await?;
 
         let post_receive_ctx =
@@ -333,113 +149,6 @@ where
 
         Ok(response)
     }
-}
-
-async fn collect_chunk_stream(
-    stream: ChunkStream,
-    body_limit: Option<u64>,
-) -> Result<bytes::Bytes, Error> {
-    match stream {
-        ChunkStream::Buffered(b) => {
-            enforce_body_limit(0, b.len(), body_limit)?;
-            Ok(b)
-        }
-        ChunkStream::Stream(mut s) => {
-            let mut buffer = bytes::BytesMut::new();
-            while let Some(chunk) = s.next().await {
-                let bytes = chunk.map_err(|e| Error::Internal(e.to_string()))?;
-                enforce_body_limit(buffer.len(), bytes.len(), body_limit)?;
-                buffer.extend_from_slice(&bytes);
-            }
-            Ok(buffer.freeze())
-        }
-    }
-}
-
-fn enforce_body_limit(
-    current_len: usize,
-    next_len: usize,
-    body_limit: Option<u64>,
-) -> Result<(), Error> {
-    let Some(limit) = body_limit else {
-        return Ok(());
-    };
-    let next_total = (current_len as u64).saturating_add(next_len as u64);
-    if next_total > limit {
-        return Err(Error::SizeExceeded {
-            size: next_total,
-            max: limit,
-        });
-    }
-
-    Ok(())
-}
-
-fn body_size_limit(config: &Config, state: &crate::state::UploadState) -> Option<u64> {
-    [
-        config.max_chunk_size_limit(),
-        config
-            .max_size_limit()
-            .map(|max_size| max_size.saturating_sub(state.offset())),
-        state
-            .length()
-            .map(|length| length.saturating_sub(state.offset())),
-    ]
-    .into_iter()
-    .flatten()
-    .min()
-}
-
-fn validate_content_length(headers: &Headers, actual_len: u64) -> Result<(), Error> {
-    if let Some(content_length) = headers.content_length
-        && content_length != actual_len
-    {
-        return Err(Error::InvalidHeader {
-            header: "Content-Length",
-            message: format!(
-                "declared content length {content_length} does not match body size {actual_len}"
-            ),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_body_size(
-    config: &Config,
-    state: &crate::state::UploadState,
-    body_len: u64,
-) -> Result<(), Error> {
-    if let Some(max_chunk) = config.max_chunk_size_limit()
-        && body_len > max_chunk
-    {
-        return Err(Error::SizeExceeded {
-            size: body_len,
-            max: max_chunk,
-        });
-    }
-
-    if let Some(max_size) = config.max_size_limit() {
-        let projected = state.offset().saturating_add(body_len);
-        if projected > max_size {
-            return Err(Error::SizeExceeded {
-                size: projected,
-                max: max_size,
-            });
-        }
-    }
-
-    if let Some(length) = state.length() {
-        let projected = state.offset().saturating_add(body_len);
-        if projected > length {
-            return Err(Error::SizeExceeded {
-                size: projected,
-                max: length,
-            });
-        }
-    }
-
-    Ok(())
 }
 
 fn make_hook_request_info(headers: &Headers, upload_id: &str) -> HookRequestInfo {
@@ -476,9 +185,64 @@ mod tests {
     use crate::hooks::{HookChain, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
     use crate::state::{UploadState, memory::MemoryStateStore};
+    use crate::storage::ByteStream;
     use crate::storage::memory::MemoryStorage;
     use bytes::Bytes;
     use chrono::{Duration, Utc};
+
+    struct WrongOffsetStorage {
+        inner: MemoryStorage,
+        returned_offset: u64,
+    }
+
+    impl WrongOffsetStorage {
+        fn new(returned_offset: u64) -> Self {
+            Self {
+                inner: MemoryStorage::new(),
+                returned_offset,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for WrongOffsetStorage {
+        fn name(&self) -> &'static str {
+            "wrong-offset"
+        }
+
+        async fn create(&self, state: &mut UploadState) -> crate::error::Result<String> {
+            self.inner.create(state).await
+        }
+
+        async fn append(
+            &self,
+            state: &mut UploadState,
+            data: ChunkStream,
+        ) -> crate::error::Result<u64> {
+            self.inner.append(state, data).await?;
+            Ok(self.returned_offset)
+        }
+
+        async fn get_stream(&self, state: &UploadState) -> crate::error::Result<ByteStream> {
+            self.inner.get_stream(state).await
+        }
+
+        async fn concat(
+            &self,
+            target: &mut UploadState,
+            parts: Vec<UploadState>,
+        ) -> crate::error::Result<()> {
+            self.inner.concat(target, parts).await
+        }
+
+        async fn delete(&self, state: &UploadState) -> crate::error::Result<()> {
+            self.inner.delete(state).await
+        }
+
+        async fn size(&self, state: &UploadState) -> crate::error::Result<Option<u64>> {
+            self.inner.size(state).await
+        }
+    }
 
     fn headers(offset: u64) -> Headers {
         Headers {
@@ -513,7 +277,7 @@ mod tests {
         let hooks = NoopHookExecutor::new();
         let upload_id: UploadId = upload_id.parse().unwrap();
         Protocol::new(config, storage, store, &locker, &hooks)
-            .patch(h, &upload_id, PatchBody::stream(body(data), None))
+            .patch(h, &upload_id, RequestBody::from_chunk_stream(body(data)))
             .await
     }
 
@@ -535,6 +299,33 @@ mod tests {
 
         let stored = store.get("test-id").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 11);
+    }
+
+    #[tokio::test]
+    async fn patch_rejects_storage_offset_that_does_not_match_projected_offset() {
+        let storage = WrongOffsetStorage::new(0);
+        let store = MemoryStateStore::new();
+        let mut state = UploadState::new("test-id").with_length(10);
+        storage.create(&mut state).await.unwrap();
+        store.set(&state, true).await.unwrap();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .patch(
+                headers(0),
+                &upload_id,
+                RequestBody::from_chunk_stream(body(b"hello")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::Internal(message) if message.contains("storage returned offset 0") && message.contains("projected offset 5"))
+        );
+        let stored = store.get("test-id").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 0);
     }
 
     #[tokio::test]
@@ -639,6 +430,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Expired(_)));
+    }
+
+    #[tokio::test]
+    async fn expired_upload_is_rejected_before_reconciliation() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let mut state = UploadState::new("test-id")
+            .with_length(10)
+            .with_expiration(Utc::now() - Duration::hours(1));
+        storage.create(&mut state).await.unwrap();
+        storage.append(&mut state, body(b"hello")).await.unwrap();
+        state.set_offset(0);
+        store.set(&state, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Expiration);
+        let err = call(&config, &storage, &store, headers(0), "test-id", b"world")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Expired(_)));
+        let stored = store.get("test-id").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 0);
     }
 
     #[tokio::test]
@@ -801,7 +614,7 @@ mod tests {
             .patch(
                 headers(0),
                 &upload_id,
-                PatchBody::stream(body(b"Hello"), None),
+                RequestBody::from_chunk_stream(body(b"Hello")),
             )
             .await
             .unwrap_err();
@@ -819,54 +632,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collector_receives_limit_and_is_not_called_before_offset_validation() {
+    async fn stream_body_is_not_polled_before_offset_validation() {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
         };
 
         let (storage, store) = setup(UploadState::new("test-id").with_length(10)).await;
-        let config = Config::default().max_chunk_size(4);
         let locker = NoopLocker::new();
         let hooks = NoopHookExecutor::new();
         let upload_id: UploadId = "test-id".parse().unwrap();
+        let polled = Arc::new(AtomicBool::new(false));
+        let polled_for_stream = Arc::clone(&polled);
+        let stream: crate::BodyStream = Box::pin(futures::stream::once(async move {
+            polled_for_stream.store(true, Ordering::SeqCst);
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"test")))
+        }));
 
-        let called = Arc::new(AtomicBool::new(false));
-        let called_for_collector = called.clone();
-        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+        let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
             .patch(
                 headers(5),
                 &upload_id,
-                PatchBody::collector(move |_| async move {
-                    called_for_collector.store(true, Ordering::SeqCst);
-                    Ok(PatchBodyData {
-                        bytes: Bytes::new(),
-                        checksum: None,
-                    })
-                }),
+                crate::RequestBody::from_stream(stream),
             )
             .await
             .unwrap_err();
 
-        assert!(matches!(err, Error::OffsetMismatch { .. }));
-        assert!(!called.load(Ordering::SeqCst));
-
-        let received_limit = Protocol::new(&config, &storage, &store, &locker, &hooks)
-            .patch(
-                headers(0),
-                &upload_id,
-                PatchBody::collector(|body_limit| async move {
-                    Ok(PatchBodyData {
-                        bytes: Bytes::from_static(b"test"),
-                        checksum: None,
-                    })
-                    .inspect(|_| assert_eq!(body_limit, Some(4)))
-                }),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(received_limit.headers.get("upload-offset").unwrap(), "4");
+        assert!(matches!(
+            err,
+            Error::OffsetMismatch {
+                expected: 0,
+                actual: 5
+            }
+        ));
+        assert!(!polled.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

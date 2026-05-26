@@ -208,6 +208,7 @@ mod tests {
         let data = ChunkStream::from_bytes(Bytes::from("hello "));
         let offset = storage.append(&mut state, data).await.unwrap();
         assert_eq!(offset, 6);
+        assert_eq!(state.offset(), 0);
 
         let data2 = ChunkStream::from_bytes(Bytes::from("world"));
         let offset2 = storage.append(&mut state, data2).await.unwrap();
