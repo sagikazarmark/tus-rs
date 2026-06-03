@@ -33,7 +33,7 @@ futures = "0.3"
 http = "1"
 http-body-util = "0.1"
 humantime = "2"
-opendal = { version = "0.56", default-features = false }
+opendal = { version = "0.57", default-features = false }
 proptest = "1"
 reqwest = { version = "0.13", default-features = false }
 reqwest-middleware = { version = "0.5", default-features = false }
