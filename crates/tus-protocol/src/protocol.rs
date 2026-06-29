@@ -50,6 +50,7 @@ mod delete;
 mod download;
 mod head;
 mod headers;
+mod hook_context;
 mod options;
 mod patch;
 mod post;

@@ -4,11 +4,12 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{HookEvent, HookExecutor};
 use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::Storage;
 
+use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Headers, Protocol, Response, UploadId};
 
 /// Terminates an upload: removes the state and the stored bytes.
@@ -40,6 +41,8 @@ where
     /// missing, lock acquisition or state deletion fails, or a pre-terminate
     /// hook rejects the request.
     pub async fn delete(&self, headers: &Headers, upload_id: &UploadId) -> Result<Response, Error> {
+        let hook_contexts =
+            HookContextBuilder::new(self.config, HookRequestFacts::delete(headers, upload_id));
         let upload_id = upload_id.as_str();
         if !self.config.has_extension(Extension::Termination) {
             return Err(Error::ExtensionNotSupported("termination".to_string()));
@@ -56,10 +59,7 @@ where
             .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        let request_info = make_hook_request_info(headers, upload_id);
-
-        let pre_ctx =
-            HookContext::new(HookEvent::PreTerminate, state.clone(), request_info.clone());
+        let pre_ctx = hook_contexts.context(HookEvent::PreTerminate, state.clone());
         let pre_result = self.hooks.execute_pre(&pre_ctx).await?;
 
         if !pre_result.proceed {
@@ -81,7 +81,7 @@ where
 
         self.state_store.delete(upload_id).await?;
 
-        let post_ctx = HookContext::new(HookEvent::PostTerminate, state, request_info);
+        let post_ctx = hook_contexts.context(HookEvent::PostTerminate, state);
         self.hooks.execute_post(&post_ctx).await?;
 
         let mut response = Response::new(StatusCode::NO_CONTENT);
@@ -89,19 +89,6 @@ where
             response = response.with_header_owned(name, value);
         }
         Ok(response)
-    }
-}
-
-fn make_hook_request_info(headers: &Headers, upload_id: &str) -> HookRequestInfo {
-    let mut hook_headers = std::collections::HashMap::new();
-    if let Some(ct) = &headers.content_type {
-        hook_headers.insert("content-type".to_string(), ct.clone());
-    }
-    HookRequestInfo {
-        method: "DELETE".to_string(),
-        path: format!("/files/{}", upload_id),
-        remote_addr: None,
-        headers: hook_headers,
     }
 }
 

@@ -7,7 +7,7 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{HookEvent, HookExecutor};
 use crate::lifecycle::{
     ReceiveRequest, apply_receive_offset, ensure_active, ensure_committed_offset, prepare_receive,
     receive_body_size_limit, reconcile_state_offset, run_pre_finish, validate_receive_body,
@@ -17,6 +17,7 @@ use crate::state::StateStore;
 use crate::storage::{ChunkStream, Storage};
 
 use super::body::RequestBody;
+use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Headers, Protocol, Response, UploadId};
 
 /// Appends data to an upload.
@@ -46,6 +47,8 @@ where
         body: RequestBody,
     ) -> Result<Response, Error> {
         headers.validate_patch_content_type()?;
+        let hook_contexts =
+            HookContextBuilder::new(self.config, HookRequestFacts::patch(&headers, upload_id));
         let upload_id = upload_id.as_str();
 
         let client_offset = headers
@@ -65,13 +68,11 @@ where
 
         ensure_active(&state)?;
 
-        let request_info = make_hook_request_info(&headers, upload_id);
-
         reconcile_state_offset(
             self.storage,
             self.state_store,
             self.hooks,
-            &request_info,
+            hook_contexts.request_info(),
             &mut state,
         )
         .await?;
@@ -85,7 +86,7 @@ where
             },
         )?;
 
-        let pre_ctx = HookContext::new(HookEvent::PreReceive, state.clone(), request_info.clone());
+        let pre_ctx = hook_contexts.context(HookEvent::PreReceive, state.clone());
         let pre_result = self.hooks.execute_pre(&pre_ctx).await?;
 
         if !pre_result.proceed {
@@ -112,7 +113,7 @@ where
         if receive_projection.completes_upload {
             let mut completed_state = state.clone();
             completed_state.set_offset(receive_projection.projected_offset);
-            run_pre_finish(self.hooks, &request_info, completed_state).await?;
+            run_pre_finish(self.hooks, hook_contexts.request_info(), completed_state).await?;
         }
 
         let new_offset = self
@@ -123,13 +124,11 @@ where
         apply_receive_offset(&mut state, new_offset);
         self.state_store.set(&state, false).await?;
 
-        let post_receive_ctx =
-            HookContext::new(HookEvent::PostReceive, state.clone(), request_info.clone());
+        let post_receive_ctx = hook_contexts.context(HookEvent::PostReceive, state.clone());
         self.hooks.execute_post(&post_receive_ctx).await?;
 
         if state.is_complete() {
-            let post_finish_ctx =
-                HookContext::new(HookEvent::PostFinish, state.clone(), request_info);
+            let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
             self.hooks.execute_post(&post_finish_ctx).await?;
         }
 
@@ -147,28 +146,6 @@ where
         }
 
         Ok(response)
-    }
-}
-
-fn make_hook_request_info(headers: &Headers, upload_id: &str) -> HookRequestInfo {
-    let mut hook_headers = std::collections::HashMap::new();
-    if let Some(offset) = headers.upload_offset {
-        hook_headers.insert("upload-offset".to_string(), offset.to_string());
-    }
-    if let Some(length) = headers.upload_length {
-        hook_headers.insert("upload-length".to_string(), length.to_string());
-    }
-    if let Some(ct) = &headers.content_type {
-        hook_headers.insert("content-type".to_string(), ct.clone());
-    }
-    if let Some(cl) = headers.content_length {
-        hook_headers.insert("content-length".to_string(), cl.to_string());
-    }
-    HookRequestInfo {
-        method: "PATCH".to_string(),
-        path: format!("/files/{}", upload_id),
-        remote_addr: None,
-        headers: hook_headers,
     }
 }
 

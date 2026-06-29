@@ -4,7 +4,7 @@ use http::StatusCode;
 
 use crate::config::{Config, Extension};
 use crate::error::Error;
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{HookEvent, HookExecutor};
 use crate::lifecycle::{
     CreationRequest, CreationTransition, create_final_upload as create_lifecycle_final_upload,
     ensure_committed_offset, prepare_creation, run_pre_finish,
@@ -14,6 +14,7 @@ use crate::state::{StateStore, UploadState};
 use crate::storage::{ChunkStream, Storage};
 
 use super::body::RequestBody;
+use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Headers, Protocol, Response};
 
 /// Creates a new upload.
@@ -38,6 +39,7 @@ where
     /// are missing or invalid, the declared size exceeds configuration limits,
     /// hooks reject the request, or storage/state persistence fails.
     pub async fn post(&self, headers: Headers, body: RequestBody) -> Result<Response, Error> {
+        let hook_contexts = HookContextBuilder::new(self.config, HookRequestFacts::post(&headers));
         let has_body = post_has_body(&headers);
         if has_body {
             headers.validate_patch_content_type()?;
@@ -51,15 +53,13 @@ where
         let mut state = match transition {
             CreationTransition::Upload(state) => state,
             CreationTransition::Final { state, part_urls } => {
-                return self.create_final_upload(&headers, state, part_urls).await;
+                return self
+                    .create_final_upload(&headers, &hook_contexts, state, part_urls)
+                    .await;
             }
         };
 
-        let hook_ctx = HookContext::new(
-            HookEvent::PreCreate,
-            state.clone(),
-            make_hook_request_info(&headers),
-        );
+        let hook_ctx = hook_contexts.context(HookEvent::PreCreate, state.clone());
         let pre_result = self.hooks.execute_pre(&hook_ctx).await?;
 
         if !pre_result.proceed {
@@ -81,7 +81,10 @@ where
                 .map(|ct| ct.starts_with("application/offset+octet-stream"))
                 .unwrap_or(false);
         let creation_body = if is_creation_with_upload {
-            Some(self.prepare_creation_body(&headers, &state, body).await?)
+            Some(
+                self.prepare_creation_body(&headers, &hook_contexts, &state, body)
+                    .await?,
+            )
         } else {
             None
         };
@@ -89,15 +92,13 @@ where
         self.storage.create(&mut state).await?;
         self.state_store.set(&state, true).await?;
 
-        let post_ctx = HookContext::new(
-            HookEvent::PostCreate,
-            state.clone(),
-            make_hook_request_info(&headers),
-        );
+        let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
         self.hooks.execute_post(&post_ctx).await?;
 
         if let Some(data) = creation_body
-            && let Err(e) = self.commit_creation_body(&headers, &mut state, data).await
+            && let Err(e) = self
+                .commit_creation_body(&hook_contexts, &mut state, data)
+                .await
         {
             // Something in the body-write phase (storage append or state
             // persistence) failed. Roll back the just-created state record and
@@ -139,6 +140,7 @@ where
     async fn prepare_creation_body(
         &self,
         headers: &Headers,
+        hook_contexts: &HookContextBuilder,
         state: &UploadState,
         body: RequestBody,
     ) -> Result<bytes::Bytes, Error> {
@@ -160,7 +162,8 @@ where
         {
             let mut completed_state = state.clone();
             completed_state.set_offset(projected_offset);
-            self.execute_pre_finish(headers, completed_state).await?;
+            self.execute_pre_finish(hook_contexts, completed_state)
+                .await?;
         }
 
         Ok(data)
@@ -168,7 +171,7 @@ where
 
     async fn commit_creation_body(
         &self,
-        headers: &Headers,
+        hook_contexts: &HookContextBuilder,
         state: &mut UploadState,
         data: bytes::Bytes,
     ) -> Result<(), Error> {
@@ -182,11 +185,7 @@ where
         self.state_store.set(state, false).await?;
 
         if state.is_complete() {
-            let post_finish_ctx = HookContext::new(
-                HookEvent::PostFinish,
-                state.clone(),
-                make_hook_request_info(headers),
-            );
+            let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
             self.hooks.execute_post(&post_finish_ctx).await?;
         }
 
@@ -196,6 +195,7 @@ where
     async fn create_final_upload(
         &self,
         headers: &Headers,
+        hook_contexts: &HookContextBuilder,
         state: UploadState,
         part_urls: Vec<String>,
     ) -> Result<Response, Error> {
@@ -204,7 +204,7 @@ where
             self.state_store,
             self.hooks,
             self.config,
-            &make_hook_request_info(headers),
+            hook_contexts.request_info(),
             state,
             part_urls,
         )
@@ -237,8 +237,12 @@ where
         Ok(response)
     }
 
-    async fn execute_pre_finish(&self, headers: &Headers, state: UploadState) -> Result<(), Error> {
-        run_pre_finish(self.hooks, &make_hook_request_info(headers), state).await
+    async fn execute_pre_finish(
+        &self,
+        hook_contexts: &HookContextBuilder,
+        state: UploadState,
+    ) -> Result<(), Error> {
+        run_pre_finish(self.hooks, hook_contexts.request_info(), state).await
     }
 }
 
@@ -295,33 +299,6 @@ fn validate_creation_body_size(
     }
 
     Ok(())
-}
-
-fn make_hook_request_info(headers: &Headers) -> HookRequestInfo {
-    let mut hook_headers = std::collections::HashMap::new();
-
-    if let Some(offset) = headers.upload_offset {
-        hook_headers.insert("upload-offset".to_string(), offset.to_string());
-    }
-    if let Some(length) = headers.upload_length {
-        hook_headers.insert("upload-length".to_string(), length.to_string());
-    }
-    if headers.upload_defer_length {
-        hook_headers.insert("upload-defer-length".to_string(), "1".to_string());
-    }
-    if let Some(ct) = &headers.content_type {
-        hook_headers.insert("content-type".to_string(), ct.clone());
-    }
-    if let Some(cl) = headers.content_length {
-        hook_headers.insert("content-length".to_string(), cl.to_string());
-    }
-
-    HookRequestInfo {
-        method: "POST".to_string(),
-        path: String::new(),
-        remote_addr: None,
-        headers: hook_headers,
-    }
 }
 
 #[cfg(all(

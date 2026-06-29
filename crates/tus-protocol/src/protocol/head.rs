@@ -7,12 +7,13 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::hooks::HookExecutor;
 use crate::lifecycle::{ensure_active, final_upload_response_facts, reconcile_state_offset};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
 use crate::storage::Storage;
 
+use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Protocol, Response, UploadId};
 
 /// Returns the status of an upload identified by `upload_id`.
@@ -37,6 +38,7 @@ where
     /// Returns an error if the upload does not exist, has expired, or if state
     /// reconciliation against the storage backend fails.
     pub async fn head(&self, upload_id: &UploadId) -> Result<Response, Error> {
+        let hook_contexts = HookContextBuilder::new(self.config, HookRequestFacts::head(upload_id));
         let upload_id = upload_id.as_str();
         let _guard = self
             .locker
@@ -52,17 +54,11 @@ where
 
         ensure_active(&upload_state)?;
 
-        let request_info = HookRequestInfo {
-            method: "HEAD".to_string(),
-            path: format!("/files/{}", upload_id),
-            remote_addr: None,
-            headers: std::collections::HashMap::new(),
-        };
         reconcile_state_offset(
             self.storage,
             self.state_store,
             self.hooks,
-            &request_info,
+            hook_contexts.request_info(),
             &mut upload_state,
         )
         .await?;

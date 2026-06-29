@@ -8,13 +8,14 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 
 use crate::config::TUS_RESUMABLE;
 use crate::error::Error;
-use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::hooks::HookExecutor;
 use crate::lifecycle::{ensure_active, reconcile_state_offset};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::ByteStream;
 use crate::storage::Storage;
 
+use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Protocol, UploadId};
 
 /// Request inputs for the non-standard download helper.
@@ -58,6 +59,8 @@ where
             return Err(Error::MethodNotAllowed("GET".to_string()));
         }
 
+        let hook_contexts =
+            HookContextBuilder::new(self.config, HookRequestFacts::get(request.upload_id));
         let upload_id = request.upload_id.as_str();
         let _guard = self
             .locker
@@ -73,17 +76,11 @@ where
 
         ensure_active(&state)?;
 
-        let request_info = HookRequestInfo {
-            method: "GET".to_string(),
-            path: format!("{}/{}", self.config.base_path_str(), upload_id),
-            remote_addr: None,
-            headers: std::collections::HashMap::new(),
-        };
         reconcile_state_offset(
             self.storage,
             self.state_store,
             self.hooks,
-            &request_info,
+            hook_contexts.request_info(),
             &mut state,
         )
         .await?;
