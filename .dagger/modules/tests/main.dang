@@ -1,0 +1,229 @@
+type Tests {
+  let tus: Tus!
+
+  new(ws: Workspace!) {
+    self.tus = Dagger.tus(ws)
+
+    self
+  }
+
+  """
+  The tus CLI tests.
+  """
+  cli(tusdVersion: String! = "latest", rustusVersion: String! = "latest"): CliTests! {
+    CliTests(self, tusdVersion, rustusVersion)
+  }
+}
+
+type CliTests {
+  let parent: Tests!
+  let tusdVersion: String!
+  let rustusVersion: String!
+
+  let cli: Container! {
+    Dagger
+      .container
+      .from("debian:trixie")
+      .withEnvVariable("DEBIAN_FRONTEND", "noninteractive")
+      .withExec(["apt-get", "update"])
+      .withExec(["apt-get", "install", "-y", "--no-install-recommends", "ca-certificates"])
+      .withMountedFile("/usr/local/bin/tus", self.parent.tus.cli)
+  }
+
+  """
+  Run the CLI test suite against the tusd server.
+  """
+  tusd: CliTestSuite! {
+    let server = Dagger
+      .container
+      .from("tusproject/tusd:" + self.tusdVersion)
+      .withUser("root")
+      .withExposedPort(1080)
+      .withDefaultArgs([
+        "-host=0.0.0.0",
+        "-port=1080",
+        "-upload-dir=/srv/tusd/data",
+      ])
+
+    CliTestSuite(server, self.cli)
+  }
+
+  """
+  Run the CLI test suite against the rustus server.
+  """
+  rustus: CliTestSuite! {
+    let server = Dagger
+      .container(platform: "linux/amd64")
+      .from("s3rius/rustus:" + self.rustusVersion)
+      .withEnvVariable("RUSTUS_SERVER_HOST", "0.0.0.0")
+      .withEnvVariable("RUSTUS_SERVER_PORT", "1080")
+      .withEnvVariable("RUSTUS_URL", "/files")
+      .withEnvVariable("RUSTUS_MAX_BODY_SIZE", "1073741824")
+      .withEnvVariable("RUSTUS_STORAGE", "file-storage")
+      .withEnvVariable("RUSTUS_DATA_DIR", "/data")
+      .withEnvVariable("RUSTUS_DIR_STRUCTURE", "flat")
+      .withEnvVariable("RUSTUS_EXTENSIONS", "getting,creation,termination,creation-with-upload,creation-defer-length,concatenation,checksum")
+      .withEnvVariable("RUSTUS_INFO_STORAGE", "file-info-storage")
+      .withEnvVariable("RUSTUS_INFO_DIR", "/data/info")
+      .withExec(["mkdir", "-p", "/data"])
+      .withExposedPort(1080)
+
+    CliTestSuite(server, self.cli)
+  }
+}
+
+type CliTestSuite {
+  let server: Container!
+  let client: Container!
+
+  new(
+    server: Container!,
+    client: Container!,
+  ) {
+    self.server = server
+    self.client = client
+
+    self
+  }
+
+  basic: Void @check {
+    let input = "hello from tus-rs dagger e2e\n"
+    let service = self.server.asService(useEntrypoint: true)
+    let uploadUrl = self
+      .client
+      .withServiceBinding("server", service)
+      .withNewFile("/tmp/input.txt", contents: input)
+      .withExec([
+        "/usr/local/bin/tus",
+        "--endpoint",
+        "http://server:1080/files/",
+        "upload",
+        "--no-progress",
+        "--output",
+        "url",
+        "/tmp/input.txt",
+      ])
+      .stdout
+      .trimSuffix("\n")
+    let contentUrl = uploadUrl.replace(
+      "http://server:1080",
+      service.endpoint(port: 1080, scheme: "http"),
+      1,
+    )
+    let content = Dagger.http(contentUrl).contents
+
+    assert { content == input }
+
+    null
+  }
+
+  createUpload: Void @check {
+    let input = "hello from tus-rs dagger create upload\n"
+    let service = self.server.asService(useEntrypoint: true)
+    let client = self
+      .client
+      .withServiceBinding("server", service)
+      .withNewFile("/tmp/input.txt", contents: input)
+    let uploadUrl = client
+      .withExec([
+        "/usr/local/bin/tus",
+        "--endpoint",
+        "http://server:1080/files/",
+        "create",
+        "--length",
+        "39B",
+      ])
+      .stdout
+      .trimSuffix("\n")
+    let uploadedUrl = client
+      .withExec([
+        "/usr/local/bin/tus",
+        "upload",
+        "--no-progress",
+        "--output",
+        "url",
+        "/tmp/input.txt",
+        uploadUrl,
+      ])
+      .stdout
+      .trimSuffix("\n")
+    let contentUrl = uploadUrl.replace(
+      "http://server:1080",
+      service.endpoint(port: 1080, scheme: "http"),
+      1,
+    )
+    let content = Dagger.http(contentUrl).contents
+
+    assert { uploadedUrl == uploadUrl }
+    assert { content == input }
+
+    null
+  }
+
+  createInfo: Void @check {
+    let service = self.server.asService(useEntrypoint: true)
+    let client = self.client.withServiceBinding("server", service)
+    let uploadUrl = client
+      .withExec([
+        "/usr/local/bin/tus",
+        "--endpoint",
+        "http://server:1080/files/",
+        "create",
+        "--length",
+        "1KiB",
+        "--metadata",
+        "filename=created.bin",
+      ])
+      .stdout
+      .trimSuffix("\n")
+    let info = client
+      .withExec([
+        "/usr/local/bin/tus",
+        "info",
+        uploadUrl,
+      ])
+      .stdout
+    let expected = "url: __UPLOAD_URL__\noffset: 0\nlength: 1024\nmetadata:\nfilename=created.bin\n".replace(
+      "__UPLOAD_URL__",
+      uploadUrl,
+      1,
+    )
+
+    assert { info == expected }
+
+    null
+  }
+
+  createTerminate: Void @check {
+    let service = self.server.asService(useEntrypoint: true)
+    let client = self.client.withServiceBinding("server", service)
+    let uploadUrl = client
+      .withExec([
+        "/usr/local/bin/tus",
+        "--endpoint",
+        "http://server:1080/files/",
+        "create",
+        "--length",
+        "3",
+      ])
+      .stdout
+      .trimSuffix("\n")
+    let verify = client
+      .withExec([
+        "/usr/local/bin/tus",
+        "terminate",
+        uploadUrl,
+      ])
+      .withEnvVariable("UPLOAD_URL", uploadUrl)
+      .withExec([
+        "sh",
+        "-c",
+        "/usr/local/bin/tus info \"$UPLOAD_URL\" >/tmp/info.out 2>/tmp/info.err; test $? -ne 0",
+      ])
+      .stdout
+
+    assert { verify == "" }
+
+    null
+  }
+}

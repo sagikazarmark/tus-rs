@@ -1,0 +1,7 @@
+ignore = [".devenv", "target"]
+
+[modules.rust]
+source = "github.com/sagikazarmark/daggerverse-beta/rust"
+
+[modules.tests]
+source = ".dagger/modules/tests"
