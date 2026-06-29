@@ -1,7 +1,7 @@
 type Rust {
   let source: Directory!
   let workspacePath: String!
-  pub container: Container!
+  container: Container!
   let targets: [String!]!
 
   let useCargoChef: Boolean!
@@ -205,7 +205,7 @@ type Rust {
     }
   }
 
-  pub buildContainer(target: String! = ""): Container! {
+  buildContainer(target: String! = ""): Container! {
     self.withSource(self.withTargetCache(self.dependencyBaseContainer(target)))
   }
 
@@ -262,7 +262,7 @@ type Rust {
   """
   Run `cargo build` for each configured target.
   """
-  pub build(
+  build(
     """
     Cargo features to enable, comma-separated.
     """
@@ -271,7 +271,7 @@ type Rust {
     Override targets. Empty list inherits the globally configured `targets`.
     """
     targets: [String!]! = [],
-  ): Void! @check {
+  ): Void @check {
     self.resolveTargets(targets).each { target =>
       self.buildContainer(target).withExec(
         self.cargoCoreArgs(["cargo", "build"], feature),
@@ -284,7 +284,7 @@ type Rust {
   """
   Run `cargo build` for a single binary.
   """
-  pub binary(
+  binary(
     """
     Name of the binary to build.
     """
@@ -336,7 +336,7 @@ type Rust {
   """
   Run `cargo test` for each configured target.
   """
-  pub test(
+  test(
     """
     Cargo features to enable, comma-separated.
     """
@@ -345,7 +345,7 @@ type Rust {
     Override targets. Empty list inherits the globally configured `targets`.
     """
     targets: [String!]! = [],
-  ): Void! @check {
+  ): Void @check {
     self.resolveTargets(targets).each { target =>
       self.buildContainer(target).withExec(
         self.cargoCoreArgs(["cargo", "test"], feature),
@@ -357,7 +357,7 @@ type Rust {
   """
   Runs `cargo audit` against Cargo.lock.
   """
-  pub audit(
+  audit(
     workspace: Workspace!,
     """
     Cargo.lock file to audit and use for dependency cache warming.
@@ -419,7 +419,7 @@ type Rust {
   """
   Checks Rust source formatting with `cargo fmt --check`.
   """
-  pub fmt: String! @check {
+  fmt: String! @check {
     self
       .withSource(self.withFmt(self.baseContainer))
       .withExec(["cargo", "fmt", "--", "--check"])
@@ -433,7 +433,7 @@ type Rust {
   """
   Runs `cargo clippy --all-targets -- -D warnings` for each configured target.
   """
-  pub clippy(
+  clippy(
     """
     Cargo features to enable, comma-separated.
     """
@@ -442,7 +442,7 @@ type Rust {
     Override targets. Empty list inherits the globally configured `targets`.
     """
     targets: [String!]! = [],
-  ): Void! @check {
+  ): Void @check {
     self.resolveTargets(targets).each { target =>
       self.withClippy(self.buildContainer(target)).withExec(
         self.cargoCoreArgs(
@@ -462,7 +462,7 @@ type Rust {
   """
   Builds rustdoc and treats warnings as errors.
   """
-  pub doc(
+  doc(
     """
     Cargo features to enable, comma-separated.
     """
@@ -478,7 +478,7 @@ type Rust {
   """
   Runs a fixer and returns a changeset that can be inspected or applied.
   """
-  pub fix(
+  fix(
     """
     Tool to run: clippy.
     """

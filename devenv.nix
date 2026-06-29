@@ -1,12 +1,9 @@
 { pkgs, ... }:
 
 {
-  imports = [
-    ./nix/dang.nix
-    ./nix/dagger.nix
-  ];
-
   dotenv.enable = true;
+
+  dagger.enable = true;
 
   packages = with pkgs; [
     lld
@@ -16,10 +13,6 @@
     cargo-release
     cargo-watch
   ];
-
-  dagger = {
-    enable = true;
-  };
 
   languages = {
     rust = {

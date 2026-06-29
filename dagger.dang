@@ -1,5 +1,5 @@
 type Tus {
-  let rust = rust
+  let rust = Dagger.rust
 
   new {
     self
@@ -8,11 +8,11 @@ type Tus {
   """
   The tus CLI binary.
   """
-  pub cli: File! {
+  cli: File! {
     self.rust.binary("tus")
   }
 
-  pub tests: Tests! {
+  tests: Tests! {
     Tests(self)
   }
 }
@@ -23,7 +23,7 @@ type Tests {
   """
   The tus CLI tests.
   """
-  pub cli: CliTests! {
+  cli: CliTests! {
     CliTests(self.tus)
   }
 }
@@ -42,7 +42,7 @@ type CliTests {
   """
   Run the CLI test suite against the tusd server.
   """
-  pub tusd: TestSuite! {
+  tusd: TestSuite! {
     let server = Dagger
       .container
       .from("tusproject/tusd:latest")
@@ -60,7 +60,7 @@ type CliTests {
   """
   Run the CLI test suite against the tusd server.
   """
-  pub rustus: TestSuite! {
+  rustus: TestSuite! {
     let server = Dagger
       .container(platform: "linux/amd64")
       .from("s3rius/rustus:latest")
@@ -95,7 +95,7 @@ type TestSuite {
     self
   }
 
-  pub basic: Void! @check {
+  basic: Void @check {
     let input = "hello from tus-rs dagger e2e\n"
     let service = self.server.asService(useEntrypoint: true)
     let uploadUrl = self
@@ -126,7 +126,7 @@ type TestSuite {
     null
   }
 
-  pub createUpload: Void! @check {
+  createUpload: Void @check {
     let input = "hello from tus-rs dagger create upload\n"
     let service = self.server.asService(useEntrypoint: true)
     let client = self
@@ -169,7 +169,7 @@ type TestSuite {
     null
   }
 
-  pub createInfo: Void! @check {
+  createInfo: Void @check {
     let service = self.server.asService(useEntrypoint: true)
     let client = self.client.withServiceBinding("server", service)
     let uploadUrl = client
@@ -203,7 +203,7 @@ type TestSuite {
     null
   }
 
-  pub createTerminate: Void! @check {
+  createTerminate: Void @check {
     let service = self.server.asService(useEntrypoint: true)
     let client = self.client.withServiceBinding("server", service)
     let uploadUrl = client
