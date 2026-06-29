@@ -10,17 +10,22 @@ mod creation;
 mod final_upload;
 mod finish;
 mod receive;
+mod recovery;
 
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub use final_upload::{
     FinalUploadPlan, FinalUploadStatus, load_final_upload_plan, load_final_upload_status,
     summarize_final_parts,
 };
+pub(crate) use final_upload::{
+    create_final_upload, final_upload_response_facts, repair_final_upload,
+};
 pub use finish::run_pre_finish;
 pub use receive::{
     ReceiveProjection, ReceiveRequest, apply_receive_offset, prepare_receive,
     receive_body_size_limit, validate_receive_body,
 };
+pub(crate) use recovery::reconcile_state_offset;
 
 use crate::error::{Error, Result};
 use crate::state::UploadState;

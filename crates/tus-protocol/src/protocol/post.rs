@@ -6,8 +6,8 @@ use crate::config::{Config, Extension};
 use crate::error::Error;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
 use crate::lifecycle::{
-    CreationRequest, CreationTransition, ensure_committed_offset, load_final_upload_plan,
-    prepare_creation, run_pre_finish,
+    CreationRequest, CreationTransition, create_final_upload as create_lifecycle_final_upload,
+    ensure_committed_offset, prepare_creation, run_pre_finish,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
@@ -196,83 +196,41 @@ where
     async fn create_final_upload(
         &self,
         headers: &Headers,
-        mut state: UploadState,
+        state: UploadState,
         part_urls: Vec<String>,
     ) -> Result<Response, Error> {
-        let final_plan = load_final_upload_plan(self.state_store, self.config, &part_urls).await?;
-
-        state.mark_final(final_plan.part_ids.clone());
-        if let Some(total_length) = final_plan.status.total_length {
-            state.set_length(total_length);
-        }
-        state.set_offset(final_plan.status.expected_offset());
-
-        let hook_ctx = HookContext::new(
-            HookEvent::PreCreate,
-            state.clone(),
-            make_hook_request_info(headers),
-        );
-        let pre_result = self.hooks.execute_pre(&hook_ctx).await?;
-
-        if !pre_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_result.reject_status.unwrap_or(400),
-                message: pre_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        if let Some(modified_state) = pre_result.upload {
-            state = modified_state;
-        }
-
-        if final_plan.status.all_complete {
-            self.execute_pre_finish(headers, state.clone()).await?;
-        }
-
-        self.storage.create(&mut state).await?;
-
-        if final_plan.status.ready_to_materialize() {
-            self.storage.concat(&mut state, final_plan.parts).await?;
-        }
-
-        self.state_store.set(&state, true).await?;
-
-        let post_create_ctx = HookContext::new(
-            HookEvent::PostCreate,
-            state.clone(),
-            make_hook_request_info(headers),
-        );
-        self.hooks.execute_post(&post_create_ctx).await?;
-
-        if final_plan.status.all_complete {
-            let post_finish_ctx = HookContext::new(
-                HookEvent::PostFinish,
-                state.clone(),
-                make_hook_request_info(headers),
-            );
-            self.hooks.execute_post(&post_finish_ctx).await?;
-        }
+        let created = create_lifecycle_final_upload(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            self.config,
+            &make_hook_request_info(headers),
+            state,
+            part_urls,
+        )
+        .await?;
+        let facts = created.response_facts();
 
         let location = self
             .config
-            .upload_url(state.id(), headers.base_url(self.config).as_deref());
+            .upload_url(created.state.id(), headers.base_url(self.config).as_deref());
         let mut response = Response::new(StatusCode::CREATED).with_header("location", &location);
 
-        if final_plan.status.all_complete {
-            response = response.with_header("upload-offset", state.offset().to_string());
+        if let Some(offset) = facts.offset {
+            response = response.with_header("upload-offset", offset.to_string());
         }
 
-        if let Some(length) = state.length() {
+        if let Some(length) = facts.length {
             response = response.with_header("upload-length", length.to_string());
         }
 
         if self.config.has_extension(Extension::Expiration)
-            && let Some(expires) = state.expires_header()
+            && let Some(expires) = created.state.expires_header()
         {
             response = response.with_header("upload-expires", &expires);
         }
 
-        for (name, value) in pre_result.response_headers {
+        for (name, value) in created.response_headers {
             response = response.with_header_owned(name, value);
         }
 

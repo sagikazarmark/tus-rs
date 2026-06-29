@@ -10,14 +10,13 @@ use crate::error::Error;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
 use crate::lifecycle::{
     ReceiveRequest, apply_receive_offset, ensure_active, ensure_committed_offset, prepare_receive,
-    receive_body_size_limit, run_pre_finish, validate_receive_body,
+    receive_body_size_limit, reconcile_state_offset, run_pre_finish, validate_receive_body,
 };
 use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::{ChunkStream, Storage};
 
 use super::body::RequestBody;
-use super::recovery::reconcile_state_offset;
 use super::{Headers, Protocol, Response, UploadId};
 
 /// Appends data to an upload.

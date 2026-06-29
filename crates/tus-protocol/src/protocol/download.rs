@@ -9,13 +9,12 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use crate::config::TUS_RESUMABLE;
 use crate::error::Error;
 use crate::hooks::{HookExecutor, HookRequestInfo};
-use crate::lifecycle::ensure_active;
+use crate::lifecycle::{ensure_active, reconcile_state_offset};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::ByteStream;
 use crate::storage::Storage;
 
-use super::recovery::reconcile_state_offset;
 use super::{Protocol, UploadId};
 
 /// Request inputs for the non-standard download helper.

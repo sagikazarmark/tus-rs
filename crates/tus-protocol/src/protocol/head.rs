@@ -8,12 +8,11 @@ use http::StatusCode;
 use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookExecutor, HookRequestInfo};
-use crate::lifecycle::ensure_active;
+use crate::lifecycle::{ensure_active, final_upload_response_facts, reconcile_state_offset};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
 use crate::storage::Storage;
 
-use super::recovery::reconcile_state_offset;
 use super::{Protocol, Response, UploadId};
 
 /// Returns the status of an upload identified by `upload_id`.
@@ -70,13 +69,22 @@ where
 
         let mut response = Response::new(StatusCode::OK).with_header("cache-control", "no-store");
 
-        if !upload_state.is_final() || upload_state.is_complete() {
-            response = response.with_header("upload-offset", upload_state.offset().to_string());
+        let final_facts = final_upload_response_facts(&upload_state);
+        if let Some(offset) = final_facts
+            .as_ref()
+            .map(|facts| facts.offset)
+            .unwrap_or(Some(upload_state.offset()))
+        {
+            response = response.with_header("upload-offset", offset.to_string());
         }
 
-        if let Some(length) = upload_state.length() {
+        let length = final_facts
+            .as_ref()
+            .map(|facts| facts.length)
+            .unwrap_or_else(|| upload_state.length());
+        if let Some(length) = length {
             response = response.with_header("upload-length", length.to_string());
-        } else if !upload_state.is_final() {
+        } else if final_facts.is_none() {
             // `Upload-Defer-Length` is a creation-time signal for non-final
             // uploads. Final uploads always have a known length (sum of parts)
             // or are unfinished with length-not-yet-known, which we simply omit.

@@ -53,7 +53,6 @@ mod headers;
 mod options;
 mod patch;
 mod post;
-mod recovery;
 mod response;
 mod upload_id;
 

@@ -1,0 +1,4 @@
+[["version","1"]]
+["","container.from",["docker.io/library/rust:latest","linux/arm64"],"sha256:6df234c1eb92b0545468fab8c18fc5f9adfb994e7d4f67d81d45fe2fcabf5657","pin"]
+["","container.from",["docker.io/tusproject/tusd:latest","linux/arm64"],"sha256:9610f0f8edf4cceeb26f1b3ac9fa4bb4803d61a878e222c1573cda63c9e23374","pin"]
+["","git.head",["https://github.com/sagikazarmark/daggerverse-beta"],"e0185af2435fb2bad43e21ca1b878ed630bb5687","float"]
