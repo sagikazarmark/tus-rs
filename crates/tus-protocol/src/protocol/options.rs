@@ -60,7 +60,7 @@ mod tests {
     use crate::hooks::NoopHookExecutor;
     use crate::locking::NoopLocker;
     use crate::state::{StateStore, UploadState};
-    use crate::storage::{ByteStream, ChunkStream, Storage};
+    use crate::storage::{AppendRequest, ByteStream, ConcatRequest, Storage, StorageHandle};
     use chrono::{DateTime, Utc};
 
     struct TestStorage;
@@ -72,27 +72,27 @@ mod tests {
             "test"
         }
 
-        async fn create(&self, _state: &mut UploadState) -> Result<String> {
+        async fn create(&self, _upload_id: &str) -> Result<StorageHandle> {
             unreachable!()
         }
 
-        async fn append(&self, _state: &mut UploadState, _data: ChunkStream) -> Result<u64> {
+        async fn append(&self, _request: AppendRequest) -> Result<StorageHandle> {
             unreachable!()
         }
 
-        async fn get_stream(&self, _state: &UploadState) -> Result<ByteStream> {
+        async fn get_stream(&self, _handle: &StorageHandle) -> Result<ByteStream> {
             unreachable!()
         }
 
-        async fn concat(&self, _target: &mut UploadState, _parts: Vec<UploadState>) -> Result<()> {
+        async fn concat(&self, _request: ConcatRequest) -> Result<StorageHandle> {
             unreachable!()
         }
 
-        async fn delete(&self, _state: &UploadState) -> Result<()> {
+        async fn delete(&self, _handle: &StorageHandle) -> Result<()> {
             unreachable!()
         }
 
-        async fn size(&self, _state: &UploadState) -> Result<Option<u64>> {
+        async fn size(&self, _handle: &StorageHandle) -> Result<Option<u64>> {
             unreachable!()
         }
     }

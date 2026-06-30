@@ -15,8 +15,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio_util::io::ReaderStream;
 
 use crate::error::{Error, Result};
-use crate::state::UploadState;
-use crate::storage::{ByteStream, ChunkStream, Storage};
+use crate::storage::{
+    AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle,
+};
 
 /// File-based storage backend.
 ///
@@ -79,9 +80,8 @@ impl FileStorage {
         stem.len() == 32 && uuid::Uuid::parse_str(stem).is_ok()
     }
 
-    fn path_for_state(&self, state: &UploadState) -> Result<PathBuf> {
-        let key = state.storage_key().ok_or(Error::StorageKeyMissing)?;
-        self.path_for_key(key)
+    fn path_for_handle(&self, handle: &StorageHandle) -> Result<PathBuf> {
+        self.path_for_key(handle.key())
     }
 }
 
@@ -99,7 +99,7 @@ impl Storage for FileStorage {
         "file"
     }
 
-    async fn create(&self, state: &mut UploadState) -> Result<String> {
+    async fn create(&self, _upload_id: &str) -> Result<StorageHandle> {
         let key = Self::new_key();
         let path = self.path_for_key(&key)?;
         let file = OpenOptions::new()
@@ -110,26 +110,29 @@ impl Storage for FileStorage {
             .map_err(Error::Io)?;
         file.sync_all().await.map_err(Error::Io)?;
 
-        state.set_storage_key(key.clone());
-        Ok(key)
+        Ok(StorageHandle::new(key))
     }
 
-    async fn append(&self, state: &mut UploadState, data: ChunkStream) -> Result<u64> {
-        let path = self.path_for_state(state)?;
+    async fn append(&self, request: AppendRequest) -> Result<StorageHandle> {
+        let AppendRequest {
+            handle,
+            expected_offset,
+            data,
+            completes_upload: _,
+        } = request;
+        let path = self.path_for_handle(&handle)?;
         let current_size = match fs::metadata(&path).await {
             Ok(metadata) => metadata.len(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let key = state.storage_key().ok_or(Error::StorageKeyMissing)?;
-                return Err(Error::NotFound(key.to_string()));
+                return Err(Error::NotFound(handle.key().to_string()));
             }
             Err(error) => return Err(Error::Io(error)),
         };
 
-        if current_size != state.offset() {
+        if current_size != expected_offset {
             return Err(Error::Internal(format!(
-                "file storage size {current_size} does not match recorded offset {} for upload {}",
-                state.offset(),
-                state.id()
+                "file storage size {current_size} does not match expected offset {expected_offset} for key {}",
+                handle.key()
             )));
         }
 
@@ -142,23 +145,23 @@ impl Storage for FileStorage {
         file.write_all(&bytes).await.map_err(Error::Io)?;
         file.sync_data().await.map_err(Error::Io)?;
 
-        let new_offset = current_size.saturating_add(bytes.len() as u64);
-        Ok(new_offset)
+        Ok(handle)
     }
 
-    async fn get_stream(&self, state: &UploadState) -> Result<ByteStream> {
-        let path = self.path_for_state(state)?;
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+        let path = self.path_for_handle(handle)?;
         let file = File::open(path).await.map_err(Error::Io)?;
         Ok(Box::pin(ReaderStream::new(file)))
     }
 
-    async fn concat(&self, target: &mut UploadState, parts: Vec<UploadState>) -> Result<()> {
-        let target_path = self.path_for_state(target)?;
+    async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
+        let ConcatRequest { target, parts } = request;
+        let target_path = self.path_for_handle(&target)?;
         let temp_path = unique_concat_temp_path(&target_path);
         let mut writer = File::create(&temp_path).await.map_err(Error::Io)?;
 
         for part in &parts {
-            let part_path = self.path_for_state(part)?;
+            let part_path = self.path_for_handle(part)?;
             let mut reader = File::open(part_path).await.map_err(Error::Io)?;
             tokio::io::copy(&mut reader, &mut writer)
                 .await
@@ -169,14 +172,11 @@ impl Storage for FileStorage {
         drop(writer);
         replace_file(&temp_path, &target_path).await?;
 
-        Ok(())
+        Ok(target)
     }
 
-    async fn delete(&self, state: &UploadState) -> Result<()> {
-        let Some(key) = state.storage_key() else {
-            return Ok(());
-        };
-        let path = self.path_for_key(key)?;
+    async fn delete(&self, handle: &StorageHandle) -> Result<()> {
+        let path = self.path_for_handle(handle)?;
 
         match fs::remove_file(path).await {
             Ok(()) => Ok(()),
@@ -185,11 +185,8 @@ impl Storage for FileStorage {
         }
     }
 
-    async fn size(&self, state: &UploadState) -> Result<Option<u64>> {
-        let Some(key) = state.storage_key() else {
-            return Ok(None);
-        };
-        let path = self.path_for_key(key)?;
+    async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>> {
+        let path = self.path_for_handle(handle)?;
 
         match fs::metadata(path).await {
             Ok(metadata) => Ok(Some(metadata.len())),
@@ -200,11 +197,11 @@ impl Storage for FileStorage {
 
     async fn get_range(
         &self,
-        state: &UploadState,
+        handle: &StorageHandle,
         start: u64,
         end: Option<u64>,
     ) -> Result<ByteStream> {
-        let path = self.path_for_state(state)?;
+        let path = self.path_for_handle(handle)?;
         let size = fs::metadata(&path).await.map_err(Error::Io)?.len();
         let start = start.min(size);
         let end = end.unwrap_or(size).min(size);
@@ -282,28 +279,32 @@ mod tests {
     async fn appends_and_streams_upload_data() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path()).await.unwrap();
-        let mut state = UploadState::new("upload-1");
 
-        let key = storage.create(&mut state).await.unwrap();
-        assert_eq!(state.storage_key(), Some(key.as_str()));
-        assert_eq!(storage.size(&state).await.unwrap(), Some(0));
+        let handle = storage.create("upload-1").await.unwrap();
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(0));
 
-        let offset = storage
-            .append(&mut state, ChunkStream::from_bytes(Bytes::from("hello ")))
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("hello ")),
+                completes_upload: false,
+            })
             .await
             .unwrap();
-        assert_eq!(offset, 6);
-        assert_eq!(state.offset(), 0);
-        state.set_offset(offset);
 
-        let offset = storage
-            .append(&mut state, ChunkStream::from_bytes(Bytes::from("world")))
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 6,
+                data: ChunkStream::from_bytes(Bytes::from("world")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
-        assert_eq!(offset, 11);
-        assert_eq!(storage.size(&state).await.unwrap(), Some(11));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
 
-        let body = collect_stream(storage.get_stream(&state).await.unwrap()).await;
+        let body = collect_stream(storage.get_stream(&handle).await.unwrap()).await;
         assert_eq!(body, b"hello world");
     }
 
@@ -311,22 +312,22 @@ mod tests {
     async fn reads_byte_ranges_without_buffering_contract_changes() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path()).await.unwrap();
-        let mut state = UploadState::new("upload-2");
 
-        storage.create(&mut state).await.unwrap();
-        let offset = storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from("alpha beta gamma")),
-            )
+        let handle = storage.create("upload-2").await.unwrap();
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("alpha beta gamma")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
-        state.set_offset(offset);
 
-        let range = collect_stream(storage.get_range(&state, 6, Some(10)).await.unwrap()).await;
+        let range = collect_stream(storage.get_range(&handle, 6, Some(10)).await.unwrap()).await;
         assert_eq!(range, b"beta");
 
-        let suffix = collect_stream(storage.get_range(&state, 11, None).await.unwrap()).await;
+        let suffix = collect_stream(storage.get_range(&handle, 11, None).await.unwrap()).await;
         assert_eq!(suffix, b"gamma");
     }
 
@@ -335,26 +336,34 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path()).await.unwrap();
 
-        let mut part1 = UploadState::new("part-1");
-        storage.create(&mut part1).await.unwrap();
-        let offset = storage
-            .append(&mut part1, ChunkStream::from_bytes(Bytes::from("left")))
+        let part1 = storage.create("part-1").await.unwrap();
+        let part1 = storage
+            .append(AppendRequest {
+                handle: part1,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("left")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
-        part1.set_offset(offset);
 
-        let mut part2 = UploadState::new("part-2");
-        storage.create(&mut part2).await.unwrap();
-        let offset = storage
-            .append(&mut part2, ChunkStream::from_bytes(Bytes::from("right")))
+        let part2 = storage.create("part-2").await.unwrap();
+        let part2 = storage
+            .append(AppendRequest {
+                handle: part2,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("right")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
-        part2.set_offset(offset);
 
-        let mut target = UploadState::new("target");
-        storage.create(&mut target).await.unwrap();
-        storage
-            .concat(&mut target, vec![part1, part2])
+        let target = storage.create("target").await.unwrap();
+        let target = storage
+            .concat(ConcatRequest {
+                target,
+                parts: vec![part1, part2],
+            })
             .await
             .unwrap();
 
@@ -366,31 +375,86 @@ mod tests {
     async fn delete_removes_upload_data() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path()).await.unwrap();
-        let mut state = UploadState::new("upload-3");
 
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(&mut state, ChunkStream::from_bytes(Bytes::from("data")))
+        let handle = storage.create("upload-3").await.unwrap();
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("data")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
-        assert_eq!(storage.size(&state).await.unwrap(), Some(4));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(4));
 
-        storage.delete(&state).await.unwrap();
-        assert_eq!(storage.size(&state).await.unwrap(), None);
+        storage.delete(&handle).await.unwrap();
+        assert_eq!(storage.size(&handle).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn append_preserves_existing_handle_internals() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).await.unwrap();
+        let mut handle = storage.create("upload-internals").await.unwrap();
+        handle.set_internal("adapter_fact", "keep-me");
+
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("data")),
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(handle.get_internal("adapter_fact"), Some("keep-me"));
+    }
+
+    #[tokio::test]
+    async fn concat_preserves_existing_target_handle_internals() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).await.unwrap();
+        let part = storage.create("part-internals").await.unwrap();
+        let part = storage
+            .append(AppendRequest {
+                handle: part,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("part")),
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+        let mut target = storage.create("target-internals").await.unwrap();
+        target.set_internal("target_fact", "keep-me");
+
+        let target = storage
+            .concat(ConcatRequest {
+                target,
+                parts: vec![part],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(target.get_internal("target_fact"), Some("keep-me"));
     }
 
     #[tokio::test]
     async fn rejects_stale_offset_before_reading_body() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path()).await.unwrap();
-        let mut state = UploadState::new("upload-4");
 
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(&mut state, ChunkStream::from_bytes(Bytes::from("seed")))
+        let handle = storage.create("upload-4").await.unwrap();
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("seed")),
+                completes_upload: false,
+            })
             .await
             .unwrap();
-        state.set_offset(0);
 
         let stream: ByteStream = Box::pin(futures::stream::once(async {
             panic!("body stream should not be read when storage offset is stale");
@@ -398,12 +462,17 @@ mod tests {
             Ok(Bytes::from("must not be consumed"))
         }));
         let error = storage
-            .append(&mut state, ChunkStream::from_stream(stream))
+            .append(AppendRequest {
+                handle: handle.clone(),
+                expected_offset: 0,
+                data: ChunkStream::from_stream(stream),
+                completes_upload: false,
+            })
             .await
             .unwrap_err();
 
         assert!(matches!(error, Error::Internal(_)));
-        assert_eq!(storage.size(&state).await.unwrap(), Some(4));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(4));
     }
 
     #[test]

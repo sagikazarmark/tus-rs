@@ -6,12 +6,12 @@ use crate::config::{Config, Extension};
 use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor};
 use crate::lifecycle::{
-    CreationRequest, CreationTransition, create_final_upload as create_lifecycle_final_upload,
-    ensure_committed_offset, prepare_creation, run_pre_finish,
+    CreationRequest, CreationTransition, ReceiveProjection, apply_receive_commit,
+    create_final_upload as create_lifecycle_final_upload, prepare_creation, run_pre_finish,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
-use crate::storage::{ChunkStream, Storage};
+use crate::storage::{AppendRequest, ChunkStream, Storage};
 
 use super::body::RequestBody;
 use super::hook_context::{HookContextBuilder, HookRequestFacts};
@@ -89,7 +89,8 @@ where
             None
         };
 
-        self.storage.create(&mut state).await?;
+        let handle = self.storage.create(state.id()).await?;
+        state.set_storage_handle(handle);
         self.state_store.set(&state, true).await?;
 
         let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
@@ -104,7 +105,9 @@ where
             // persistence) failed. Roll back the just-created state record and
             // storage object so the upload ID does not survive as a zombie
             // record.
-            let _ = self.storage.delete(&state).await;
+            if let Some(handle) = state.storage_handle() {
+                let _ = self.storage.delete(&handle).await;
+            }
             let _ = self.state_store.delete(state.id()).await;
             return Err(e);
         }
@@ -176,12 +179,26 @@ where
         data: bytes::Bytes,
     ) -> Result<(), Error> {
         let projected_offset = state.offset().saturating_add(data.len() as u64);
-        let new_offset = self
+        let completes_upload = state
+            .length()
+            .is_some_and(|length| projected_offset == length);
+        let handle = self
             .storage
-            .append(state, ChunkStream::Buffered(data))
+            .append(AppendRequest {
+                handle: state.require_storage_handle()?,
+                expected_offset: state.offset(),
+                data: ChunkStream::Buffered(data),
+                completes_upload,
+            })
             .await?;
-        ensure_committed_offset(new_offset, projected_offset)?;
-        state.set_offset(new_offset);
+        apply_receive_commit(
+            state,
+            ReceiveProjection {
+                projected_offset,
+                completes_upload,
+            },
+            handle,
+        );
         self.state_store.set(state, false).await?;
 
         if state.is_complete() {
@@ -315,65 +332,10 @@ mod tests {
     use crate::locking::NoopLocker;
     use crate::state::UploadMetadata;
     use crate::state::memory::MemoryStateStore;
-    use crate::storage::ByteStream;
     use crate::storage::memory::MemoryStorage;
     use bytes::Bytes;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct WrongOffsetStorage {
-        inner: MemoryStorage,
-        returned_offset: u64,
-    }
-
-    impl WrongOffsetStorage {
-        fn new(returned_offset: u64) -> Self {
-            Self {
-                inner: MemoryStorage::new(),
-                returned_offset,
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Storage for WrongOffsetStorage {
-        fn name(&self) -> &'static str {
-            "wrong-offset"
-        }
-
-        async fn create(&self, state: &mut UploadState) -> crate::error::Result<String> {
-            self.inner.create(state).await
-        }
-
-        async fn append(
-            &self,
-            state: &mut UploadState,
-            data: ChunkStream,
-        ) -> crate::error::Result<u64> {
-            self.inner.append(state, data).await?;
-            Ok(self.returned_offset)
-        }
-
-        async fn get_stream(&self, state: &UploadState) -> crate::error::Result<ByteStream> {
-            self.inner.get_stream(state).await
-        }
-
-        async fn concat(
-            &self,
-            target: &mut UploadState,
-            parts: Vec<UploadState>,
-        ) -> crate::error::Result<()> {
-            self.inner.concat(target, parts).await
-        }
-
-        async fn delete(&self, state: &UploadState) -> crate::error::Result<()> {
-            self.inner.delete(state).await
-        }
-
-        async fn size(&self, state: &UploadState) -> crate::error::Result<Option<u64>> {
-            self.inner.size(state).await
-        }
-    }
 
     fn headers_with_length(length: u64) -> Headers {
         Headers {
@@ -394,6 +356,29 @@ mod tests {
         Protocol::new(config, storage, state_store, &locker, &hooks)
             .post(headers, body)
             .await
+    }
+
+    async fn create_storage(storage: &MemoryStorage, state: &mut UploadState) {
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
+    }
+
+    async fn append_storage(storage: &MemoryStorage, state: &mut UploadState, data: Bytes) {
+        let projected_offset = state.offset().saturating_add(data.len() as u64);
+        let completes_upload = state
+            .length()
+            .is_some_and(|length| projected_offset == length);
+        let handle = storage
+            .append(AppendRequest {
+                handle: state.require_storage_handle().unwrap(),
+                expected_offset: state.offset(),
+                data: ChunkStream::from_bytes(data),
+                completes_upload,
+            })
+            .await
+            .unwrap();
+        state.set_storage_handle(handle);
+        state.set_offset(projected_offset);
     }
 
     #[tokio::test]
@@ -534,38 +519,6 @@ mod tests {
 
         assert_eq!(response.status, StatusCode::CREATED);
         assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
-    }
-
-    #[tokio::test]
-    async fn creation_with_upload_rejects_storage_offset_that_does_not_match_projected_offset() {
-        let storage = WrongOffsetStorage::new(0);
-        let store = MemoryStateStore::new();
-        let locker = NoopLocker::new();
-        let hooks = NoopHookExecutor::new();
-        let headers = Headers {
-            upload_length: Some(10),
-            content_type: Some("application/offset+octet-stream".to_string()),
-            content_length: Some(5),
-            ..Default::default()
-        };
-
-        let config = Config::default().with_extension(Extension::CreationWithUpload);
-
-        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
-            .post(
-                headers,
-                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
-                    b"hello",
-                ))),
-            )
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(err, Error::Internal(message) if message.contains("storage returned offset 0") && message.contains("projected offset 5"))
-        );
-        assert!(store.list(10, 0).await.unwrap().is_empty());
-        assert!(storage.inner.is_empty());
     }
 
     #[tokio::test]
@@ -717,27 +670,13 @@ mod tests {
 
         // Seed two complete partial uploads (in both state store and storage).
         let mut part1 = UploadState::new("part1").with_length(50).as_partial();
-        storage.create(&mut part1).await.unwrap();
-        storage
-            .append(
-                &mut part1,
-                ChunkStream::from_bytes(Bytes::copy_from_slice(&[0u8; 50])),
-            )
-            .await
-            .unwrap();
-        part1.set_offset(50);
+        create_storage(&storage, &mut part1).await;
+        append_storage(&storage, &mut part1, Bytes::copy_from_slice(&[0u8; 50])).await;
         store.set(&part1, true).await.unwrap();
 
         let mut part2 = UploadState::new("part2").with_length(50).as_partial();
-        storage.create(&mut part2).await.unwrap();
-        storage
-            .append(
-                &mut part2,
-                ChunkStream::from_bytes(Bytes::copy_from_slice(&[0u8; 50])),
-            )
-            .await
-            .unwrap();
-        part2.set_offset(50);
+        create_storage(&storage, &mut part2).await;
+        append_storage(&storage, &mut part2, Bytes::copy_from_slice(&[0u8; 50])).await;
         store.set(&part2, true).await.unwrap();
 
         let headers = Headers {
@@ -770,15 +709,8 @@ mod tests {
         let storage = MemoryStorage::new();
 
         let mut part = UploadState::new("part1").with_length(5).as_partial();
-        storage.create(&mut part).await.unwrap();
-        storage
-            .append(
-                &mut part,
-                ChunkStream::from_bytes(Bytes::from_static(b"Hello")),
-            )
-            .await
-            .unwrap();
-        part.set_offset(5);
+        create_storage(&storage, &mut part).await;
+        append_storage(&storage, &mut part, Bytes::from_static(b"Hello")).await;
         store.set(&part, true).await.unwrap();
 
         let headers = Headers {

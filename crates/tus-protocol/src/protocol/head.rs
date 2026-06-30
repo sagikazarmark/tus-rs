@@ -153,7 +153,7 @@ mod tests {
     use crate::hooks::{HookChain, NoopHookExecutor, PreHookResult};
     use crate::locking::{LockGuard, Locker, NoopLocker};
     use crate::state::{UploadState, memory::MemoryStateStore};
-    use crate::storage::{ChunkStream, Storage, memory::MemoryStorage};
+    use crate::storage::{AppendRequest, ChunkStream, Storage, memory::MemoryStorage};
     use async_trait::async_trait;
     use bytes::Bytes;
     use chrono::{Duration, TimeZone, Utc};
@@ -222,6 +222,45 @@ mod tests {
             .await
     }
 
+    async fn create_storage(storage: &MemoryStorage, state: &mut UploadState) {
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
+    }
+
+    async fn append_storage(storage: &MemoryStorage, state: &mut UploadState, bytes: Bytes) {
+        let projected_offset = state.offset().saturating_add(bytes.len() as u64);
+        let completes_upload = state
+            .length()
+            .is_some_and(|length| projected_offset == length);
+        let handle = storage
+            .append(AppendRequest {
+                handle: state.require_storage_handle().unwrap(),
+                expected_offset: state.offset(),
+                data: ChunkStream::from_bytes(bytes),
+                completes_upload,
+            })
+            .await
+            .unwrap();
+        state.set_storage_handle(handle);
+        state.set_offset(projected_offset);
+    }
+
+    async fn body_bytes(storage: &MemoryStorage, state: &UploadState) -> Bytes {
+        let body = storage
+            .get_stream(&state.require_storage_handle().unwrap())
+            .await
+            .unwrap();
+        let chunks = body.collect::<Vec<_>>().await;
+        chunks
+            .into_iter()
+            .map(|chunk| chunk.unwrap())
+            .fold(bytes::BytesMut::new(), |mut acc, chunk| {
+                acc.extend_from_slice(&chunk);
+                acc
+            })
+            .freeze()
+    }
+
     #[tokio::test]
     async fn basic() {
         let storage = MemoryStorage::new();
@@ -255,14 +294,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(1000);
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from(vec![0; 500])),
-            )
-            .await
-            .unwrap();
+        create_storage(&storage, &mut state).await;
+        append_storage(&storage, &mut state, Bytes::from(vec![0; 500])).await;
         store.set(&state, true).await.unwrap();
         let response = call(&Config::default(), &storage, &store, "test-id")
             .await
@@ -403,31 +436,17 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let mut part1 = UploadState::new("part-1").with_length(4).as_partial();
-        storage.create(&mut part1).await.unwrap();
-        storage
-            .append(
-                &mut part1,
-                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
-            )
-            .await
-            .unwrap();
-        part1.set_offset(4);
+        create_storage(&storage, &mut part1).await;
+        append_storage(&storage, &mut part1, Bytes::from_static(b"ABCD")).await;
         store.set(&part1, true).await.unwrap();
 
         let mut part2 = UploadState::new("part-2").with_length(4).as_partial();
-        storage.create(&mut part2).await.unwrap();
-        storage
-            .append(
-                &mut part2,
-                ChunkStream::from_bytes(Bytes::from_static(b"EFGH")),
-            )
-            .await
-            .unwrap();
-        part2.set_offset(4);
+        create_storage(&storage, &mut part2).await;
+        append_storage(&storage, &mut part2, Bytes::from_static(b"EFGH")).await;
         store.set(&part2, true).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
+        create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
@@ -441,16 +460,7 @@ mod tests {
         let stored = store.get("final-1").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 8);
 
-        let body = storage.get_stream(&stored).await.unwrap();
-        let chunks = body.collect::<Vec<_>>().await;
-        let bytes = chunks
-            .into_iter()
-            .map(|chunk| chunk.unwrap())
-            .fold(bytes::BytesMut::new(), |mut acc, chunk| {
-                acc.extend_from_slice(&chunk);
-                acc
-            })
-            .freeze();
+        let bytes = body_bytes(&storage, &stored).await;
         assert_eq!(&bytes[..], b"ABCDEFGH");
     }
 
@@ -460,19 +470,12 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let mut part = UploadState::new("part-1").with_length(4).as_partial();
-        storage.create(&mut part).await.unwrap();
-        storage
-            .append(
-                &mut part,
-                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
-            )
-            .await
-            .unwrap();
-        part.set_offset(4);
+        create_storage(&storage, &mut part).await;
+        append_storage(&storage, &mut part, Bytes::from_static(b"ABCD")).await;
         store.set(&part, true).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
+        create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(0);
@@ -499,7 +502,13 @@ mod tests {
         let stored = store.get("final-1").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 0);
         assert!(!stored.is_complete());
-        assert_eq!(storage.size(&stored).await.unwrap(), Some(0));
+        assert_eq!(
+            storage
+                .size(&stored.require_storage_handle().unwrap())
+                .await
+                .unwrap(),
+            Some(0)
+        );
     }
 
     #[tokio::test]
@@ -508,19 +517,12 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let mut part = UploadState::new("part-1").with_length(4).as_partial();
-        storage.create(&mut part).await.unwrap();
-        storage
-            .append(
-                &mut part,
-                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
-            )
-            .await
-            .unwrap();
-        part.set_offset(4);
+        create_storage(&storage, &mut part).await;
+        append_storage(&storage, &mut part, Bytes::from_static(b"ABCD")).await;
         store.set(&part, true).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
+        create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
@@ -547,7 +549,13 @@ mod tests {
         let stored = store.get("final-1").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 4);
         assert!(stored.is_complete());
-        assert_eq!(storage.size(&stored).await.unwrap(), Some(0));
+        assert_eq!(
+            storage
+                .size(&stored.require_storage_handle().unwrap())
+                .await
+                .unwrap(),
+            Some(0)
+        );
     }
 
     #[tokio::test]
@@ -555,14 +563,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
-        storage
-            .append(
-                &mut final_upload,
-                ChunkStream::from_bytes(Bytes::from(vec![0; 1000])),
-            )
-            .await
-            .unwrap();
+        create_storage(&storage, &mut final_upload).await;
+        append_storage(&storage, &mut final_upload, Bytes::from(vec![0; 1000])).await;
         final_upload.mark_final(vec!["a".to_string(), "b".to_string()]);
         final_upload.set_length(1000);
         final_upload.set_offset(1000);
@@ -585,14 +587,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
-        storage
-            .append(
-                &mut final_upload,
-                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
-            )
-            .await
-            .unwrap();
+        create_storage(&storage, &mut final_upload).await;
+        append_storage(&storage, &mut final_upload, Bytes::from_static(b"ABCD")).await;
         final_upload.mark_final(vec!["missing-part".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
@@ -609,14 +605,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(10);
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-            )
-            .await
-            .unwrap();
+        create_storage(&storage, &mut state).await;
+        append_storage(&storage, &mut state, Bytes::from_static(b"hello")).await;
         state.set_offset(0);
         store.set(&state, true).await.unwrap();
 

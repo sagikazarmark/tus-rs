@@ -11,15 +11,15 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-tus-protocol = { workspace = true }
-
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 opendal = { workspace = true }
+tus-protocol = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-opendal = { workspace = true, features = ["services-memory"] }
+opendal = { workspace = true, features = ["services-fs"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-uuid = { workspace = true }

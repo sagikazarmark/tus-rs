@@ -19,6 +19,7 @@ pub mod file;
 #[cfg(all(feature = "storage-memory", not(feature = "local-futures")))]
 pub mod memory;
 
+use std::collections::HashMap;
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -27,7 +28,6 @@ use futures::{Stream, StreamExt};
 
 use crate::error::Result;
 use crate::runtime::MaybeSendSync;
-use crate::state::UploadState;
 
 /// Trait for storing upload file data.
 ///
@@ -51,37 +51,40 @@ pub trait Storage: MaybeSendSync {
 
     /// Creates storage for a new upload.
     ///
-    /// This should allocate any necessary resources (file handles, etc.)
-    /// and set `state.storage_key` to the storage identifier. Returns the
-    /// storage key/path that was created. The key should be opaque to clients
-    /// and safe to pass back to this storage implementation later.
-    async fn create(&self, state: &mut UploadState) -> Result<String>;
+    /// This should allocate any necessary resources (file handles, etc.) and
+    /// return an opaque handle that is safe to pass back to this storage
+    /// implementation later. The lifecycle module persists the returned handle
+    /// alongside upload state.
+    async fn create(&self, upload_id: &str) -> Result<StorageHandle>;
 
     /// Appends data to an existing upload.
     ///
-    /// Data should be appended starting at `state.offset`. After successful
-    /// append, the new offset should be returned. Implementations may modify
-    /// backend-specific values through `UploadState` internal-state helpers, but
-    /// must not advance protocol fields such as offset or length directly. The
-    /// protocol lifecycle verifies and applies the returned offset after the
-    /// append succeeds.
-    async fn append(&self, state: &mut UploadState, data: ChunkStream) -> Result<u64>;
+    /// Data should be committed at `request.expected_offset`. Implementations
+    /// may update the returned [`StorageHandle`] with backend-specific
+    /// bookkeeping, but protocol lifecycle code owns upload offset and length
+    /// advancement after this method succeeds. The returned handle replaces the
+    /// persisted handle, so implementations must preserve every existing
+    /// internal fact from `request.handle` that remains valid after the append.
+    async fn append(&self, request: AppendRequest) -> Result<StorageHandle>;
 
     /// Retrieves a stream of the upload data for download.
-    async fn get_stream(&self, state: &UploadState) -> Result<ByteStream>;
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream>;
 
     /// Concatenates multiple partial uploads into a final upload.
     ///
     /// Used by the Concatenation extension. The parts should be concatenated
     /// in the order provided. Backends should avoid exposing a partially
-    /// concatenated target as complete if copying fails midway.
-    async fn concat(&self, target: &mut UploadState, parts: Vec<UploadState>) -> Result<()>;
+    /// concatenated target as complete if copying fails midway. The returned
+    /// handle replaces the persisted target handle, so implementations must
+    /// preserve every existing target internal fact that remains valid after
+    /// concatenation.
+    async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle>;
 
     /// Deletes an upload's data from storage.
     ///
     /// Implementations should treat missing storage as success so termination
     /// cleanup can be retried safely.
-    async fn delete(&self, state: &UploadState) -> Result<()>;
+    async fn delete(&self, handle: &StorageHandle) -> Result<()>;
 
     /// Returns the current size of an upload in storage.
     ///
@@ -90,7 +93,7 @@ pub trait Storage: MaybeSendSync {
     ///
     /// Returns the actual size in bytes, or `None` if the storage key doesn't
     /// exist.
-    async fn size(&self, state: &UploadState) -> Result<Option<u64>>;
+    async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>>;
 
     /// Retrieves a range of bytes from the upload.
     ///
@@ -102,11 +105,11 @@ pub trait Storage: MaybeSendSync {
     /// memory. Backends with native range support should override this.
     async fn get_range(
         &self,
-        state: &UploadState,
+        handle: &StorageHandle,
         start: u64,
         end: Option<u64>,
     ) -> Result<ByteStream> {
-        let mut stream = self.get_stream(state).await?;
+        let mut stream = self.get_stream(handle).await?;
         let mut body = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(crate::error::Error::Io)?;
@@ -124,6 +127,83 @@ pub trait Storage: MaybeSendSync {
 
         Ok(Box::pin(futures::stream::once(async move { Ok(slice) })))
     }
+}
+
+/// Opaque storage addressing and backend-specific persisted facts.
+///
+/// Lifecycle code stores this handle on [`UploadState`](crate::UploadState),
+/// but storage adapters are the only code that should interpret the key or
+/// internal values. When a storage operation returns an updated handle, it is
+/// returning the complete persisted storage facts for the upload.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StorageHandle {
+    key: String,
+    internal: HashMap<String, String>,
+}
+
+impl StorageHandle {
+    /// Creates a storage handle from an opaque backend key.
+    pub fn new(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            internal: HashMap::new(),
+        }
+    }
+
+    /// Creates a storage handle from persisted parts.
+    pub fn from_parts(key: impl Into<String>, internal: HashMap<String, String>) -> Self {
+        Self {
+            key: key.into(),
+            internal,
+        }
+    }
+
+    /// Returns the opaque backend key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Consumes the handle and returns its persisted parts.
+    pub fn into_parts(self) -> (String, HashMap<String, String>) {
+        (self.key, self.internal)
+    }
+
+    /// Stashes backend-specific bookkeeping in the handle.
+    pub fn set_internal(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.internal.insert(key.into(), value.into());
+    }
+
+    /// Reads a backend-specific value previously stored on the handle.
+    pub fn get_internal(&self, key: &str) -> Option<&str> {
+        self.internal.get(key).map(String::as_str)
+    }
+
+    /// Removes a backend-specific value from the handle.
+    pub fn remove_internal(&mut self, key: &str) -> Option<String> {
+        self.internal.remove(key)
+    }
+}
+
+/// Storage append request facts.
+#[derive(Debug)]
+pub struct AppendRequest {
+    /// Opaque storage handle for the upload being appended to.
+    pub handle: StorageHandle,
+    /// Byte offset where this append is expected to start.
+    pub expected_offset: u64,
+    /// Upload bytes to append.
+    pub data: ChunkStream,
+    /// Whether lifecycle has determined this append completes the upload.
+    pub completes_upload: bool,
+}
+
+/// Storage concatenation request facts.
+#[derive(Debug)]
+pub struct ConcatRequest {
+    /// Opaque storage handle for the final upload target.
+    pub target: StorageHandle,
+    /// Opaque storage handles for partial uploads, in concatenation order.
+    pub parts: Vec<StorageHandle>,
 }
 
 /// A stream of data chunks for upload.

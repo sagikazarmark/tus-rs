@@ -302,7 +302,7 @@ mod handle_tests {
     use crate::hooks::NoopHookExecutor;
     use crate::locking::memory::MemoryLocker;
     use crate::state::{StateStore, UploadState, memory::MemoryStateStore};
-    use crate::storage::{ChunkStream, Storage, memory::MemoryStorage};
+    use crate::storage::{AppendRequest, ChunkStream, Storage, memory::MemoryStorage};
     use crate::{Config, DownloadRequest, ProtocolHandle, UploadId};
 
     #[test]
@@ -352,14 +352,19 @@ mod handle_tests {
         let storage = MemoryStorage::new();
         let state_store = MemoryStateStore::new();
         let mut upload = UploadState::new("test-id").with_length(5);
-        storage.create(&mut upload).await.unwrap();
-        storage
-            .append(
-                &mut upload,
-                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-            )
+        let handle = storage.create(upload.id()).await.unwrap();
+        upload.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: upload.require_storage_handle().unwrap(),
+                expected_offset: upload.offset(),
+                data: ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
+        upload.set_storage_handle(handle);
+        upload.set_offset(5);
         state_store.set(&upload, true).await.unwrap();
 
         let handle = ProtocolHandle::new(

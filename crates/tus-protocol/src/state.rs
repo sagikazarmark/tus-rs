@@ -24,8 +24,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::iter::FromIterator;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::runtime::MaybeSendSync;
+use crate::storage::StorageHandle;
 
 /// Trait for persisting upload state.
 ///
@@ -108,7 +109,7 @@ pub struct UploadState {
     /// Total size in bytes. None if deferred (Upload-Defer-Length).
     length: Option<u64>,
 
-    /// Storage backend key/path. Set by Storage::create().
+    /// Storage backend key/path. Set from the `Storage::create` handle.
     storage_key: Option<String>,
 
     // === Lifecycle ===
@@ -229,8 +230,33 @@ impl UploadState {
     }
 
     /// Sets the storage backend key/path.
+    ///
+    /// Prefer [`set_storage_handle`](Self::set_storage_handle) when persisting
+    /// a handle returned by [`Storage::create`](crate::storage::Storage::create).
     pub fn set_storage_key(&mut self, storage_key: impl Into<String>) {
         self.storage_key = Some(storage_key.into());
+    }
+
+    /// Returns the persisted storage handle, if assigned.
+    pub fn storage_handle(&self) -> Option<StorageHandle> {
+        self.storage_key
+            .clone()
+            .map(|key| StorageHandle::from_parts(key, self.internal.clone()))
+    }
+
+    /// Returns the persisted storage handle or a storage-key error.
+    pub(crate) fn require_storage_handle(&self) -> Result<StorageHandle> {
+        self.storage_handle().ok_or(Error::StorageKeyMissing)
+    }
+
+    /// Persists storage addressing and backend-specific facts on the upload.
+    ///
+    /// The handle is treated as the complete current storage fact set: existing
+    /// internal values are replaced by the handle's internal values.
+    pub fn set_storage_handle(&mut self, handle: StorageHandle) {
+        let (key, internal) = handle.into_parts();
+        self.storage_key = Some(key);
+        self.internal = internal;
     }
 
     /// Returns when the upload was created.
@@ -312,11 +338,12 @@ impl UploadState {
 
     /// Stashes backend-specific bookkeeping alongside the upload.
     ///
-    /// Intended for [`Storage`](crate::storage::Storage) implementations that
-    /// need to persist opaque identifiers between calls, for example an R2
-    /// multipart upload id, an S3 ETag list, or a staging path. The keys are
-    /// never exposed on the wire and are not part of the TUS protocol.
-    /// Application code and hooks should not read or write this map.
+    /// Prefer [`StorageHandle`](crate::storage::StorageHandle) for new storage
+    /// adapter code. These helpers remain available for code that needs direct
+    /// access to persisted backend facts, for example migration or inspection
+    /// tooling. The keys are never exposed on the wire and are not part of the
+    /// TUS protocol. Application code and hooks should not read or write this
+    /// map.
     pub fn set_internal(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.internal.insert(key.into(), value.into());
     }

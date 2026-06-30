@@ -76,12 +76,14 @@ where
             continue;
         }
 
-        target.storage.delete(&state).await.with_context(|| {
-            format!(
-                "failed to delete expired upload data {} for scope {}",
-                upload_id, target.scope
-            )
-        })?;
+        if let Some(handle) = state.storage_handle() {
+            target.storage.delete(&handle).await.with_context(|| {
+                format!(
+                    "failed to delete expired upload data {} for scope {}",
+                    upload_id, target.scope
+                )
+            })?;
+        }
         target
             .state_store
             .delete(state.id())
@@ -140,7 +142,7 @@ mod tests {
     use chrono::{Duration as ChronoDuration, Utc};
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::file::FileStateStore;
-    use tus_protocol::{ChunkStream, StateStore, Storage, UploadState};
+    use tus_protocol::{AppendRequest, ChunkStream, StateStore, Storage, UploadState};
     use tus_storage_opendal::Storage as ServerStorage;
 
     use super::*;
@@ -162,17 +164,27 @@ mod tests {
         let mut state = UploadState::new("expired-test")
             .with_length(5)
             .with_expiration(Utc::now() - ChronoDuration::seconds(1));
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(b"hello".to_vec().into()),
-            )
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: state.storage_handle().unwrap(),
+                expected_offset: state.offset(),
+                data: ChunkStream::from_bytes(b"hello".to_vec().into()),
+                completes_upload: true,
+            })
             .await
             .unwrap();
+        state.set_storage_handle(handle);
         state_store.set(&state, true).await.unwrap();
 
-        assert_eq!(storage.size(&state).await.unwrap(), Some(5));
+        assert_eq!(
+            storage
+                .size(&state.storage_handle().unwrap())
+                .await
+                .unwrap(),
+            Some(5)
+        );
 
         let target = ExpirationTarget::new(
             "test",
@@ -183,7 +195,13 @@ mod tests {
 
         let removed = sweep_expired_uploads(&target).await.unwrap();
         assert_eq!(removed, 1);
-        assert_eq!(storage.size(&state).await.unwrap(), None);
+        assert_eq!(
+            storage
+                .size(&state.storage_handle().unwrap())
+                .await
+                .unwrap(),
+            None
+        );
         assert!(state_store.get("expired-test").await.unwrap().is_none());
     }
 }

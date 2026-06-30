@@ -76,7 +76,7 @@ pub use hooks::{
 };
 pub use lifecycle::{
     CreationRequest, CreationTransition, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
-    ReceiveRequest, apply_receive_offset, ensure_active, load_final_upload_plan,
+    ReceiveRequest, apply_receive_commit, ensure_active, load_final_upload_plan,
     load_final_upload_status, prepare_creation, prepare_receive, receive_body_size_limit,
     run_pre_finish, summarize_final_parts, validate_receive_body,
 };
@@ -87,7 +87,7 @@ pub use protocol::{
 };
 pub use state::{MetadataValue, StateStore, UploadMetadata, UploadState};
 pub use storage::ByteStream;
-pub use storage::{ChunkStream, Storage};
+pub use storage::{AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHandle};
 
 /// Prelude module for convenient imports.
 pub mod prelude {
@@ -104,7 +104,7 @@ pub mod prelude {
         ProtocolHandle, RequestBody, Response, UploadId,
     };
     pub use crate::state::{StateStore, UploadState};
-    pub use crate::storage::Storage;
+    pub use crate::storage::{AppendRequest, ConcatRequest, Storage, StorageHandle};
 }
 
 #[cfg(test)]

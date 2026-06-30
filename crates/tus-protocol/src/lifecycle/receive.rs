@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::state::UploadState;
+use crate::storage::StorageHandle;
 
 use super::ensure_active;
 
@@ -135,9 +136,14 @@ pub fn validate_receive_body(
     })
 }
 
-/// Applies the offset returned by storage after a successful body commit.
-pub fn apply_receive_offset(state: &mut UploadState, new_offset: u64) {
-    state.set_offset(new_offset);
+/// Applies lifecycle-owned state changes after a successful storage commit.
+pub fn apply_receive_commit(
+    state: &mut UploadState,
+    projection: ReceiveProjection,
+    handle: StorageHandle,
+) {
+    state.set_storage_handle(handle);
+    state.set_offset(projection.projected_offset);
 }
 
 #[cfg(test)]

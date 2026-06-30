@@ -69,8 +69,8 @@ where
             });
         }
 
-        if state.storage_key().is_some()
-            && let Err(e) = self.storage.delete(&state).await
+        if let Some(handle) = state.storage_handle()
+            && let Err(e) = self.storage.delete(&handle).await
         {
             tracing::warn!(
                 upload_id = %upload_id,

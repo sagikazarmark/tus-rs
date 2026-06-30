@@ -35,11 +35,14 @@ where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
 {
-    let actual_offset = storage
-        .size(state)
-        .await
-        .map_err(|err| Error::Internal(err.to_string()))?
-        .unwrap_or(0);
+    let actual_offset = match state.storage_handle() {
+        Some(handle) => storage
+            .size(&handle)
+            .await
+            .map_err(|err| Error::Internal(err.to_string()))?
+            .unwrap_or(0),
+        None => 0,
+    };
 
     if actual_offset == state.offset() {
         return Ok(());

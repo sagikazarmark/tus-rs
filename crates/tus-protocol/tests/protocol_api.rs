@@ -9,8 +9,8 @@ use http::StatusCode;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    ChunkStream, Config, Error, Headers, HookRequestInfo, NoopHookExecutor, NoopLocker, Protocol,
-    Response, StateStore, Storage, UploadId, UploadState,
+    AppendRequest, ChunkStream, Config, Error, Headers, HookRequestInfo, NoopHookExecutor,
+    NoopLocker, Protocol, Response, StateStore, Storage, UploadId, UploadState,
 };
 
 #[tokio::test]
@@ -22,14 +22,17 @@ async fn protocol_head_uses_bundled_dependencies() {
     let hooks = NoopHookExecutor::new();
 
     let mut state = UploadState::new("test-id").with_length(42);
-    storage.create(&mut state).await.unwrap();
-    storage
-        .append(
-            &mut state,
-            ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-        )
+    let handle = storage.create(state.id()).await.unwrap();
+    let handle = storage
+        .append(AppendRequest {
+            handle,
+            expected_offset: 0,
+            data: ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+            completes_upload: false,
+        })
         .await
         .unwrap();
+    state.set_storage_handle(handle);
 
     state_store.set(&state, true).await.unwrap();
 

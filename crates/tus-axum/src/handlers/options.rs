@@ -31,8 +31,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tus_protocol::{
-        ByteStream, ChunkStream, Config, Extension, NoopHookExecutor, NoopLocker, ProtocolHandle,
-        Result as TusResult, TUS_RESUMABLE, UploadState,
+        AppendRequest, ByteStream, ConcatRequest, Config, Extension, NoopHookExecutor, NoopLocker,
+        ProtocolHandle, Result as TusResult, StorageHandle, TUS_RESUMABLE, UploadState,
     };
 
     struct MockStorage;
@@ -42,28 +42,22 @@ mod tests {
         fn name(&self) -> &'static str {
             "mock"
         }
-        async fn create(&self, state: &mut UploadState) -> TusResult<String> {
-            let key = format!("uploads/{}", state.id());
-            state.set_storage_key(key.clone());
-            Ok(key)
+        async fn create(&self, upload_id: &str) -> TusResult<StorageHandle> {
+            Ok(StorageHandle::new(format!("uploads/{upload_id}")))
         }
-        async fn append(&self, _state: &mut UploadState, _data: ChunkStream) -> TusResult<u64> {
-            Ok(0)
+        async fn append(&self, request: AppendRequest) -> TusResult<StorageHandle> {
+            Ok(request.handle)
         }
-        async fn get_stream(&self, _state: &UploadState) -> TusResult<ByteStream> {
+        async fn get_stream(&self, _handle: &StorageHandle) -> TusResult<ByteStream> {
             unimplemented!()
         }
-        async fn concat(
-            &self,
-            _target: &mut UploadState,
-            _parts: Vec<UploadState>,
-        ) -> TusResult<()> {
+        async fn concat(&self, request: ConcatRequest) -> TusResult<StorageHandle> {
+            Ok(request.target)
+        }
+        async fn delete(&self, _handle: &StorageHandle) -> TusResult<()> {
             Ok(())
         }
-        async fn delete(&self, _state: &UploadState) -> TusResult<()> {
-            Ok(())
-        }
-        async fn size(&self, _state: &UploadState) -> TusResult<Option<u64>> {
+        async fn size(&self, _handle: &StorageHandle) -> TusResult<Option<u64>> {
             Ok(None)
         }
     }

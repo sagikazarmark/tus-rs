@@ -71,9 +71,24 @@ mod tests {
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
     use tus_protocol::{
-        ChunkStream, Config, Error as ProtocolError, NoopHookExecutor, NoopLocker, ProtocolHandle,
-        Storage, UploadMetadata, UploadState,
+        AppendRequest, ChunkStream, Config, Error as ProtocolError, NoopHookExecutor, NoopLocker,
+        ProtocolHandle, Storage, UploadMetadata, UploadState,
     };
+
+    async fn seed_storage(storage: &MemoryStorage, state: &mut UploadState, bytes: Bytes) {
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: state.storage_handle().unwrap(),
+                expected_offset: state.offset(),
+                data: ChunkStream::from_bytes(bytes),
+                completes_upload: false,
+            })
+            .await
+            .unwrap();
+        state.set_storage_handle(handle);
+    }
 
     #[tokio::test]
     async fn axum_adapter_streams_completed_upload() {
@@ -83,14 +98,7 @@ mod tests {
         let mut metadata = UploadMetadata::new();
         metadata.insert("mimetype".to_string(), "text/plain");
         state.set_metadata(metadata);
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-            )
-            .await
-            .unwrap();
+        seed_storage(&storage, &mut state, Bytes::from_static(b"hello")).await;
         store.set(&state, true).await.unwrap();
 
         let protocol = TusProtocol::new(ProtocolHandle::new(
@@ -144,14 +152,7 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(11);
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from_static(b"hello world")),
-            )
-            .await
-            .unwrap();
+        seed_storage(&storage, &mut state, Bytes::from_static(b"hello world")).await;
         store.set(&state, true).await.unwrap();
 
         let protocol = TusProtocol::new(ProtocolHandle::new(
@@ -188,14 +189,7 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(5);
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-            )
-            .await
-            .unwrap();
+        seed_storage(&storage, &mut state, Bytes::from_static(b"hello")).await;
 
         let stale_state = state.clone();
         store.set(&stale_state, true).await.unwrap();
@@ -228,14 +222,7 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(5);
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from_static(b"hel")),
-            )
-            .await
-            .unwrap();
+        seed_storage(&storage, &mut state, Bytes::from_static(b"hel")).await;
 
         let stale_state = state.clone();
         store.set(&stale_state, true).await.unwrap();

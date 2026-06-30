@@ -62,8 +62,8 @@ use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    ByteStream, ChunkStream, Config, NoopHookExecutor, ProtocolHandle, Result as TusResult,
-    Storage, UploadState,
+    AppendRequest, ByteStream, ConcatRequest, Config, NoopHookExecutor, ProtocolHandle,
+    Result as TusResult, Storage, StorageHandle,
 };
 
 /// Wraps `MemoryStorage` and inserts a configurable sleep inside
@@ -83,25 +83,25 @@ impl Storage for SleepyStorage {
     fn name(&self) -> &'static str {
         "sleepy-memory"
     }
-    async fn create(&self, state: &mut UploadState) -> TusResult<String> {
-        self.inner.create(state).await
+    async fn create(&self, upload_id: &str) -> TusResult<StorageHandle> {
+        self.inner.create(upload_id).await
     }
-    async fn append(&self, state: &mut UploadState, data: ChunkStream) -> TusResult<u64> {
-        let result = self.inner.append(state, data).await;
+    async fn append(&self, request: AppendRequest) -> TusResult<StorageHandle> {
+        let result = self.inner.append(request).await;
         tokio::time::sleep(self.delay).await;
         result
     }
-    async fn get_stream(&self, state: &UploadState) -> TusResult<ByteStream> {
-        self.inner.get_stream(state).await
+    async fn get_stream(&self, handle: &StorageHandle) -> TusResult<ByteStream> {
+        self.inner.get_stream(handle).await
     }
-    async fn concat(&self, target: &mut UploadState, parts: Vec<UploadState>) -> TusResult<()> {
-        self.inner.concat(target, parts).await
+    async fn concat(&self, request: ConcatRequest) -> TusResult<StorageHandle> {
+        self.inner.concat(request).await
     }
-    async fn delete(&self, state: &UploadState) -> TusResult<()> {
-        self.inner.delete(state).await
+    async fn delete(&self, handle: &StorageHandle) -> TusResult<()> {
+        self.inner.delete(handle).await
     }
-    async fn size(&self, state: &UploadState) -> TusResult<Option<u64>> {
-        self.inner.size(state).await
+    async fn size(&self, handle: &StorageHandle) -> TusResult<Option<u64>> {
+        self.inner.size(handle).await
     }
 }
 

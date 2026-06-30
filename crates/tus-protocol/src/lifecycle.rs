@@ -22,7 +22,7 @@ pub(crate) use final_upload::{
 };
 pub use finish::run_pre_finish;
 pub use receive::{
-    ReceiveProjection, ReceiveRequest, apply_receive_offset, prepare_receive,
+    ReceiveProjection, ReceiveRequest, apply_receive_commit, prepare_receive,
     receive_body_size_limit, validate_receive_body,
 };
 pub(crate) use recovery::reconcile_state_offset;
@@ -34,16 +34,6 @@ use crate::state::UploadState;
 pub fn ensure_active(state: &UploadState) -> Result<()> {
     if state.is_expired() {
         return Err(Error::Expired(state.id().to_string()));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn ensure_committed_offset(actual: u64, projected: u64) -> Result<()> {
-    if actual != projected {
-        return Err(Error::Internal(format!(
-            "storage returned offset {actual}, but lifecycle projected offset {projected}"
-        )));
     }
 
     Ok(())

@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
 use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
-use crate::storage::Storage;
+use crate::storage::{ConcatRequest, Storage};
 
 use super::run_pre_finish;
 
@@ -99,10 +99,17 @@ where
         run_pre_finish(hooks, request_info, state.clone()).await?;
     }
 
-    storage.create(&mut state).await?;
+    let handle = storage.create(state.id()).await?;
+    state.set_storage_handle(handle);
 
     if status.ready_to_materialize() {
-        storage.concat(&mut state, parts).await?;
+        let handle = storage
+            .concat(ConcatRequest {
+                target: state.require_storage_handle()?,
+                parts: storage_handles(&parts)?,
+            })
+            .await?;
+        state.set_storage_handle(handle);
     }
 
     state_store.set(&state, true).await?;
@@ -176,7 +183,13 @@ where
     }
 
     if needs_materialization {
-        storage.concat(state, parts).await?;
+        let handle = storage
+            .concat(ConcatRequest {
+                target: state.require_storage_handle()?,
+                parts: storage_handles(&parts)?,
+            })
+            .await?;
+        state.set_storage_handle(handle);
         changed = true;
     }
 
@@ -395,11 +408,22 @@ async fn storage_size<S>(storage: &S, state: &UploadState) -> Result<u64>
 where
     S: Storage + ?Sized,
 {
+    let Some(handle) = state.storage_handle() else {
+        return Ok(0);
+    };
+
     Ok(storage
-        .size(state)
+        .size(&handle)
         .await
         .map_err(|err| Error::Internal(err.to_string()))?
         .unwrap_or(0))
+}
+
+fn storage_handles(parts: &[UploadState]) -> Result<Vec<crate::storage::StorageHandle>> {
+    parts
+        .iter()
+        .map(UploadState::require_storage_handle)
+        .collect()
 }
 
 /// Extracts an upload ID from a URL present in `Upload-Concat: final;<parts>`.
@@ -533,7 +557,7 @@ mod materialization_tests {
     use super::*;
     use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
     use crate::state::memory::MemoryStateStore;
-    use crate::storage::{ChunkStream, memory::MemoryStorage};
+    use crate::storage::{AppendRequest, ChunkStream, memory::MemoryStorage};
     use bytes::{Bytes, BytesMut};
     use futures::StreamExt;
     use std::sync::{Arc, Mutex};
@@ -547,20 +571,27 @@ mod materialization_tests {
         let mut part = UploadState::new(id)
             .with_length(bytes.len() as u64)
             .as_partial();
-        storage.create(&mut part).await.unwrap();
-        storage
-            .append(
-                &mut part,
-                ChunkStream::from_bytes(Bytes::from_static(bytes)),
-            )
+        let handle = storage.create(part.id()).await.unwrap();
+        part.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: part.require_storage_handle().unwrap(),
+                expected_offset: part.offset(),
+                data: ChunkStream::from_bytes(Bytes::from_static(bytes)),
+                completes_upload: true,
+            })
             .await
             .unwrap();
+        part.set_storage_handle(handle);
         part.set_offset(bytes.len() as u64);
         store.set(&part, true).await.unwrap();
     }
 
     async fn stored_bytes(storage: &MemoryStorage, state: &UploadState) -> Bytes {
-        let body = storage.get_stream(state).await.unwrap();
+        let body = storage
+            .get_stream(&state.require_storage_handle().unwrap())
+            .await
+            .unwrap();
         body.collect::<Vec<_>>()
             .await
             .into_iter()
@@ -698,7 +729,8 @@ mod materialization_tests {
         store_partial(&storage, &store, "part-2", b"EFGH").await;
 
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
@@ -733,7 +765,8 @@ mod materialization_tests {
         store_partial(&storage, &store, "part-1", b"ABCD").await;
 
         let mut final_upload = UploadState::new("final-1");
-        storage.create(&mut final_upload).await.unwrap();
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
@@ -760,6 +793,12 @@ mod materialization_tests {
         ));
         let stored = store.get("final-1").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 4);
-        assert_eq!(storage.size(&stored).await.unwrap(), Some(0));
+        assert_eq!(
+            storage
+                .size(&stored.require_storage_handle().unwrap())
+                .await
+                .unwrap(),
+            Some(0)
+        );
     }
 }

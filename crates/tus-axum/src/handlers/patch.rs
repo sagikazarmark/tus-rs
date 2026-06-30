@@ -45,7 +45,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(100);
-        storage.create(&mut state).await.unwrap();
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
         store.set(&state, true).await.unwrap();
 
         let protocol = TusProtocol::new(ProtocolHandle::new(
@@ -84,7 +85,8 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(100);
-        storage.create(&mut state).await.unwrap();
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
         store.set(&state, true).await.unwrap();
 
         let protocol = TusProtocol::new(ProtocolHandle::new(

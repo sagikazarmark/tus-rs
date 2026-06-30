@@ -94,6 +94,7 @@ where
         let mut headers = download_headers(&state)?;
 
         let (status, body) = if let Some((start, end)) = range {
+            let handle = state.require_storage_handle()?;
             insert_header(
                 &mut headers,
                 "content-length",
@@ -106,15 +107,18 @@ where
             )?;
             (
                 StatusCode::PARTIAL_CONTENT,
-                self.storage.get_range(&state, start, Some(end + 1)).await?,
+                self.storage
+                    .get_range(&handle, start, Some(end + 1))
+                    .await?,
             )
         } else if size == 0 {
             insert_header(&mut headers, "content-length", "0")?;
             let body: ByteStream = Box::pin(futures::stream::empty());
             (StatusCode::OK, body)
         } else {
+            let handle = state.require_storage_handle()?;
             insert_header(&mut headers, "content-length", size.to_string())?;
-            (StatusCode::OK, self.storage.get_stream(&state).await?)
+            (StatusCode::OK, self.storage.get_stream(&handle).await?)
         };
 
         Ok(DownloadResponse {
@@ -239,7 +243,7 @@ mod tests {
     use crate::locking::NoopLocker;
     use crate::protocol::Protocol;
     use crate::state::{StateStore, UploadMetadata, UploadState, memory::MemoryStateStore};
-    use crate::storage::{ChunkStream, Storage, memory::MemoryStorage};
+    use crate::storage::{AppendRequest, ChunkStream, Storage, memory::MemoryStorage};
 
     async fn completed_upload(bytes: &'static [u8]) -> (MemoryStorage, MemoryStateStore) {
         let storage = MemoryStorage::new();
@@ -249,14 +253,19 @@ mod tests {
         metadata.insert("mimetype".to_string(), "text/plain");
         state.set_metadata(metadata);
 
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from_static(bytes)),
-            )
+        let handle = storage.create(state.id()).await.unwrap();
+        state.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: state.require_storage_handle().unwrap(),
+                expected_offset: state.offset(),
+                data: ChunkStream::from_bytes(Bytes::from_static(bytes)),
+                completes_upload: true,
+            })
             .await
             .unwrap();
+        state.set_storage_handle(handle);
+        state.set_offset(bytes.len() as u64);
         store.set(&state, true).await.unwrap();
 
         (storage, store)

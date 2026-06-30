@@ -77,7 +77,8 @@ async fn direct_setup() -> DirectState {
     let hooks = NoopHookExecutor::new();
 
     let mut state = UploadState::new("bench-upload").with_length(u64::MAX);
-    storage.create(&mut state).await.unwrap();
+    let handle = storage.create(state.id()).await.unwrap();
+    state.set_storage_handle(handle);
     state_store.set(&state, true).await.unwrap();
 
     DirectState {

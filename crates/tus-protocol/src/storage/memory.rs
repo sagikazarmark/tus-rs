@@ -10,9 +10,8 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::error::{Error, Result};
-use crate::state::UploadState;
 use crate::storage::ByteStream;
-use crate::storage::{ChunkStream, Storage};
+use crate::storage::{AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHandle};
 
 /// In-memory storage backend.
 ///
@@ -74,18 +73,36 @@ impl Storage for MemoryStorage {
         "memory"
     }
 
-    async fn create(&self, state: &mut UploadState) -> Result<String> {
-        let key = format!("memory://{}", state.id());
+    async fn create(&self, upload_id: &str) -> Result<StorageHandle> {
+        let key = format!("memory://{}", upload_id);
         self.data
             .write()
             .unwrap()
             .insert(key.clone(), BytesMut::new());
-        state.set_storage_key(key.clone());
-        Ok(key)
+        Ok(StorageHandle::new(key))
     }
 
-    async fn append(&self, state: &mut UploadState, data: ChunkStream) -> Result<u64> {
-        let key = state.storage_key().ok_or(Error::StorageKeyMissing)?;
+    async fn append(&self, request: AppendRequest) -> Result<StorageHandle> {
+        let AppendRequest {
+            handle,
+            expected_offset,
+            data,
+            completes_upload: _,
+        } = request;
+        let key = handle.key().to_string();
+
+        {
+            let storage = self.data.read().unwrap();
+            let entry = storage
+                .get(&key)
+                .ok_or_else(|| Error::NotFound(key.clone()))?;
+            if entry.len() as u64 != expected_offset {
+                return Err(Error::Internal(format!(
+                    "memory storage size {} does not match expected offset {expected_offset} for key {key}",
+                    entry.len()
+                )));
+            }
+        }
 
         let bytes = match data {
             ChunkStream::Buffered(b) => b,
@@ -100,15 +117,21 @@ impl Storage for MemoryStorage {
 
         let mut storage = self.data.write().unwrap();
         let entry = storage
-            .get_mut(key)
-            .ok_or_else(|| Error::NotFound(key.to_string()))?;
+            .get_mut(&key)
+            .ok_or_else(|| Error::NotFound(key.clone()))?;
+        if entry.len() as u64 != expected_offset {
+            return Err(Error::Internal(format!(
+                "memory storage size {} does not match expected offset {expected_offset} for key {key}",
+                entry.len()
+            )));
+        }
 
         entry.extend_from_slice(&bytes);
-        Ok(entry.len() as u64)
+        Ok(handle)
     }
 
-    async fn get_stream(&self, state: &UploadState) -> Result<ByteStream> {
-        let key = state.storage_key().ok_or(Error::StorageKeyMissing)?;
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+        let key = handle.key();
 
         let storage = self.data.read().unwrap();
         let data = storage
@@ -120,18 +143,16 @@ impl Storage for MemoryStorage {
         Ok(Box::pin(futures::stream::once(async move { Ok(data) })))
     }
 
-    async fn concat(&self, target: &mut UploadState, parts: Vec<UploadState>) -> Result<()> {
-        let target_key = target
-            .storage_key()
-            .ok_or(Error::StorageKeyMissing)?
-            .to_string();
+    async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
+        let ConcatRequest { target, parts } = request;
+        let target_key = target.key().to_string();
 
         let mut combined = BytesMut::new();
 
         {
             let storage = self.data.read().unwrap();
             for part in &parts {
-                let part_key = part.storage_key().ok_or(Error::StorageKeyMissing)?;
+                let part_key = part.key();
                 let part_data = storage
                     .get(part_key)
                     .ok_or_else(|| Error::NotFound(part_key.to_string()))?;
@@ -142,33 +163,26 @@ impl Storage for MemoryStorage {
         let mut storage = self.data.write().unwrap();
         storage.insert(target_key.to_string(), combined);
 
+        Ok(target)
+    }
+
+    async fn delete(&self, handle: &StorageHandle) -> Result<()> {
+        self.data.write().unwrap().remove(handle.key());
         Ok(())
     }
 
-    async fn delete(&self, state: &UploadState) -> Result<()> {
-        if let Some(key) = state.storage_key() {
-            self.data.write().unwrap().remove(key);
-        }
-        Ok(())
-    }
-
-    async fn size(&self, state: &UploadState) -> Result<Option<u64>> {
-        let key = match state.storage_key() {
-            Some(k) => k,
-            None => return Ok(None),
-        };
-
+    async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>> {
         let storage = self.data.read().unwrap();
-        Ok(storage.get(key).map(|d| d.len() as u64))
+        Ok(storage.get(handle.key()).map(|d| d.len() as u64))
     }
 
     async fn get_range(
         &self,
-        state: &UploadState,
+        handle: &StorageHandle,
         start: u64,
         end: Option<u64>,
     ) -> Result<ByteStream> {
-        let key = state.storage_key().ok_or(Error::StorageKeyMissing)?;
+        let key = handle.key();
 
         let storage = self.data.read().unwrap();
         let data = storage
@@ -197,43 +211,57 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_append() {
         let storage = MemoryStorage::new();
-        let mut state = UploadState::new("test-1");
 
         // Create
-        let key = storage.create(&mut state).await.unwrap();
-        assert!(key.contains("test-1"));
-        assert_eq!(state.storage_key(), Some(key.as_str()));
+        let mut handle = storage.create("test-1").await.unwrap();
+        assert!(handle.key().contains("test-1"));
 
         // Append
         let data = ChunkStream::from_bytes(Bytes::from("hello "));
-        let offset = storage.append(&mut state, data).await.unwrap();
-        assert_eq!(offset, 6);
-        assert_eq!(state.offset(), 0);
+        handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data,
+                completes_upload: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(6));
 
         let data2 = ChunkStream::from_bytes(Bytes::from("world"));
-        let offset2 = storage.append(&mut state, data2).await.unwrap();
-        assert_eq!(offset2, 11);
+        handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 6,
+                data: data2,
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
 
         // Verify content
-        let stored = storage.get_data(&key).unwrap();
+        let stored = storage.get_data(handle.key()).unwrap();
         assert_eq!(stored.as_ref(), b"hello world");
     }
 
     #[tokio::test]
     async fn test_get_stream() {
         let storage = MemoryStorage::new();
-        let mut state = UploadState::new("test-2");
 
-        storage.create(&mut state).await.unwrap();
-        storage
-            .append(
-                &mut state,
-                ChunkStream::from_bytes(Bytes::from("test data")),
-            )
+        let handle = storage.create("test-2").await.unwrap();
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("test data")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
 
-        let mut stream = storage.get_stream(&state).await.unwrap();
+        let mut stream = storage.get_stream(&handle).await.unwrap();
         let chunk = stream.next().await.unwrap().unwrap();
         assert_eq!(chunk.as_ref(), b"test data");
     }
@@ -243,62 +271,117 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create parts
-        let mut part1 = UploadState::new("part-1");
-        storage.create(&mut part1).await.unwrap();
-        storage
-            .append(&mut part1, ChunkStream::from_bytes(Bytes::from("Hello ")))
+        let part1 = storage.create("part-1").await.unwrap();
+        let part1 = storage
+            .append(AppendRequest {
+                handle: part1,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("Hello ")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
 
-        let mut part2 = UploadState::new("part-2");
-        storage.create(&mut part2).await.unwrap();
-        storage
-            .append(&mut part2, ChunkStream::from_bytes(Bytes::from("World")))
+        let part2 = storage.create("part-2").await.unwrap();
+        let part2 = storage
+            .append(AppendRequest {
+                handle: part2,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("World")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
 
         // Create target and concat
-        let mut target = UploadState::new("final");
-        storage.create(&mut target).await.unwrap();
-        storage
-            .concat(&mut target, vec![part1, part2])
+        let target = storage.create("final").await.unwrap();
+        let target = storage
+            .concat(ConcatRequest {
+                target,
+                parts: vec![part1, part2],
+            })
             .await
             .unwrap();
 
         // Verify
-        let key = target.storage_key().unwrap();
-        let data = storage.get_data(key).unwrap();
+        let data = storage.get_data(target.key()).unwrap();
         assert_eq!(data.as_ref(), b"Hello World");
     }
 
     #[tokio::test]
     async fn test_delete() {
         let storage = MemoryStorage::new();
-        let mut state = UploadState::new("test-3");
 
-        storage.create(&mut state).await.unwrap();
+        let handle = storage.create("test-3").await.unwrap();
         assert_eq!(storage.len(), 1);
 
-        storage.delete(&state).await.unwrap();
+        storage.delete(&handle).await.unwrap();
         assert_eq!(storage.len(), 0);
     }
 
     #[tokio::test]
     async fn test_size() {
         let storage = MemoryStorage::new();
-        let mut state = UploadState::new("test-4");
 
-        // No storage key yet
-        assert_eq!(storage.size(&state).await.unwrap(), None);
+        let handle = storage.create("test-4").await.unwrap();
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(0));
 
-        storage.create(&mut state).await.unwrap();
-        assert_eq!(storage.size(&state).await.unwrap(), Some(0));
-
-        storage
-            .append(&mut state, ChunkStream::from_bytes(Bytes::from("12345")))
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("12345")),
+                completes_upload: true,
+            })
             .await
             .unwrap();
-        assert_eq!(storage.size(&state).await.unwrap(), Some(5));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
+    }
+
+    #[tokio::test]
+    async fn append_preserves_existing_handle_internals() {
+        let storage = MemoryStorage::new();
+        let mut handle = storage.create("test-internals").await.unwrap();
+        handle.set_internal("adapter_fact", "keep-me");
+
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("data")),
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(handle.get_internal("adapter_fact"), Some("keep-me"));
+    }
+
+    #[tokio::test]
+    async fn concat_preserves_existing_target_handle_internals() {
+        let storage = MemoryStorage::new();
+        let part = storage.create("part-internals").await.unwrap();
+        let part = storage
+            .append(AppendRequest {
+                handle: part,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("part")),
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+        let mut target = storage.create("target-internals").await.unwrap();
+        target.set_internal("target_fact", "keep-me");
+
+        let target = storage
+            .concat(ConcatRequest {
+                target,
+                parts: vec![part],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(target.get_internal("target_fact"), Some("keep-me"));
     }
 
     /// Per-PATCH atomicity invariant: if the body stream errors before
@@ -318,15 +401,20 @@ mod tests {
         use std::io;
 
         let storage = MemoryStorage::new();
-        let mut state = UploadState::new("test-rollback");
-        let key = storage.create(&mut state).await.unwrap();
+        let handle = storage.create("test-rollback").await.unwrap();
+        let key = handle.key().to_string();
 
         // First PATCH commits cleanly.
-        let baseline = storage
-            .append(&mut state, ChunkStream::from_bytes(Bytes::from("intact ")))
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("intact ")),
+                completes_upload: false,
+            })
             .await
             .unwrap();
-        assert_eq!(baseline, 7);
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(7));
 
         // Second PATCH: a stream that yields some bytes then errors.
         // The error is io::ErrorKind::ConnectionReset, modelling a TCP
@@ -343,7 +431,12 @@ mod tests {
             Ok(Bytes::from("...trailer-that-must-not-commit")),
         ]));
         let err = storage
-            .append(&mut state, ChunkStream::from_stream(stream))
+            .append(AppendRequest {
+                handle: handle.clone(),
+                expected_offset: 7,
+                data: ChunkStream::from_stream(stream),
+                completes_upload: false,
+            })
             .await
             .unwrap_err();
         assert!(
@@ -355,6 +448,40 @@ mod tests {
         // the partial bytes are NOT visible.
         let stored = storage.get_data(&key).unwrap();
         assert_eq!(stored.as_ref(), b"intact ");
-        assert_eq!(storage.size(&state).await.unwrap(), Some(7));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn append_rejects_stale_offset_before_reading_body() {
+        let storage = MemoryStorage::new();
+        let handle = storage.create("test-stale-offset").await.unwrap();
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("seed")),
+                completes_upload: false,
+            })
+            .await
+            .unwrap();
+
+        let stream: ByteStream = Box::pin(futures::stream::once(async {
+            panic!("body stream should not be read when storage offset is stale");
+            #[allow(unreachable_code)]
+            Ok(Bytes::from("must not be consumed"))
+        }));
+
+        let error = storage
+            .append(AppendRequest {
+                handle: handle.clone(),
+                expected_offset: 0,
+                data: ChunkStream::from_stream(stream),
+                completes_upload: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Internal(_)));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(4));
     }
 }
