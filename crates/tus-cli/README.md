@@ -150,9 +150,10 @@ set in the config file as an upload default.
 
 ## Runtime Notes
 
-`tus-cli` is a native command-line tool. It reads the selected file into memory
-before uploading, then delegates upload behavior, retry handling, chunking, and
-URL resolution to `tus-client`.
+`tus-cli` is a native command-line tool. It uploads from a file-backed source so
+large files are read in upload chunks instead of being buffered fully in memory.
+Upload behavior, retry handling, chunking, resume offset validation, and URL
+resolution are delegated to `tus-client`.
 
 ## License
 

@@ -15,7 +15,7 @@ name = "tus"
 path = "src/main.rs"
 
 [dependencies]
-tus-client = { workspace = true }
+tus-client = { workspace = true, features = ["source-file"] }
 
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
