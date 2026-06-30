@@ -338,7 +338,7 @@ impl UploadState {
 
     /// Stashes backend-specific bookkeeping alongside the upload.
     ///
-    /// Prefer [`StorageHandle`](crate::storage::StorageHandle) for new storage
+    /// Prefer [`StorageHandle`] for new storage
     /// adapter code. These helpers remain available for code that needs direct
     /// access to persisted backend facts, for example migration or inspection
     /// tooling. The keys are never exposed on the wire and are not part of the
