@@ -10,6 +10,7 @@ mod creation;
 mod final_upload;
 mod finish;
 mod receive;
+mod reclamation;
 mod recovery;
 
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
@@ -24,6 +25,9 @@ pub use finish::run_pre_finish;
 pub use receive::{
     ReceiveProjection, ReceiveRequest, apply_receive_commit, prepare_receive,
     receive_body_size_limit, validate_receive_body,
+};
+pub use reclamation::{
+    ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };
 pub(crate) use recovery::reconcile_state_offset;
 

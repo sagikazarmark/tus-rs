@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
-use tus_protocol::{Locker, StateStore, Storage};
+use tus_protocol::{
+    ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, Locker, StateStore, Storage,
+    reclaim_expired_uploads,
+};
 
 use crate::lifecycle::ShutdownSignal;
 
@@ -37,67 +40,43 @@ impl<S, I, L> ExpirationTarget<S, I, L> {
 
 pub(crate) async fn sweep_expired_uploads<S, I, L>(
     target: &ExpirationTarget<S, I, L>,
-) -> anyhow::Result<u64>
+) -> anyhow::Result<ExpiredUploadReclamationReport>
 where
     S: Storage + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
 {
-    let mut removed = 0u64;
-    let expired_ids = target
-        .state_store
-        .list_expired(Utc::now())
-        .await
-        .with_context(|| format!("failed to list expired uploads for scope {}", target.scope))?;
+    reclaim_expired_uploads(
+        target.storage.as_ref(),
+        target.state_store.as_ref(),
+        target.locker.as_ref(),
+        Utc::now(),
+    )
+    .await
+    .with_context(|| format!("failed to sweep expired uploads for scope {}", target.scope))
+}
 
-    for upload_id in expired_ids {
-        let Some(_guard) = target.locker.try_lock(&upload_id).await.with_context(|| {
-            format!(
-                "failed to lock expired upload {} for scope {}",
-                upload_id, target.scope
-            )
-        })?
-        else {
-            tracing::debug!(scope = %target.scope, upload_id = %upload_id, "skipping cleanup for locked expired upload");
-            continue;
-        };
-
-        let Some(state) = target.state_store.get(&upload_id).await.with_context(|| {
-            format!(
-                "failed to load expired upload state {} for scope {}",
-                upload_id, target.scope
-            )
-        })?
-        else {
-            continue;
-        };
-
-        if !state.is_expired() {
-            continue;
+pub(crate) fn log_reclamation_outcomes(scope: &str, report: &ExpiredUploadReclamationReport) {
+    for outcome in report.outcomes() {
+        match outcome {
+            ExpiredUploadReclamationOutcome::Removed { .. } => {}
+            ExpiredUploadReclamationOutcome::Locked { upload_id } => {
+                tracing::debug!(scope = %scope, upload_id = %upload_id, "skipping cleanup for locked expired upload");
+            }
+            ExpiredUploadReclamationOutcome::MissingState { upload_id } => {
+                tracing::debug!(scope = %scope, upload_id = %upload_id, "skipping cleanup for missing expired upload state");
+            }
+            ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id } => {
+                tracing::debug!(scope = %scope, upload_id = %upload_id, "skipping cleanup for upload that is no longer expired");
+            }
+            ExpiredUploadReclamationOutcome::StorageDeleteFailed { upload_id, error } => {
+                tracing::warn!(scope = %scope, upload_id = %upload_id, error = %error, "failed to delete expired upload data");
+            }
+            ExpiredUploadReclamationOutcome::StateDeleteFailed { upload_id, error } => {
+                tracing::warn!(scope = %scope, upload_id = %upload_id, error = %error, "failed to delete expired upload state");
+            }
         }
-
-        if let Some(handle) = state.storage_handle() {
-            target.storage.delete(&handle).await.with_context(|| {
-                format!(
-                    "failed to delete expired upload data {} for scope {}",
-                    upload_id, target.scope
-                )
-            })?;
-        }
-        target
-            .state_store
-            .delete(state.id())
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to delete expired upload state {} for scope {}",
-                    upload_id, target.scope
-                )
-            })?;
-        removed += 1;
     }
-
-    Ok(removed)
 }
 
 pub(crate) fn spawn_expiration_sweeper<S, I, L>(
@@ -120,10 +99,13 @@ pub(crate) fn spawn_expiration_sweeper<S, I, L>(
                 _ = interval.tick() => {
                     for target in &targets {
                         match sweep_expired_uploads(target).await {
-                            Ok(removed) if removed > 0 => {
-                                tracing::info!(scope = %target.scope(), removed, "cleaned up expired uploads");
+                            Ok(report) => {
+                                log_reclamation_outcomes(target.scope(), &report);
+                                let removed = report.removed();
+                                if removed > 0 {
+                                    tracing::info!(scope = %target.scope(), removed, "cleaned up expired uploads");
+                                }
                             }
-                            Ok(_) => {}
                             Err(error) => {
                                 tracing::warn!(scope = %target.scope(), error = %error, "failed to sweep expired uploads");
                             }
@@ -193,8 +175,8 @@ mod tests {
             Arc::new(MemoryLocker::new()),
         );
 
-        let removed = sweep_expired_uploads(&target).await.unwrap();
-        assert_eq!(removed, 1);
+        let report = sweep_expired_uploads(&target).await.unwrap();
+        assert_eq!(report.removed(), 1);
         assert_eq!(
             storage
                 .size(&state.storage_handle().unwrap())

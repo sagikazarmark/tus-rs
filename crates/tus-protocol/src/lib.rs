@@ -75,10 +75,11 @@ pub use hooks::{
     PreHookResult,
 };
 pub use lifecycle::{
-    CreationRequest, CreationTransition, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
+    CreationRequest, CreationTransition, ExpiredUploadReclamationOutcome,
+    ExpiredUploadReclamationReport, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
     ReceiveRequest, apply_receive_commit, ensure_active, load_final_upload_plan,
     load_final_upload_status, prepare_creation, prepare_receive, receive_body_size_limit,
-    run_pre_finish, summarize_final_parts, validate_receive_body,
+    reclaim_expired_uploads, run_pre_finish, summarize_final_parts, validate_receive_body,
 };
 pub use locking::{LockGuard, Locker, NoopLocker};
 pub use protocol::{
@@ -95,8 +96,9 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::hooks::{HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo};
     pub use crate::lifecycle::{
-        CreationRequest, CreationTransition, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
-        ReceiveRequest, prepare_creation, prepare_receive, run_pre_finish,
+        CreationRequest, CreationTransition, ExpiredUploadReclamationOutcome,
+        ExpiredUploadReclamationReport, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
+        ReceiveRequest, prepare_creation, prepare_receive, reclaim_expired_uploads, run_pre_finish,
     };
     pub use crate::locking::Locker;
     pub use crate::protocol::{

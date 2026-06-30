@@ -163,14 +163,20 @@ async fn run_cleanup(command: config::CleanupCli) -> anyhow::Result<()> {
     }
 
     let backends = runtime::build_backends(&settings.storage, &settings.state_dir).await?;
-    let removed = expiration::sweep_expired_uploads(&expiration::ExpirationTarget::new(
+    let target = expiration::ExpirationTarget::new(
         "default",
         backends.storage.clone(),
         backends.state_store.clone(),
         backends.locker.clone(),
-    ))
-    .await?;
+    );
+    let report = expiration::sweep_expired_uploads(&target).await?;
+    expiration::log_reclamation_outcomes(target.scope(), &report);
 
+    if report.has_failures() {
+        anyhow::bail!("failed to clean up one or more expired uploads");
+    }
+
+    let removed = report.removed();
     tracing::info!(removed, "cleaned up expired uploads");
     Ok(())
 }
