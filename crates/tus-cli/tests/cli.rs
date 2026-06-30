@@ -1,7 +1,11 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use axum::{
@@ -46,6 +50,13 @@ impl PatchRequestLog {
 struct PatchRequest {
     offset: u64,
     length: u64,
+}
+
+#[derive(Clone, Debug)]
+struct HeadRewrite {
+    path: PathBuf,
+    contents: Vec<u8>,
+    rewritten: Arc<AtomicBool>,
 }
 
 impl PatchRequest {
@@ -169,6 +180,20 @@ async fn record_patch_request(
     Ok(next.run(req).await)
 }
 
+async fn rewrite_file_on_head(
+    State(rewrite): State<HeadRewrite>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if req.method() == Method::HEAD && !rewrite.rewritten.swap(true, Ordering::SeqCst) {
+        tokio::fs::write(&rewrite.path, &rewrite.contents)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
+    Ok(next.run(req).await)
+}
+
 async fn spawn_recording_server(
     config: Config,
 ) -> (String, tokio::task::JoinHandle<()>, PatchRequestLog) {
@@ -190,6 +215,27 @@ async fn spawn_recording_server(
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{addr}/files"), handle, patch_requests)
+}
+
+async fn spawn_head_rewrite_server(
+    config: Config,
+    rewrite: HeadRewrite,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let state = TusState::new(ProtocolHandle::new(
+        config,
+        MemoryStorage::new(),
+        MemoryStateStore::new(),
+        MemoryLocker::new(),
+        NoopHookExecutor::new(),
+    ));
+    let app: Router =
+        tus_axum::create_router(state).layer(from_fn_with_state(rewrite, rewrite_file_on_head));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}/files"), handle)
 }
 
 async fn spawn_server_with_bearer(
@@ -785,6 +831,63 @@ async fn upload_existing_url_resumes_from_current_offset() {
     assert_existing_upload_human_output(&output, &upload_url);
     let info = client.upload(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn upload_existing_url_reads_file_chunks_after_resume_offset_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("file-backed-resume.bin");
+    tokio::fs::write(&path, b"abcdefghij").await.unwrap();
+    let rewritten = Arc::new(AtomicBool::new(false));
+    let (endpoint, handle) = spawn_head_rewrite_server(
+        Config::default(),
+        HeadRewrite {
+            path: path.clone(),
+            contents: b"abcdeVWXYZ".to_vec(),
+            rewritten: rewritten.clone(),
+        },
+    )
+    .await;
+    let client = Client::new(endpoint_url(&endpoint));
+    let upload = client
+        .create_upload(NewUpload::new(10, UploadMetadata::new()))
+        .await
+        .unwrap();
+    let upload_url = upload.url().to_string();
+    let response = reqwest::Client::new()
+        .patch(&upload_url)
+        .header("tus-resumable", tus_protocol::TUS_RESUMABLE)
+        .header("upload-offset", "0")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/offset+octet-stream",
+        )
+        .body("abcde")
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+
+    let output = run_cli(&["upload", "-o", "url", path.to_str().unwrap(), &upload_url]).await;
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output).trim(), upload_url);
+    assert_eq!(stderr(&output), "");
+    assert!(rewritten.load(Ordering::SeqCst));
+    let download = reqwest::Client::new()
+        .get(&upload_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), StatusCode::OK);
+    let body = download.bytes().await.unwrap();
+    assert_eq!(body.as_ref(), b"abcdeVWXYZ");
 
     handle.abort();
 }

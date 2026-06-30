@@ -7,7 +7,7 @@ use std::{
     io::IsTerminal,
     path::{Path, PathBuf},
 };
-use tus_client::{Client, NewUpload};
+use tus_client::{Client, FileSource, NewUpload, UploadSource};
 use url::Url;
 
 mod progress;
@@ -396,19 +396,17 @@ async fn create_upload_file(
     let endpoint = resolve_collection_endpoint(settings)?;
     let client = apply_upload_options(build_collection_client(endpoint, settings)?, options);
     let metadata = to_metadata_map(metadata);
+    let source = open_upload_file(&file).await?;
     let upload = if should_show_progress(output, options) {
-        let contents = read_upload_file(&file).await?;
-        let total = contents.len() as u64;
+        let total = source.len();
         let mut progress = Progress::new(total);
         let upload = client
-            .upload_from_with_progress(contents, &metadata, &mut progress)
+            .upload_from_with_progress(source, &metadata, &mut progress)
             .await?;
         progress.finish(upload.offset);
         upload
     } else {
-        client
-            .upload_from(read_upload_file(&file).await?, &metadata)
-            .await?
+        client.upload_from(source, &metadata).await?
     };
 
     Ok(upload)
@@ -423,18 +421,18 @@ async fn upload_existing_file(
 ) -> Result<tus_client::UploadInfo> {
     let client = apply_upload_options(build_upload_client(upload_url, settings)?, options);
     let upload = client.upload(upload_url)?;
-    let contents = read_upload_file(&file).await?;
+    let source = open_upload_file(&file).await?;
     if output == UploadOutputFormat::Human {
         eprintln!("Uploading to {}", upload.url());
     }
     let info = if should_show_progress(output, options) {
-        let total = contents.len() as u64;
+        let total = source.len();
         let mut progress = Progress::new(total);
-        let info = upload.upload_with_progress(contents, &mut progress).await?;
+        let info = upload.upload_with_progress(source, &mut progress).await?;
         progress.finish(info.offset);
         info
     } else {
-        upload.upload(contents).await?
+        upload.upload(source).await?
     };
 
     Ok(info)
@@ -444,10 +442,10 @@ fn should_show_progress(output: UploadOutputFormat, options: UploadOptions) -> b
     output == UploadOutputFormat::Human && options.progress
 }
 
-async fn read_upload_file(path: &Path) -> Result<Vec<u8>> {
-    tokio::fs::read(path)
+async fn open_upload_file(path: &Path) -> Result<FileSource> {
+    FileSource::open(path)
         .await
-        .with_context(|| format!("failed to read {}", path.display()))
+        .with_context(|| format!("failed to open upload source for {}", path.display()))
 }
 
 fn collection_endpoint(mut url: Url) -> Result<Url> {
