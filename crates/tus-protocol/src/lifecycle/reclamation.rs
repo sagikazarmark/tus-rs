@@ -339,7 +339,8 @@ mod tests {
         }
     }
 
-    #[async_trait]
+    #[cfg_attr(not(feature = "local-futures"), async_trait)]
+    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
     impl Storage for TestStorage {
         fn name(&self) -> &'static str {
             "test"
@@ -414,7 +415,8 @@ mod tests {
         }
     }
 
-    #[async_trait]
+    #[cfg_attr(not(feature = "local-futures"), async_trait)]
+    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
     impl StateStore for TestStateStore {
         fn name(&self) -> &'static str {
             "test"
@@ -471,7 +473,8 @@ mod tests {
         }
     }
 
-    #[async_trait]
+    #[cfg_attr(not(feature = "local-futures"), async_trait)]
+    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
     impl Locker for TestLocker {
         fn name(&self) -> &'static str {
             "test"
