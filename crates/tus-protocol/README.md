@@ -76,8 +76,8 @@ The protocol is built around three backend traits:
 
 | Trait | Responsibility |
 |-------|----------------|
-| `Storage` | Stores and retrieves upload bytes. |
-| `StateStore` | Persists upload metadata, offsets, expiration, and concatenation state. |
+| `Storage` | Stores and retrieves upload bytes, and owns storage-local handle facts. |
+| `StateStore` | Persists protocol upload state plus opaque `StorageHandle` snapshots. |
 | `Locker` | Coordinates concurrent access to a single upload ID. |
 
 Use the built-in memory backends for tests and local development. Use the file

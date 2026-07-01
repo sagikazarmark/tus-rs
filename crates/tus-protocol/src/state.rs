@@ -34,7 +34,8 @@ use crate::storage::StorageHandle;
 /// Trait for persisting upload state.
 ///
 /// Implementors should provide atomic operations for storing and retrieving
-/// upload metadata. The actual file data is stored by `Storage`.
+/// upload state. Upload bytes live behind `Storage`; storage-owned locator and
+/// bookkeeping facts are persisted here only as an opaque `StorageHandle` snapshot.
 /// Returned [`UploadState`] values are snapshots; callers persist mutations by
 /// calling [`StateStore::set`] again.
 ///
@@ -117,7 +118,7 @@ pub struct UploadState {
     /// Total size in bytes. None if deferred (Upload-Defer-Length).
     length: Option<u64>,
 
-    /// Storage backend key/path. Set from the `Storage::create` handle.
+    /// Opaque storage locator from the persisted storage handle.
     storage_key: Option<String>,
 
     // === Lifecycle ===
@@ -142,8 +143,8 @@ pub struct UploadState {
     metadata: UploadMetadata,
 
     // === Storage-Specific Internal State ===
-    /// Internal state for storage backends (e.g., R2 upload ID, S3 part ETags).
-    /// This should not be exposed to clients.
+    /// Storage-owned handle facts. This should not be exposed to clients or
+    /// interpreted by protocol lifecycle code.
     #[serde(default)]
     internal: HashMap<String, String>,
 }

@@ -34,8 +34,10 @@ use crate::runtime::MaybeSendSync;
 
 /// Trait for storing upload file data.
 ///
-/// Implementors must handle the actual storage of upload bytes.
-/// The `StateStore` handles metadata; this trait handles only the data itself.
+/// Implementors own upload bytes and any storage-local locator or bookkeeping
+/// encoded in [`StorageHandle`]. The `StateStore` persists protocol upload
+/// state and the opaque handle snapshot, but storage adapters are the only code
+/// that should interpret handle internals.
 /// Successful write methods should return only after bytes are accepted by the
 /// backend. If a backend can partially write and then fail, it should either
 /// roll the write back or report enough actual size through [`Storage::size`]
@@ -137,7 +139,9 @@ pub trait Storage: MaybeSendSync {
 /// Lifecycle code stores this handle on [`UploadState`](crate::UploadState),
 /// but storage adapters are the only code that should interpret the key or
 /// internal values. When a storage operation returns an updated handle, it is
-/// returning the complete persisted storage facts for the upload.
+/// returning the complete persisted storage facts for the upload. Application
+/// code may persist and pass handles around, but should not derive protocol
+/// behavior from their contents.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StorageHandle {
     key: String,

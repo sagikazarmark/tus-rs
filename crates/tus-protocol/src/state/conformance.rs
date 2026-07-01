@@ -10,8 +10,8 @@
 //!
 //! The suite covers behavior the protocol lifecycle depends on: create versus
 //! update semantics, duplicate create handling, snapshot reads, idempotent
-//! delete, expiration listing, upload-id safety, and persistence of required
-//! protocol state.
+//! delete, expiration listing, upload-id safety, persistence of required
+//! protocol upload state, and round-tripping storage handle facts.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,7 +38,7 @@ where
     delete_is_idempotent(store).await;
     list_expired_returns_only_uploads_before_cutoff(store).await;
     rejects_unsafe_upload_ids(store).await;
-    persists_required_protocol_state(store).await;
+    persists_protocol_state_and_storage_handle_facts(store).await;
 }
 
 async fn create_then_update_overwrites_state<S>(store: &S)
@@ -266,7 +266,7 @@ where
     }
 }
 
-async fn persists_required_protocol_state<S>(store: &S)
+async fn persists_protocol_state_and_storage_handle_facts<S>(store: &S)
 where
     S: StateStore + ?Sized,
 {
@@ -308,15 +308,18 @@ where
         !retrieved.is_final(),
         "partial state should not become final"
     );
+    let retrieved_handle = retrieved
+        .storage_handle()
+        .expect("storage handle facts should persist with upload state");
+    assert_eq!(retrieved_handle.key(), format!("objects/{partial_id}"));
     assert_eq!(
-        retrieved.storage_key(),
-        Some(format!("objects/{partial_id}").as_str())
-    );
-    assert_eq!(
-        retrieved.get_internal("multipart-upload-id"),
+        retrieved_handle.get_internal("multipart-upload-id"),
         Some("upload-session-1")
     );
-    assert_eq!(retrieved.get_internal("etag-1"), Some("etag-value-1"));
+    assert_eq!(
+        retrieved_handle.get_internal("etag-1"),
+        Some("etag-value-1")
+    );
     assert_eq!(
         retrieved
             .metadata()
