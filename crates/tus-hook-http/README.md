@@ -45,16 +45,23 @@ The executor sends JSON-serialized hook contexts with:
 - `X-Tus-Hook-Event: <event>`
 - `X-Tus-Signature-256: sha256=<hex-hmac>` when a signing secret is configured
 
+The payload's `upload` object contains protocol-level upload facts only. It does
+not include storage keys or backend-internal storage metadata.
+
 For pre-hooks, return a JSON response whose fields map to
 `tus_protocol::PreHookResult`, for example:
 
 ```json
 {
   "proceed": false,
+  "metadata": {"filename": "example.bin"},
   "reject_status": 403,
   "reject_message": "upload rejected"
 }
 ```
+
+`metadata` replaces user metadata only for hook events that allow metadata
+changes, such as `PreCreate` and `PreReceive`.
 
 ## License
 

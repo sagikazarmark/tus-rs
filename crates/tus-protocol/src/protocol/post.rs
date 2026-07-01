@@ -4,7 +4,7 @@ use http::StatusCode;
 
 use crate::config::{Config, Extension};
 use crate::error::Error;
-use crate::hooks::{HookEvent, HookExecutor};
+use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
     CreationRequest, CreationTransition, ReceiveProjection, apply_receive_commit,
     create_final_upload as create_lifecycle_final_upload, prepare_creation, run_pre_finish,
@@ -69,8 +69,8 @@ where
             });
         }
 
-        if let Some(modified_state) = pre_result.upload {
-            state = modified_state;
+        if let Some(metadata) = pre_result.metadata {
+            state.set_metadata(metadata);
         }
 
         // Creation-With-Upload path
@@ -95,7 +95,7 @@ where
         self.state_store.set(&state, true).await?;
 
         let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
-        self.hooks.execute_post(&post_ctx).await?;
+        execute_post_best_effort(self.hooks, &post_ctx).await;
 
         if let Some(data) = creation_body
             && let Err(e) = self
@@ -126,6 +126,10 @@ where
             && let Some(expires) = state.expires_header()
         {
             response = response.with_header("upload-expires", &expires);
+        }
+
+        for (name, value) in pre_result.response_headers {
+            response = response.with_header_owned(name, value);
         }
 
         Ok(response)
@@ -207,7 +211,7 @@ where
 
         if state.is_complete() {
             let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
-            self.hooks.execute_post(&post_finish_ctx).await?;
+            execute_post_best_effort(self.hooks, &post_finish_ctx).await;
         }
 
         Ok(())
@@ -319,7 +323,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::extensions::UploadConcat;
-    use crate::hooks::{HookChain, NoopHookExecutor, PreHookResult};
+    use crate::hooks::{HookChain, HookContext, HookExecutor, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
     use crate::state::UploadMetadata;
     use crate::state::memory::MemoryStateStore;
@@ -327,6 +331,19 @@ mod tests {
     use bytes::Bytes;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FailingPostHookExecutor;
+
+    #[async_trait::async_trait]
+    impl HookExecutor for FailingPostHookExecutor {
+        async fn execute_pre(&self, _ctx: &HookContext) -> crate::Result<PreHookResult> {
+            Ok(PreHookResult::proceed())
+        }
+
+        async fn execute_post(&self, _ctx: &HookContext) -> crate::Result<()> {
+            Err(Error::hook(std::io::Error::other("post hook failed")))
+        }
+    }
 
     fn headers_with_length(length: u64) -> Headers {
         Headers {
@@ -608,6 +625,67 @@ mod tests {
             stored.metadata().get("filename").and_then(|v| v.as_str()),
             Some("test.txt")
         );
+    }
+
+    #[tokio::test]
+    async fn pre_create_can_replace_user_metadata() {
+        let store = MemoryStateStore::new();
+        let storage = MemoryStorage::new();
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new().on_pre_create(|_| async {
+            let mut metadata = UploadMetadata::new();
+            metadata.insert("filename", "hook.txt");
+            Ok(PreHookResult::proceed_with_metadata(metadata))
+        });
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .post(headers_with_length(1000), RequestBody::absent())
+            .await
+            .unwrap();
+
+        let location = response.headers.get("location").unwrap().to_str().unwrap();
+        let id = location.rsplit('/').next().unwrap();
+        let stored = store.get(id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.metadata().get("filename").and_then(|v| v.as_str()),
+            Some("hook.txt")
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_create_response_headers_are_returned() {
+        let store = MemoryStateStore::new();
+        let storage = MemoryStorage::new();
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new().on_pre_create(|_| async {
+            Ok(PreHookResult::proceed().with_header("x-hook", "created"))
+        });
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .post(headers_with_length(1000), RequestBody::absent())
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers.get("x-hook").unwrap(), "created");
+    }
+
+    #[tokio::test]
+    async fn post_create_hook_failure_after_commit_is_swallowed() {
+        let store = MemoryStateStore::new();
+        let storage = MemoryStorage::new();
+        let locker = NoopLocker::new();
+        let hooks = FailingPostHookExecutor;
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .post(headers_with_length(1000), RequestBody::absent())
+            .await
+            .unwrap();
+
+        let location = response.headers.get("location").unwrap().to_str().unwrap();
+        let id = location.rsplit('/').next().unwrap();
+
+        assert_eq!(response.status, StatusCode::CREATED);
+        assert!(store.get(id).await.unwrap().is_some());
     }
 
     #[tokio::test]

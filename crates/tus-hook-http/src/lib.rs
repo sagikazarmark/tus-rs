@@ -33,12 +33,14 @@
 //! ```json
 //! {
 //!     "proceed": true,
+//!     "metadata": {"filename": "example.bin"},
 //!     "reject_status": 403,
 //!     "reject_message": "Upload rejected"
 //! }
 //! ```
 //!
 //! - `proceed`: Whether to allow the operation (default: true)
+//! - `metadata`: Replacement user metadata for hook events that allow metadata changes
 //! - `reject_status`: HTTP status code for rejection (default: 403)
 //! - `reject_message`: Message to return to the client
 //!
@@ -54,7 +56,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::time::Duration;
-use tus_protocol::{Error, HookContext, HookExecutor, PreHookResult, Result, UploadState};
+use tus_protocol::{Error, HookContext, HookExecutor, PreHookResult, Result, UploadMetadata};
 
 /// Default timeout for webhook requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -139,9 +141,9 @@ pub struct PreHookResponse {
     #[serde(default = "default_proceed")]
     pub proceed: bool,
 
-    /// Modified upload state, if any.
+    /// Replacement user metadata, if any.
     #[serde(default)]
-    pub upload: Option<UploadState>,
+    pub metadata: Option<UploadMetadata>,
 
     /// HTTP status code for rejection.
     #[serde(default)]
@@ -160,7 +162,7 @@ impl Default for PreHookResponse {
     fn default() -> Self {
         Self {
             proceed: default_proceed(),
-            upload: None,
+            metadata: None,
             reject_status: None,
             reject_message: None,
             response_headers: None,
@@ -172,7 +174,7 @@ impl From<PreHookResponse> for PreHookResult {
     fn from(response: PreHookResponse) -> Self {
         let mut result = PreHookResult::default();
         result.proceed = response.proceed;
-        result.upload = response.upload;
+        result.metadata = response.metadata;
         result.reject_status = response.reject_status;
         result.reject_message = response.reject_message;
         result.response_headers = response.response_headers.unwrap_or_default();
@@ -183,8 +185,8 @@ impl From<PreHookResponse> for PreHookResult {
 /// HTTP webhook executor that implements the [`HookExecutor`] trait.
 ///
 /// This executor sends webhook requests to a configured endpoint for each hook
-/// event. Pre-hooks can modify or reject operations based on the webhook
-/// response.
+/// event. Pre-hooks can reject operations, add response headers, or replace
+/// user metadata based on the webhook response.
 pub struct HttpHookExecutor {
     client: Client,
     config: HttpHookConfig,
@@ -413,7 +415,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinHandle;
     use tus_protocol::hooks::HookRequestInfo;
-    use tus_protocol::{HookEvent, HookExecutor};
+    use tus_protocol::{HookEvent, HookExecutor, HookUpload};
 
     #[test]
     fn config_builder_sets_webhook_options() {
@@ -450,7 +452,7 @@ mod tests {
         let response: PreHookResponse = serde_json::from_str("{}").unwrap();
 
         assert!(response.proceed);
-        assert!(response.upload.is_none());
+        assert!(response.metadata.is_none());
         assert!(response.reject_status.is_none());
         assert!(response.reject_message.is_none());
     }
@@ -460,7 +462,7 @@ mod tests {
         let response = PreHookResponse::default();
 
         assert!(response.proceed);
-        assert!(response.upload.is_none());
+        assert!(response.metadata.is_none());
         assert!(response.reject_status.is_none());
         assert!(response.reject_message.is_none());
     }
@@ -469,7 +471,7 @@ mod tests {
     fn pre_hook_response_converts_to_pre_hook_result() {
         let response = PreHookResponse {
             proceed: false,
-            upload: None,
+            metadata: None,
             reject_status: Some(403),
             reject_message: Some("Forbidden".to_string()),
             response_headers: Some({
@@ -487,6 +489,24 @@ mod tests {
         assert_eq!(
             result.response_headers.get("X-Custom"),
             Some(&"value".to_string())
+        );
+    }
+
+    #[test]
+    fn pre_hook_response_maps_metadata_replacement() {
+        let response: PreHookResponse =
+            serde_json::from_str(r#"{"metadata":{"filename":"hook.txt"}}"#).unwrap();
+
+        let result: PreHookResult = response.into();
+
+        assert!(result.proceed);
+        assert_eq!(
+            result
+                .metadata
+                .unwrap()
+                .get("filename")
+                .and_then(|value| value.as_str()),
+            Some("hook.txt")
         );
     }
 
@@ -581,7 +601,7 @@ mod tests {
 
         HookContext::new(
             HookEvent::PreCreate,
-            UploadState::new("test-upload-id"),
+            HookUpload::new("test-upload-id"),
             request,
         )
     }

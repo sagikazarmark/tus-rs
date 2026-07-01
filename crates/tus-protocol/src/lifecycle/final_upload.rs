@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::config::{Config, Extension};
 use crate::error::{Error, Result};
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{
+    HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
+};
 use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ConcatRequest, Storage};
@@ -114,10 +116,10 @@ where
 
     state_store.set(&state, true).await?;
 
-    run_post_event(hooks, HookEvent::PostCreate, request_info, &state).await?;
+    run_post_event(hooks, HookEvent::PostCreate, request_info, &state).await;
 
     if status.all_complete {
-        run_post_event(hooks, HookEvent::PostFinish, request_info, &state).await?;
+        run_post_event(hooks, HookEvent::PostFinish, request_info, &state).await;
     }
 
     Ok(CreatedFinalUpload {
@@ -172,7 +174,10 @@ where
         .zip(status.total_length)
         .is_some_and(|(actual_size, total_length)| actual_size != total_length);
 
-    if status.ready_to_materialize() && (!state.is_complete() || needs_materialization) {
+    let will_complete =
+        status.ready_to_materialize() && (!state.is_complete() || needs_materialization);
+
+    if will_complete {
         let mut completed_state = state.clone();
         let total_length = status
             .total_length
@@ -204,6 +209,10 @@ where
             .set(state, false)
             .await
             .map_err(|err| Error::Internal(err.to_string()))?;
+    }
+
+    if will_complete {
+        run_post_event(hooks, HookEvent::PostFinish, request_info, state).await;
     }
 
     Ok(true)
@@ -386,7 +395,13 @@ where
     }
 
     Ok(PreCreateDecision {
-        state: pre_result.upload.unwrap_or(state),
+        state: {
+            let mut state = state;
+            if let Some(metadata) = pre_result.metadata {
+                state.set_metadata(metadata);
+            }
+            state
+        },
         response_headers: pre_result.response_headers,
     })
 }
@@ -396,12 +411,11 @@ async fn run_post_event<H>(
     event: HookEvent,
     request_info: &HookRequestInfo,
     state: &UploadState,
-) -> Result<()>
-where
+) where
     H: HookExecutor + ?Sized,
 {
     let ctx = HookContext::new(event, state.clone(), request_info.clone());
-    hooks.execute_post(&ctx).await
+    execute_post_best_effort(hooks, &ctx).await;
 }
 
 async fn storage_size<S>(storage: &S, state: &UploadState) -> Result<u64>
@@ -555,7 +569,7 @@ mod tests {
 ))]
 mod materialization_tests {
     use super::*;
-    use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
+    use crate::hooks::{HookChain, HookEvent, PreHookResult};
     use crate::state::memory::MemoryStateStore;
     use crate::storage::{AppendRequest, ChunkStream, memory::MemoryStorage};
     use bytes::{Bytes, BytesMut};
@@ -736,10 +750,33 @@ mod materialization_tests {
         final_upload.set_offset(4);
         store.set(&final_upload, true).await.unwrap();
 
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new()
+            .on_pre_finish({
+                let events = Arc::clone(&events);
+                move |_| {
+                    let events = Arc::clone(&events);
+                    async move {
+                        events.lock().unwrap().push(HookEvent::PreFinish);
+                        Ok(PreHookResult::proceed())
+                    }
+                }
+            })
+            .on_post_finish({
+                let events = Arc::clone(&events);
+                move |_| {
+                    let events = Arc::clone(&events);
+                    async move {
+                        events.lock().unwrap().push(HookEvent::PostFinish);
+                        Ok(())
+                    }
+                }
+            });
+
         let handled = repair_final_upload(
             &storage,
             &store,
-            &NoopHookExecutor::new(),
+            &hooks,
             &HookRequestInfo::default(),
             &mut final_upload,
         )
@@ -756,6 +793,10 @@ mod materialization_tests {
         let stored = store.get("final-1").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 8);
         assert_eq!(stored.length(), Some(8));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![HookEvent::PreFinish, HookEvent::PostFinish]
+        );
     }
 
     #[tokio::test]

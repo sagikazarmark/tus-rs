@@ -94,9 +94,20 @@ databases, distributed locks, or platform-specific runtimes.
 - `PreFinish` and `PostFinish`
 - `PreTerminate` and `PostTerminate`
 
-Pre-hooks can reject requests or modify upload state before an operation is
-committed. Post-hooks are best-effort notifications and should be treated as
-at-most-once side effects.
+Hook contexts expose `HookUpload`, a protocol-level upload snapshot that omits
+storage keys and backend-internal storage metadata. Pre-hooks can reject
+requests, add response headers, and, for `PreCreate`/`PreReceive`, replace user
+metadata before an operation is committed. Post-hooks are best-effort
+notifications; failures are logged and do not fail already-committed requests.
+
+| Request path | Hook events | Notes |
+|--------------|-------------|-------|
+| `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may replace user metadata before storage/state creation. |
+| `POST` with Creation-With-Upload body | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if the body completes the upload | `PreFinish` gates committing the completing body. |
+| `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete | Final upload facts are derived from referenced partials before `PreCreate`. |
+| `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload | `PreReceive` may replace user metadata before bytes are committed. |
+| `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. |
+| `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths can materialize or repair final concatenation uploads from complete parts. |
 
 ## Runtime Notes
 

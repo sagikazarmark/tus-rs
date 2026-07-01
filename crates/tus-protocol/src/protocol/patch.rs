@@ -7,7 +7,7 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookEvent, HookExecutor};
+use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
     ReceiveRequest, apply_receive_commit, ensure_active, prepare_receive, receive_body_size_limit,
     reconcile_state_offset, run_pre_finish, validate_receive_body,
@@ -96,8 +96,8 @@ where
             });
         }
 
-        if let Some(modified_state) = pre_result.upload {
-            state = modified_state;
+        if let Some(metadata) = pre_result.metadata {
+            state.set_metadata(metadata);
         }
 
         let body = super::body::collect(
@@ -129,11 +129,11 @@ where
         self.state_store.set(&state, false).await?;
 
         let post_receive_ctx = hook_contexts.context(HookEvent::PostReceive, state.clone());
-        self.hooks.execute_post(&post_receive_ctx).await?;
+        execute_post_best_effort(self.hooks, &post_receive_ctx).await;
 
         if state.is_complete() {
             let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
-            self.hooks.execute_post(&post_finish_ctx).await?;
+            execute_post_best_effort(self.hooks, &post_finish_ctx).await;
         }
 
         let mut response = Response::new(StatusCode::NO_CONTENT)
@@ -164,7 +164,7 @@ mod tests {
     use crate::config::Config;
     use crate::hooks::{HookChain, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
-    use crate::state::{UploadState, memory::MemoryStateStore};
+    use crate::state::{UploadMetadata, UploadState, memory::MemoryStateStore};
     use crate::storage::memory::MemoryStorage;
     use bytes::Bytes;
     use chrono::{Duration, Utc};
@@ -521,6 +521,34 @@ mod tests {
         assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
         let stored = store.get("test-id").await.unwrap().unwrap();
         assert!(stored.is_complete());
+    }
+
+    #[tokio::test]
+    async fn pre_receive_can_replace_user_metadata() {
+        let (storage, store) = setup(UploadState::new("test-id").with_length(10)).await;
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new().on_pre_receive(|_| async {
+            let mut metadata = UploadMetadata::new();
+            metadata.insert("stage", "received");
+            Ok(PreHookResult::proceed_with_metadata(metadata))
+        });
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .patch(
+                headers(0),
+                &upload_id,
+                RequestBody::from_chunk_stream(body(b"Hello")),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
+        let stored = store.get("test-id").await.unwrap().unwrap();
+        assert_eq!(
+            stored.metadata().get("stage").and_then(|v| v.as_str()),
+            Some("received")
+        );
     }
 
     #[tokio::test]

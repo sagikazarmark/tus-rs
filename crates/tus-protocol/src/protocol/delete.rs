@@ -4,7 +4,7 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookEvent, HookExecutor};
+use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::Storage;
@@ -82,7 +82,7 @@ where
         self.state_store.delete(upload_id).await?;
 
         let post_ctx = hook_contexts.context(HookEvent::PostTerminate, state);
-        self.hooks.execute_post(&post_ctx).await?;
+        execute_post_best_effort(self.hooks, &post_ctx).await;
 
         let mut response = Response::new(StatusCode::NO_CONTENT);
         for (name, value) in pre_result.response_headers {

@@ -71,8 +71,8 @@ pub use config::{ChecksumAlgorithm, Config, Extension, TUS_RESUMABLE, TUS_VERSIO
 pub use error::{Error, Result};
 pub use extensions::UploadConcat;
 pub use hooks::{
-    Hook, HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo, NoopHookExecutor,
-    PreHookResult,
+    Hook, HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo, HookUpload,
+    NoopHookExecutor, PreHookResult,
 };
 pub use lifecycle::{
     CreationRequest, CreationTransition, ExpiredUploadReclamationOutcome,
@@ -94,7 +94,9 @@ pub use storage::{AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHan
 pub mod prelude {
     pub use crate::config::{Config, Extension};
     pub use crate::error::{Error, Result};
-    pub use crate::hooks::{HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo};
+    pub use crate::hooks::{
+        HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo, HookUpload,
+    };
     pub use crate::lifecycle::{
         CreationRequest, CreationTransition, ExpiredUploadReclamationOutcome,
         ExpiredUploadReclamationReport, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,

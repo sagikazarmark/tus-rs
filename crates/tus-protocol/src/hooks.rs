@@ -43,29 +43,44 @@
 //!   are gates: the protocol awaits the result and acts on it. A pre-hook
 //!   that returns [`PreHookResult::reject`] aborts the operation; a pre-hook
 //!   error fails the request. Run-to-completion is part of the contract.
+//!   `PreCreate` and `PreReceive` may replace user metadata through
+//!   [`PreHookResult::proceed_with_metadata`]; hooks never receive or return storage
+//!   locator or backend-internal storage facts.
 //!
 //! - **Post-hooks** (`PostCreate`, `PostReceive`, `PostFinish`, `PostTerminate`)
 //!   are notifications, and they are **best-effort**. The protocol awaits
 //!   them inline today, which means an HTTP adapter cancellation (for example,
 //!   a client disconnect mid-request) can drop the handler future before the
-//!   post-hook fires. The committed bytes and state are unaffected;
+//!   post-hook fires. Once storage or state has changed, post-hook errors are
+//!   logged and swallowed. The committed bytes and state are unaffected;
 //!   per-PATCH atomicity plus reconcile-on-HEAD keep the upload consistent,
 //!   but the post-hook callback may simply not run.
 //!
 //!   Implications for hook authors:
 //!
-//!   - Treat post-hooks as **at-most-once** notifications. Do not rely on
-//!     them as the source of truth for whether a side effect needs to
-//!     happen.
-//!   - Make hook handlers idempotent so retries (or operator-driven
+//!   - Treat post-hooks as non-durable notifications. Do not rely on them as
+//!     the source of truth for whether a side effect needs to happen.
+//!   - Make hook handlers idempotent so adapter retries (or operator-driven
 //!     reconciliation sweeps) are safe.
 //!   - For audit logs, antivirus scans, or anything that *must* fire for
 //!     every committed upload, run a periodic reconciliation job that
 //!     compares your sink against the server's state store and
 //!     re-fires the missed events. The protocol does not provide
 //!     durable hook delivery; that's an operator concern.
+//!
+//! ## Event Matrix
+//!
+//! | Request path | Hook events | Notes |
+//! | --- | --- | --- |
+//! | `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may reject, add response headers, or replace user metadata before storage/state creation. `PostCreate` runs after storage and state are committed. |
+//! | `POST` with Creation-With-Upload body | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreFinish` runs before the body bytes are committed. `PostFinish` runs after the body bytes and final offset are committed. |
+//! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may replace user metadata. |
+//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. |
+//! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PostTerminate` runs after state deletion and best-effort storage deletion. |
+//! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths reconcile final concatenation uploads. If complete referenced parts can materialize or repair the final upload, `PreFinish` gates that commit and `PostFinish` follows it. |
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 #[cfg(not(feature = "local-futures"))]
 use futures::future::BoxFuture;
 #[cfg(feature = "local-futures")]
@@ -76,7 +91,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::runtime::{MaybeSend, MaybeSendSync};
-use crate::state::UploadState;
+use crate::state::{UploadMetadata, UploadState};
 
 /// Trait for implementing hooks.
 ///
@@ -95,7 +110,7 @@ pub trait Hook: MaybeSendSync {
     ///
     /// Pre-hooks can:
     /// - Reject the operation by returning `PreHookResult::reject()`
-    /// - Modify the upload state by returning `PreHookResult::proceed_with()`
+    /// - Replace user metadata by returning `PreHookResult::proceed_with_metadata()`
     /// - Allow the operation to proceed by returning `PreHookResult::proceed()`
     async fn pre_hook(&self, _ctx: &HookContext) -> Result<PreHookResult> {
         Ok(PreHookResult::proceed())
@@ -116,14 +131,14 @@ pub trait Hook: MaybeSendSync {
 #[serde(rename_all = "kebab-case")]
 pub enum HookEvent {
     /// Before creating a new upload (POST).
-    /// Pre-hook can reject the creation or modify the upload state.
+    /// Pre-hook can reject the creation or replace user metadata.
     PreCreate,
 
     /// After an upload is created.
     PostCreate,
 
     /// Before receiving upload data (PATCH).
-    /// Pre-hook can reject the data or modify how it's handled.
+    /// Pre-hook can reject the data or replace user metadata.
     PreReceive,
 
     /// After upload data is received.
@@ -190,8 +205,8 @@ pub struct HookContext {
     /// The hook event type.
     pub event: HookEvent,
 
-    /// The upload state at the time of the hook.
-    pub upload: UploadState,
+    /// Hook-visible upload facts at the time of the hook.
+    pub upload: HookUpload,
 
     /// HTTP request metadata.
     pub request: HookRequestInfo,
@@ -199,12 +214,144 @@ pub struct HookContext {
 
 impl HookContext {
     /// Creates a new hook context.
-    pub fn new(event: HookEvent, upload: UploadState, request: HookRequestInfo) -> Self {
+    pub fn new(event: HookEvent, upload: impl Into<HookUpload>, request: HookRequestInfo) -> Self {
         Self {
             event,
-            upload,
+            upload: upload.into(),
             request,
         }
+    }
+}
+
+/// Hook-visible upload facts.
+///
+/// This snapshot intentionally excludes storage locator facts such as the
+/// storage key and backend-internal storage metadata. Hooks can inspect protocol
+/// state and user metadata, but storage adapters remain the only code that sees
+/// or mutates storage-local bookkeeping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookUpload {
+    /// Unique upload identifier.
+    id: String,
+
+    /// Bytes successfully uploaded (current offset).
+    offset: u64,
+
+    /// Total size in bytes. None if deferred (Upload-Defer-Length).
+    length: Option<u64>,
+
+    /// When the upload was created.
+    created_at: DateTime<Utc>,
+
+    /// When the upload expires. None if expiration is disabled.
+    expires_at: Option<DateTime<Utc>>,
+
+    /// Whether this is a partial upload (for concatenation).
+    is_partial: bool,
+
+    /// Whether this is a final concatenated upload.
+    is_final: bool,
+
+    /// Part IDs for final uploads (Concatenation extension).
+    parts: Option<Vec<String>>,
+
+    /// User-provided metadata from the Upload-Metadata header.
+    metadata: UploadMetadata,
+}
+
+impl HookUpload {
+    /// Creates a new hook upload snapshot with the given ID.
+    pub fn new(id: impl Into<String>) -> Self {
+        UploadState::new(id).into()
+    }
+
+    /// Creates a hook upload snapshot from persisted upload state.
+    pub fn from_state(state: &UploadState) -> Self {
+        Self {
+            id: state.id().to_string(),
+            offset: state.offset(),
+            length: state.length(),
+            created_at: *state.created_at(),
+            expires_at: state.expires_at().copied(),
+            is_partial: state.is_partial(),
+            is_final: state.is_final(),
+            parts: state.parts().map(|parts| parts.to_vec()),
+            metadata: state.metadata().clone(),
+        }
+    }
+
+    /// Returns the upload identifier.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the current offset.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the declared upload length, if any.
+    pub fn length(&self) -> Option<u64> {
+        self.length
+    }
+
+    /// Returns when the upload was created.
+    pub fn created_at(&self) -> &DateTime<Utc> {
+        &self.created_at
+    }
+
+    /// Returns when the upload expires, if expiration is enabled.
+    pub fn expires_at(&self) -> Option<&DateTime<Utc>> {
+        self.expires_at.as_ref()
+    }
+
+    /// Returns whether the upload is marked as partial.
+    pub fn is_partial(&self) -> bool {
+        self.is_partial
+    }
+
+    /// Returns whether the upload is marked as final.
+    pub fn is_final(&self) -> bool {
+        self.is_final
+    }
+
+    /// Returns the concatenated part IDs for final uploads.
+    pub fn parts(&self) -> Option<&[String]> {
+        self.parts.as_deref()
+    }
+
+    /// Returns the user metadata map.
+    pub fn metadata(&self) -> &UploadMetadata {
+        &self.metadata
+    }
+
+    /// Returns whether the upload is complete.
+    pub fn is_complete(&self) -> bool {
+        match self.length {
+            Some(length) => self.offset >= length,
+            None => false,
+        }
+    }
+
+    /// Returns whether the upload has expired.
+    pub fn is_expired(&self) -> bool {
+        self.expires_at.is_some_and(|expires| Utc::now() > expires)
+    }
+
+    fn set_metadata(&mut self, metadata: UploadMetadata) {
+        self.metadata = metadata;
+    }
+}
+
+impl From<UploadState> for HookUpload {
+    fn from(state: UploadState) -> Self {
+        Self::from_state(&state)
+    }
+}
+
+impl From<&UploadState> for HookUpload {
+    fn from(state: &UploadState) -> Self {
+        Self::from_state(state)
     }
 }
 
@@ -229,19 +376,22 @@ pub struct HookRequestInfo {
 /// Result from a pre-hook execution.
 ///
 /// Construct with the associated helpers: [`PreHookResult::proceed`],
-/// [`PreHookResult::proceed_with`], or [`PreHookResult::reject`], rather than
-/// with a struct literal. The type is `#[non_exhaustive]` so new decision
-/// knobs (for example, per-request rate-limit overrides) can be added without
-/// a major version bump.
+/// [`PreHookResult::proceed_with_metadata`], or [`PreHookResult::reject`],
+/// rather than with a struct literal. The type is `#[non_exhaustive]` so new
+/// decision knobs (for example, per-request rate-limit overrides) can be added
+/// without a major version bump.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct PreHookResult {
     /// Whether to proceed with the operation.
     pub proceed: bool,
 
-    /// Modified upload state (if any).
-    /// Pre-hooks can modify metadata, storage path, etc.
-    pub upload: Option<UploadState>,
+    /// Replacement user metadata, if any.
+    ///
+    /// The protocol applies this only at documented mutation points such as
+    /// `PreCreate` and `PreReceive`; hooks cannot mutate storage locator or
+    /// backend-internal storage facts.
+    pub metadata: Option<UploadMetadata>,
 
     /// HTTP status code for rejection.
     pub reject_status: Option<u16>,
@@ -263,14 +413,10 @@ impl PreHookResult {
         }
     }
 
-    /// Creates a result that proceeds with a modified upload state.
+    /// Creates a result that proceeds with replacement user metadata.
     #[must_use]
-    pub fn proceed_with(upload: UploadState) -> Self {
-        Self {
-            proceed: true,
-            upload: Some(upload),
-            ..Default::default()
-        }
+    pub fn proceed_with_metadata(metadata: impl Into<UploadMetadata>) -> Self {
+        Self::proceed().with_metadata(metadata)
     }
 
     /// Creates a result that rejects the operation.
@@ -290,6 +436,13 @@ impl PreHookResult {
         self.response_headers.insert(name.into(), value.into());
         self
     }
+
+    /// Replaces user metadata if the current hook event allows metadata changes.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: impl Into<UploadMetadata>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
+    }
 }
 
 /// Trait for executing a chain of hooks.
@@ -304,9 +457,28 @@ pub trait HookExecutor: MaybeSendSync {
 
     /// Executes post-hooks for an event.
     ///
-    /// All hooks are executed even if some fail. Errors are logged but
-    /// don't affect the result.
+    /// Protocol handlers call post-hooks after committing storage or state
+    /// changes. At those call sites, executor errors are logged and swallowed
+    /// so an already-committed request is not reported as failed to the client.
     async fn execute_post(&self, ctx: &HookContext) -> Result<()>;
+}
+
+/// Executes a post-hook notification after protocol state or storage has changed.
+///
+/// Post-hooks are best-effort: executor failures are logged and swallowed so an
+/// already-committed request is not reported as failed to the client.
+pub(crate) async fn execute_post_best_effort<H>(hooks: &H, ctx: &HookContext)
+where
+    H: HookExecutor + ?Sized,
+{
+    if let Err(error) = hooks.execute_post(ctx).await {
+        tracing::warn!(
+            event = ctx.event.as_str(),
+            upload_id = %ctx.upload.id(),
+            error = %error,
+            "post-hook executor failed after commit"
+        );
+    }
 }
 
 /// A chain of hooks that are executed in order.
@@ -530,6 +702,7 @@ impl HookExecutor for HookChain {
     async fn execute_pre(&self, ctx: &HookContext) -> Result<PreHookResult> {
         let mut result = PreHookResult::proceed();
         let mut current_upload = ctx.upload.clone();
+        let mut metadata_changed = false;
 
         for hook in &self.hooks {
             if !hook.events().contains(&ctx.event) {
@@ -557,21 +730,26 @@ impl HookExecutor for HookChain {
                 // Hook rejected - return immediately
                 return Ok(PreHookResult {
                     proceed: false,
-                    upload: hook_result.upload,
+                    metadata: None,
                     reject_status: hook_result.reject_status,
                     reject_message: hook_result.reject_message,
                     response_headers: result.response_headers,
                 });
             }
 
-            // Update upload state if modified
-            if let Some(upload) = hook_result.upload {
-                current_upload = upload;
+            // Update user metadata if modified so later hooks see the current snapshot.
+            if ctx.event.allows_metadata_replacement()
+                && let Some(metadata) = hook_result.metadata
+            {
+                current_upload.set_metadata(metadata);
+                metadata_changed = true;
             }
         }
 
         // All hooks passed
-        result.upload = Some(current_upload);
+        if metadata_changed {
+            result.metadata = Some(current_upload.metadata().clone());
+        }
         Ok(result)
     }
 
@@ -599,6 +777,12 @@ impl HookExecutor for HookChain {
     }
 }
 
+impl HookEvent {
+    fn allows_metadata_replacement(self) -> bool {
+        matches!(self, HookEvent::PreCreate | HookEvent::PreReceive)
+    }
+}
+
 /// A no-op hook executor that does nothing.
 ///
 /// Useful when hooks are not needed.
@@ -615,8 +799,8 @@ impl NoopHookExecutor {
 #[cfg_attr(not(feature = "local-futures"), async_trait)]
 #[cfg_attr(feature = "local-futures", async_trait(?Send))]
 impl HookExecutor for NoopHookExecutor {
-    async fn execute_pre(&self, ctx: &HookContext) -> Result<PreHookResult> {
-        Ok(PreHookResult::proceed_with(ctx.upload.clone()))
+    async fn execute_pre(&self, _ctx: &HookContext) -> Result<PreHookResult> {
+        Ok(PreHookResult::proceed())
     }
 
     async fn execute_post(&self, _ctx: &HookContext) -> Result<()> {
@@ -684,6 +868,23 @@ mod tests {
         )
     }
 
+    #[test]
+    fn hook_upload_serialization_hides_storage_facts() {
+        let mut state = UploadState::new("test-id").with_length(5);
+        state.set_storage_key("storage-secret");
+        state.set_internal("backend-upload-id", "internal-secret");
+        let ctx = HookContext::new(HookEvent::PreCreate, state, HookRequestInfo::default());
+
+        let json = serde_json::to_value(&ctx).unwrap();
+        let serialized = json.to_string();
+
+        assert_eq!(json["upload"]["id"], "test-id");
+        assert!(json["upload"].get("storage_key").is_none());
+        assert!(json["upload"].get("internal").is_none());
+        assert!(!serialized.contains("storage-secret"));
+        assert!(!serialized.contains("internal-secret"));
+    }
+
     #[tokio::test]
     async fn test_hook_chain_empty() {
         let chain = HookChain::new();
@@ -733,7 +934,7 @@ mod tests {
 
         let result = executor.execute_pre(&ctx).await.unwrap();
         assert!(result.proceed);
-        assert!(result.upload.is_some());
+        assert!(result.metadata.is_none());
 
         // Post should also succeed
         assert!(executor.execute_post(&ctx).await.is_ok());
@@ -756,12 +957,13 @@ mod tests {
     fn test_pre_hook_result_builders() {
         let proceed = PreHookResult::proceed();
         assert!(proceed.proceed);
-        assert!(proceed.upload.is_none());
+        assert!(proceed.metadata.is_none());
 
-        let state = UploadState::new("test");
-        let proceed_with = PreHookResult::proceed_with(state);
-        assert!(proceed_with.proceed);
-        assert!(proceed_with.upload.is_some());
+        let mut metadata = UploadMetadata::new();
+        metadata.insert("filename", "test.txt");
+        let proceed_with_metadata = PreHookResult::proceed_with_metadata(metadata);
+        assert!(proceed_with_metadata.proceed);
+        assert!(proceed_with_metadata.metadata.is_some());
 
         let reject = PreHookResult::reject(400, "Bad request");
         assert!(!reject.proceed);
@@ -856,21 +1058,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pre_hook_closure_can_mutate_state() {
+    async fn pre_hook_closure_can_replace_metadata() {
         let chain = HookChain::new().on_pre_create(|ctx| async move {
-            let mut upload = ctx.upload.clone();
-            upload.metadata_mut().insert("injected", "yes");
-            Ok(PreHookResult::proceed_with(upload))
+            let mut metadata = ctx.upload.metadata().clone();
+            metadata.insert("injected", "yes");
+            Ok(PreHookResult::proceed_with_metadata(metadata))
         });
 
         let ctx = make_context(HookEvent::PreCreate);
         let result = chain.execute_pre(&ctx).await.unwrap();
         assert!(result.proceed);
-        let updated = result.upload.expect("upload should be carried through");
+        let updated = result.metadata.expect("metadata should be carried through");
         assert_eq!(
-            updated.metadata().get("injected").and_then(|v| v.as_str()),
+            updated.get("injected").and_then(|v| v.as_str()),
             Some("yes")
         );
+    }
+
+    #[tokio::test]
+    async fn metadata_replacement_is_visible_to_later_pre_hooks() {
+        let chain = HookChain::new()
+            .on_pre_create(|ctx| async move {
+                assert!(ctx.upload.metadata().get("injected").is_none());
+                let mut metadata = ctx.upload.metadata().clone();
+                metadata.insert("injected", "yes");
+                Ok(PreHookResult::proceed_with_metadata(metadata))
+            })
+            .on_pre_create(|ctx| async move {
+                assert_eq!(
+                    ctx.upload
+                        .metadata()
+                        .get("injected")
+                        .and_then(|v| v.as_str()),
+                    Some("yes")
+                );
+                Ok(PreHookResult::proceed())
+            });
+
+        let ctx = make_context(HookEvent::PreCreate);
+        let result = chain.execute_pre(&ctx).await.unwrap();
+
+        assert_eq!(
+            result
+                .metadata
+                .unwrap()
+                .get("injected")
+                .and_then(|v| v.as_str()),
+            Some("yes")
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_replacement_is_ignored_for_gate_only_pre_hooks() {
+        let chain = HookChain::new()
+            .on_pre_finish(|ctx| async move {
+                assert!(ctx.upload.metadata().get("uncommitted").is_none());
+                let mut metadata = ctx.upload.metadata().clone();
+                metadata.insert("uncommitted", "yes");
+                Ok(PreHookResult::proceed_with_metadata(metadata))
+            })
+            .on_pre_finish(|ctx| async move {
+                assert!(ctx.upload.metadata().get("uncommitted").is_none());
+                Ok(PreHookResult::proceed())
+            });
+
+        let ctx = make_context(HookEvent::PreFinish);
+        let result = chain.execute_pre(&ctx).await.unwrap();
+
+        assert!(result.proceed);
+        assert!(result.metadata.is_none());
     }
 
     #[tokio::test]

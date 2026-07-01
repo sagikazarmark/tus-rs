@@ -83,7 +83,8 @@ Useful entry points:
 - `Protocol` contains the core `POST`, `HEAD`, `PATCH`, `DELETE`, and `OPTIONS`
   handlers.
 - `Storage`, `StateStore`, and `Locker` define the backend contracts.
-- `HookChain` and `Hook` provide lifecycle extension points.
+- `HookChain` and `Hook` provide lifecycle extension points with hook-safe
+  upload snapshots that hide storage-local facts.
 
 Feature flags enable optional built-in backends and checksum support:
 
