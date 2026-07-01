@@ -11,6 +11,9 @@
 
 // Feature-gated implementations
 // Native implementations are not available in local-futures builds.
+#[cfg(any(test, feature = "conformance-lock"))]
+pub mod conformance;
+
 #[cfg(all(feature = "lock-memory", not(feature = "local-futures")))]
 pub mod memory;
 

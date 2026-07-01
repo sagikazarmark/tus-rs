@@ -10,6 +10,9 @@
 
 // Feature-gated implementations
 // Native implementations are not available in local-futures builds.
+#[cfg(any(test, feature = "conformance-state"))]
+pub mod conformance;
+
 #[cfg(all(feature = "state-memory", not(feature = "local-futures")))]
 pub mod memory;
 
@@ -40,6 +43,11 @@ use crate::storage::StorageHandle;
 /// true, implementations should reject an already existing upload ID; backends
 /// with compare-and-set or conditional-create support should make that check
 /// atomic with the write.
+///
+/// Implementations should reject upload IDs that fail
+/// [`UploadId`](crate::protocol::UploadId) validation on `set`, `get`, and
+/// `delete` so adapters cannot accidentally turn an unsafe path segment into a
+/// backend key or path component.
 ///
 /// # Platform Support
 ///

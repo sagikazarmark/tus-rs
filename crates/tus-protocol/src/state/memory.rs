@@ -61,6 +61,11 @@ impl std::fmt::Debug for MemoryStateStore {
     }
 }
 
+fn validate_upload_id(id: &str) -> Result<()> {
+    id.parse::<crate::protocol::UploadId>()?;
+    Ok(())
+}
+
 #[async_trait]
 impl StateStore for MemoryStateStore {
     fn name(&self) -> &'static str {
@@ -68,6 +73,8 @@ impl StateStore for MemoryStateStore {
     }
 
     async fn set(&self, state: &UploadState, create: bool) -> Result<()> {
+        validate_upload_id(state.id())?;
+
         let mut states = self.states.write().unwrap();
 
         if create && states.contains_key(state.id()) {
@@ -79,11 +86,15 @@ impl StateStore for MemoryStateStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<UploadState>> {
+        validate_upload_id(id)?;
+
         let states = self.states.read().unwrap();
         Ok(states.get(id).cloned())
     }
 
     async fn delete(&self, id: &str) -> Result<()> {
+        validate_upload_id(id)?;
+
         self.states.write().unwrap().remove(id);
         Ok(())
     }
@@ -109,6 +120,13 @@ impl StateStore for MemoryStateStore {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[tokio::test]
+    async fn state_store_conformance() {
+        let store = MemoryStateStore::new();
+
+        crate::state::conformance::assert_state_store_semantics(&store).await;
+    }
 
     #[tokio::test]
     async fn test_set_and_get() {

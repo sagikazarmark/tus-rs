@@ -227,6 +227,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_store_conformance() {
+        let (store, _dir) = create_test_store().await;
+
+        crate::state::conformance::assert_state_store_semantics(&store).await;
+    }
+
+    #[tokio::test]
     async fn test_set_and_get() {
         let (store, _dir) = create_test_store().await;
 
