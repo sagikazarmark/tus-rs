@@ -40,7 +40,7 @@ where
     /// hooks reject the request, or storage/state persistence fails.
     pub async fn post(&self, headers: Headers, body: RequestBody) -> Result<Response, Error> {
         let hook_contexts = HookContextBuilder::new(self.config, HookRequestFacts::post(&headers));
-        let has_body = post_has_body(&headers);
+        let has_body = body.is_supplied();
         if has_body {
             headers.validate_patch_content_type()?;
         }
@@ -74,7 +74,8 @@ where
         }
 
         // Creation-With-Upload path
-        let is_creation_with_upload = self.config.has_extension(Extension::CreationWithUpload)
+        let is_creation_with_upload = has_body
+            && self.config.has_extension(Extension::CreationWithUpload)
             && headers
                 .content_type
                 .as_deref()
@@ -153,9 +154,12 @@ where
             creation_body_size_limit(self.config, state),
             body,
         )
-        .await?
-        .bytes;
-        let body_len = data.len() as u64;
+        .await?;
+        debug_assert!(
+            data.supplied,
+            "creation body collection should only run for supplied bodies"
+        );
+        let body_len = data.size;
         validate_creation_body_size(self.config, state, body_len)?;
 
         let projected_offset = state.offset().saturating_add(body_len);
@@ -169,7 +173,7 @@ where
                 .await?;
         }
 
-        Ok(data)
+        Ok(data.bytes)
     }
 
     async fn commit_creation_body(
@@ -261,19 +265,6 @@ where
     ) -> Result<(), Error> {
         run_pre_finish(self.hooks, hook_contexts.request_info(), state).await
     }
-}
-
-fn post_has_body(headers: &Headers) -> bool {
-    headers.content_length.unwrap_or(0) > 0
-        || headers
-            .transfer_encoding
-            .as_deref()
-            .map(|value| {
-                value
-                    .split(',')
-                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
-            })
-            .unwrap_or(false)
 }
 
 fn creation_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
@@ -391,7 +382,7 @@ mod tests {
             &storage,
             &store,
             headers_with_length(1000),
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap();
@@ -413,7 +404,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers_with_length(1000),
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -428,7 +419,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers_with_length(1000),
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -446,7 +437,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap();
@@ -465,7 +456,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -480,7 +471,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers_with_length(100),
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -562,7 +553,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             Headers::default(),
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -581,7 +572,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -605,7 +596,7 @@ mod tests {
             &MemoryStorage::new(),
             &store,
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap();
@@ -633,7 +624,7 @@ mod tests {
             &MemoryStorage::new(),
             &store,
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap();
@@ -655,7 +646,7 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -687,15 +678,9 @@ mod tests {
             ..Default::default()
         };
 
-        let response = call(
-            &config,
-            &storage,
-            &store,
-            headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
-        )
-        .await
-        .unwrap();
+        let response = call(&config, &storage, &store, headers, RequestBody::absent())
+            .await
+            .unwrap();
 
         assert_eq!(response.status, StatusCode::CREATED);
         assert_eq!(response.headers.get("upload-length").unwrap(), "100");
@@ -722,10 +707,7 @@ mod tests {
             .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) });
 
         let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
-            .post(
-                headers,
-                RequestBody::from_chunk_stream(ChunkStream::empty()),
-            )
+            .post(headers, RequestBody::absent())
             .await
             .unwrap_err();
 
@@ -759,7 +741,7 @@ mod tests {
             &MemoryStorage::new(),
             &store,
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::absent(),
         )
         .await
         .unwrap_err();
@@ -783,15 +765,9 @@ mod tests {
             ..Default::default()
         };
 
-        let response = call(
-            &config,
-            &storage,
-            &store,
-            headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
-        )
-        .await
-        .unwrap();
+        let response = call(&config, &storage, &store, headers, RequestBody::absent())
+            .await
+            .unwrap();
 
         assert!(response.headers.get("upload-length").is_none());
         assert!(response.headers.get("upload-offset").is_none());
@@ -1015,11 +991,69 @@ mod tests {
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
-            RequestBody::from_chunk_stream(ChunkStream::empty()),
+            RequestBody::from_bytes(Bytes::new()),
         )
         .await
         .unwrap();
         assert_eq!(response.headers.get("upload-offset").unwrap(), "0");
+    }
+
+    #[tokio::test]
+    async fn supplied_post_body_without_framing_headers_requires_creation_with_upload_extension() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let body_data: &[u8] = b"body that must not be dropped";
+        let headers = Headers {
+            upload_length: Some(body_data.len() as u64),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            ..Default::default()
+        };
+
+        let err = call(
+            &Config::default(),
+            &storage,
+            &store,
+            headers,
+            RequestBody::from_bytes(Bytes::copy_from_slice(body_data)),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::ExtensionNotSupported(ext) if ext == "creation-with-upload"));
+        assert!(
+            store.list(100, 0).await.unwrap().is_empty(),
+            "POST body rejection must happen before allocating state",
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_writes_body_without_framing_headers() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let store = MemoryStateStore::new();
+        let body_data: &[u8] = b"Hello";
+        let headers = Headers {
+            upload_length: Some(body_data.len() as u64),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            ..Default::default()
+        };
+
+        let response = call(
+            &config,
+            &MemoryStorage::new(),
+            &store,
+            headers,
+            RequestBody::from_bytes(Bytes::copy_from_slice(body_data)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status, StatusCode::CREATED);
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
+        let location = response.headers.get("location").unwrap().to_str().unwrap();
+        let id = location.rsplit('/').next().unwrap();
+        let stored = store.get(id).await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 5);
+        assert!(stored.is_complete());
     }
 
     #[tokio::test]
