@@ -89,26 +89,39 @@ where
 }
 
 fn body_is_supplied(headers: &HeaderMap, body: &Body) -> bool {
-    !body.is_end_stream() || headers_indicate_body(headers)
+    if has_offset_content_type(headers) {
+        return true;
+    }
+
+    if let Some(content_length) = content_length(headers) {
+        return content_length > 0;
+    }
+
+    has_chunked_transfer_encoding(headers) || !body.is_end_stream()
 }
 
-fn headers_indicate_body(headers: &HeaderMap) -> bool {
+fn has_offset_content_type(headers: &HeaderMap) -> bool {
     headers
         .get("content-type")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|content_type| content_type.starts_with("application/offset+octet-stream"))
-        || headers
-            .get("content-length")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .is_some_and(|content_length| content_length > 0)
-        || headers.get_all("transfer-encoding").iter().any(|value| {
-            value.to_str().ok().is_some_and(|value| {
-                value
-                    .split(',')
-                    .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
-            })
+}
+
+fn content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn has_chunked_transfer_encoding(headers: &HeaderMap) -> bool {
+    headers.get_all("transfer-encoding").iter().any(|value| {
+        value.to_str().ok().is_some_and(|value| {
+            value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
         })
+    })
 }
 
 #[cfg(test)]
@@ -154,6 +167,22 @@ mod tests {
     #[tokio::test]
     async fn empty_axum_body_without_body_headers_is_absent() {
         let request = Request::builder().body(Body::empty()).unwrap();
+
+        let body = TusBody::from_request(request, &())
+            .await
+            .unwrap()
+            .into_body();
+
+        assert!(matches!(body, RequestBody::Absent));
+    }
+
+    #[tokio::test]
+    async fn content_length_zero_axum_body_is_absent_even_before_end_stream() {
+        let empty_stream = futures::stream::empty::<Result<Bytes, Infallible>>();
+        let request = Request::builder()
+            .header("content-length", "0")
+            .body(Body::from_stream(empty_stream))
+            .unwrap();
 
         let body = TusBody::from_request(request, &())
             .await
