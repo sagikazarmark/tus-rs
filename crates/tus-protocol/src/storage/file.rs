@@ -267,6 +267,14 @@ mod tests {
 
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn storage_conformance() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).await.unwrap();
+
+        crate::storage::conformance::assert_full_semantics(&storage).await;
+    }
+
     async fn collect_stream(mut stream: ByteStream) -> Vec<u8> {
         let mut data = Vec::new();
         while let Some(chunk) = stream.next().await {

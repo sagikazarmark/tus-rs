@@ -57,6 +57,7 @@ native = ["tokio", "tokio-util"]
 local-futures = []
 
 # Storage implementations
+storage-conformance = []
 storage-file = ["native", "tokio/fs", "tokio/io-util"]
 storage-memory = []
 
