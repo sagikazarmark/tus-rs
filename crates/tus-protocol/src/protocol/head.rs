@@ -153,7 +153,9 @@ mod tests {
     use crate::hooks::{HookChain, NoopHookExecutor, PreHookResult};
     use crate::locking::{LockGuard, Locker, NoopLocker};
     use crate::state::{UploadState, memory::MemoryStateStore};
-    use crate::storage::{AppendRequest, ChunkStream, Storage, memory::MemoryStorage};
+    use crate::storage::{
+        AppendRequest, ChunkStream, Storage, StorageReader, memory::MemoryStorage,
+    };
     use async_trait::async_trait;
     use bytes::Bytes;
     use chrono::{Duration, TimeZone, Utc};

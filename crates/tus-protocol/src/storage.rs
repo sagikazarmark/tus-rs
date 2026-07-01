@@ -1,7 +1,8 @@
-//! Storage trait for storing upload data.
+//! Storage traits for upload bytes.
 //!
-//! This module defines the `Storage` trait that abstracts over different
-//! storage backends (filesystem, S3, R2, etc.).
+//! This module defines the required [`Storage`] trait for upload lifecycle
+//! writes and the optional [`StorageReader`] trait for integrations that expose
+//! stored bytes through download or inspection paths.
 //!
 //! # Implementations
 //!
@@ -9,7 +10,7 @@
 //! - `memory::MemoryStorage` - In-memory storage (feature: `storage-memory`)
 //!
 //! First-party integration crates can provide production storage backends
-//! against this trait.
+//! against these traits.
 
 // Feature-gated implementations
 // Native implementations are not available in local-futures builds.
@@ -72,9 +73,6 @@ pub trait Storage: MaybeSendSync {
     /// internal fact from `request.handle` that remains valid after the append.
     async fn append(&self, request: AppendRequest) -> Result<StorageHandle>;
 
-    /// Retrieves a stream of the upload data for download.
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream>;
-
     /// Concatenates multiple partial uploads into a final upload.
     ///
     /// Used by the Concatenation extension. The parts should be concatenated
@@ -99,6 +97,19 @@ pub trait Storage: MaybeSendSync {
     /// Returns the actual size in bytes, or `None` if the storage key doesn't
     /// exist.
     async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>>;
+}
+
+/// Optional trait for reading stored upload bytes.
+///
+/// Download is not part of the core TUS protocol. Adapters that expose stored
+/// bytes back to callers implement this trait in addition to [`Storage`], while
+/// upload-only adapters can satisfy the protocol lifecycle with [`Storage`]
+/// alone.
+#[cfg_attr(not(feature = "local-futures"), async_trait)]
+#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+pub trait StorageReader: MaybeSendSync {
+    /// Retrieves a stream of the upload data for download.
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream>;
 
     /// Retrieves a range of bytes from the upload.
     ///

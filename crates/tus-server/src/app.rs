@@ -11,7 +11,7 @@ use axum::{
     routing::get,
 };
 use tus_axum::TusState;
-use tus_protocol::{HookExecutor, Locker, ProtocolHandle, StateStore, Storage};
+use tus_protocol::{HookExecutor, Locker, ProtocolHandle, StateStore, Storage, StorageReader};
 
 #[derive(Clone, Debug)]
 pub(crate) struct AppSettings {
@@ -26,13 +26,13 @@ pub(crate) fn build_app<S, I, L, H>(
     draining: Arc<AtomicBool>,
 ) -> Router
 where
-    S: Storage + Send + Sync + 'static,
+    S: Storage + StorageReader + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
     let state = TusState::new(protocol);
-    let mut tus_router = tus_axum::create_router(state);
+    let mut tus_router = tus_axum::create_router_with_download(state);
     if !settings.auth_token.is_empty() {
         tracing::info!(
             tokens = settings.auth_token.len(),

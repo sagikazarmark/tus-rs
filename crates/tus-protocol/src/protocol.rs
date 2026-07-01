@@ -77,7 +77,7 @@ use crate::config::Config;
 use crate::hooks::HookExecutor;
 use crate::locking::Locker;
 use crate::state::StateStore;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageReader};
 
 /// Framework-neutral TUS protocol facade.
 ///
@@ -243,7 +243,10 @@ where
     pub async fn download(
         &self,
         request: DownloadRequest<'_>,
-    ) -> Result<DownloadResponse, crate::Error> {
+    ) -> Result<DownloadResponse, crate::Error>
+    where
+        S: StorageReader,
+    {
         self.protocol().download(request).await
     }
 

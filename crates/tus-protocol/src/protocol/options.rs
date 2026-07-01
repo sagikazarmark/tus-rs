@@ -60,7 +60,7 @@ mod tests {
     use crate::hooks::NoopHookExecutor;
     use crate::locking::NoopLocker;
     use crate::state::{StateStore, UploadState};
-    use crate::storage::{AppendRequest, ByteStream, ConcatRequest, Storage, StorageHandle};
+    use crate::storage::{AppendRequest, ConcatRequest, Storage, StorageHandle};
     use chrono::{DateTime, Utc};
 
     struct TestStorage;
@@ -77,10 +77,6 @@ mod tests {
         }
 
         async fn append(&self, _request: AppendRequest) -> Result<StorageHandle> {
-            unreachable!()
-        }
-
-        async fn get_stream(&self, _handle: &StorageHandle) -> Result<ByteStream> {
             unreachable!()
         }
 

@@ -72,11 +72,12 @@ enabled. In that mode, provide runtime-specific implementations of `Storage`,
 
 ## Storage, State, And Locking
 
-The protocol is built around three backend traits:
+The protocol is built around three required backend traits plus one optional read seam:
 
 | Trait | Responsibility |
 |-------|----------------|
-| `Storage` | Stores and retrieves upload bytes, and owns storage-local handle facts. |
+| `Storage` | Stores upload bytes for the upload lifecycle, and owns storage-local handle facts. |
+| `StorageReader` | Optionally reads stored bytes for non-standard download or inspection paths. |
 | `StateStore` | Persists protocol upload state plus opaque `StorageHandle` snapshots. |
 | `Locker` | Coordinates concurrent access to a single upload ID. |
 
@@ -107,7 +108,7 @@ notifications; failures are logged and do not fail already-committed requests.
 | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete | Final upload facts are derived from referenced partials before `PreCreate`. |
 | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload | `PreReceive` may replace user metadata before bytes are committed. |
 | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. |
-| `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths can materialize or repair final concatenation uploads from complete parts. |
+| `HEAD` or optional `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths can materialize or repair final concatenation uploads from complete parts. |
 
 ## Runtime Notes
 

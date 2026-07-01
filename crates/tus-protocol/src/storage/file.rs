@@ -16,7 +16,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::error::{Error, Result};
 use crate::storage::{
-    AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle,
+    AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
 };
 
 /// File-based storage backend.
@@ -148,12 +148,6 @@ impl Storage for FileStorage {
         Ok(handle)
     }
 
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
-        let path = self.path_for_handle(handle)?;
-        let file = File::open(path).await.map_err(Error::Io)?;
-        Ok(Box::pin(ReaderStream::new(file)))
-    }
-
     async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
         let ConcatRequest { target, parts } = request;
         let target_path = self.path_for_handle(&target)?;
@@ -193,6 +187,15 @@ impl Storage for FileStorage {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(Error::Io(error)),
         }
+    }
+}
+
+#[async_trait]
+impl StorageReader for FileStorage {
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+        let path = self.path_for_handle(handle)?;
+        let file = File::open(path).await.map_err(Error::Io)?;
+        Ok(Box::pin(ReaderStream::new(file)))
     }
 
     async fn get_range(

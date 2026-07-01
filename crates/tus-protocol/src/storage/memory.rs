@@ -11,7 +11,9 @@ use std::sync::RwLock;
 
 use crate::error::{Error, Result};
 use crate::storage::ByteStream;
-use crate::storage::{AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHandle};
+use crate::storage::{
+    AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
+};
 
 /// In-memory storage backend.
 ///
@@ -130,19 +132,6 @@ impl Storage for MemoryStorage {
         Ok(handle)
     }
 
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
-        let key = handle.key();
-
-        let storage = self.data.read().unwrap();
-        let data = storage
-            .get(key)
-            .ok_or_else(|| Error::NotFound(key.to_string()))?
-            .clone()
-            .freeze();
-
-        Ok(Box::pin(futures::stream::once(async move { Ok(data) })))
-    }
-
     async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
         let ConcatRequest { target, parts } = request;
         let target_key = target.key().to_string();
@@ -174,6 +163,22 @@ impl Storage for MemoryStorage {
     async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>> {
         let storage = self.data.read().unwrap();
         Ok(storage.get(handle.key()).map(|d| d.len() as u64))
+    }
+}
+
+#[async_trait]
+impl StorageReader for MemoryStorage {
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+        let key = handle.key();
+
+        let storage = self.data.read().unwrap();
+        let data = storage
+            .get(key)
+            .ok_or_else(|| Error::NotFound(key.to_string()))?
+            .clone()
+            .freeze();
+
+        Ok(Box::pin(futures::stream::once(async move { Ok(data) })))
     }
 
     async fn get_range(

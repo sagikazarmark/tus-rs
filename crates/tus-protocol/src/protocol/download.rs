@@ -12,8 +12,7 @@ use crate::hooks::HookExecutor;
 use crate::lifecycle::{ensure_active, reconcile_state_offset};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
-use crate::storage::ByteStream;
-use crate::storage::Storage;
+use crate::storage::{ByteStream, Storage, StorageReader};
 
 use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Protocol, UploadId};
@@ -38,7 +37,7 @@ pub struct DownloadResponse {
 
 impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
     I: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,

@@ -31,7 +31,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use tus_protocol::{
-        AppendRequest, ByteStream, ConcatRequest, Config, Extension, NoopHookExecutor, NoopLocker,
+        AppendRequest, ConcatRequest, Config, Extension, NoopHookExecutor, NoopLocker,
         ProtocolHandle, Result as TusResult, StorageHandle, TUS_RESUMABLE, UploadState,
     };
 
@@ -47,9 +47,6 @@ mod tests {
         }
         async fn append(&self, request: AppendRequest) -> TusResult<StorageHandle> {
             Ok(request.handle)
-        }
-        async fn get_stream(&self, _handle: &StorageHandle) -> TusResult<ByteStream> {
-            unimplemented!()
         }
         async fn concat(&self, request: ConcatRequest) -> TusResult<StorageHandle> {
             Ok(request.target)

@@ -3,7 +3,7 @@
 use axum::{body::Body, extract::State, response::Response};
 use http::{HeaderMap, header};
 
-use tus_protocol::{DownloadRequest, HookExecutor, Locker, StateStore, Storage};
+use tus_protocol::{DownloadRequest, HookExecutor, Locker, StateStore, Storage, StorageReader};
 
 use crate::error::Error;
 use crate::extractors::UploadId;
@@ -19,7 +19,7 @@ pub async fn handle_get<S, I, L, H>(
     UploadId(upload_id): UploadId,
 ) -> Result<Response, Error>
 where
-    S: Storage + Send + Sync + 'static,
+    S: Storage + StorageReader + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
