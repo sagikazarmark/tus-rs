@@ -443,18 +443,6 @@ mod tests {
         async fn list_expired(&self, _before: DateTime<Utc>) -> Result<Vec<String>> {
             Ok(self.expired.lock().unwrap().clone())
         }
-
-        async fn list(&self, limit: usize, offset: usize) -> Result<Vec<String>> {
-            Ok(self
-                .states
-                .lock()
-                .unwrap()
-                .keys()
-                .skip(offset)
-                .take(limit)
-                .cloned()
-                .collect())
-        }
     }
 
     #[derive(Default)]

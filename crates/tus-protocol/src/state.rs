@@ -1,7 +1,9 @@
 //! State store trait and upload state types.
 //!
-//! This module defines the `StateStore` trait for persisting upload metadata
-//! and the `UploadState` struct that represents an upload's current state.
+//! This module defines the required [`StateStore`] trait for persisting upload
+//! metadata, the optional [`UploadInventory`] trait for operational upload-ID
+//! enumeration, and the [`UploadState`] struct that represents an upload's
+//! current state.
 //!
 //! # Implementations
 //!
@@ -39,11 +41,11 @@ use crate::storage::StorageHandle;
 /// Returned [`UploadState`] values are snapshots; callers persist mutations by
 /// calling [`StateStore::set`] again.
 ///
-/// `delete` should be idempotent, and `list` / `list_expired` do not guarantee
-/// a stable ordering unless an implementation documents one. When `create` is
-/// true, implementations should reject an already existing upload ID; backends
-/// with compare-and-set or conditional-create support should make that check
-/// atomic with the write.
+/// `delete` should be idempotent, and `list_expired` does not guarantee a stable
+/// ordering unless an implementation documents one. When `create` is true,
+/// implementations should reject an already existing upload ID; backends with
+/// compare-and-set or conditional-create support should make that check atomic
+/// with the write.
 ///
 /// Implementations should reject upload IDs that fail
 /// [`UploadId`](crate::protocol::UploadId) validation on `set`, `get`, and
@@ -79,9 +81,25 @@ pub trait StateStore: MaybeSendSync {
     ///
     /// Used by expiration cleanup jobs.
     async fn list_expired(&self, before: DateTime<Utc>) -> Result<Vec<String>>;
+}
 
-    /// Lists all upload IDs (for admin/debugging).
-    async fn list(&self, limit: usize, offset: usize) -> Result<Vec<String>>;
+/// Optional trait for operational upload inventory.
+///
+/// Inventory is not part of the core TUS protocol lifecycle. Adapters that can
+/// enumerate upload IDs implement this trait in addition to [`StateStore`],
+/// while upload-only adapters can satisfy protocol workflows with [`StateStore`]
+/// alone.
+///
+/// Implementations return all known persisted upload IDs, including uploads
+/// that protocol requests may reject until reclamation removes them. IDs are
+/// returned in deterministic upload-ID order for each call, but pagination is
+/// not a multi-call snapshot: concurrent creates or deletes may affect later
+/// pages.
+#[cfg_attr(not(feature = "local-futures"), async_trait)]
+#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+pub trait UploadInventory: MaybeSendSync {
+    /// Lists known upload IDs in deterministic upload-ID order.
+    async fn list_upload_ids(&self, limit: usize, offset: usize) -> Result<Vec<String>>;
 }
 
 /// Represents the state of an upload.

@@ -10,7 +10,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
-use crate::state::{StateStore, UploadState};
+use crate::state::{StateStore, UploadInventory, UploadState};
 
 /// File-based state store.
 ///
@@ -183,31 +183,27 @@ impl StateStore for FileStateStore {
 
         Ok(expired)
     }
+}
 
-    async fn list(&self, limit: usize, offset: usize) -> Result<Vec<String>> {
+#[async_trait]
+impl UploadInventory for FileStateStore {
+    async fn list_upload_ids(&self, limit: usize, offset: usize) -> Result<Vec<String>> {
         let mut ids = Vec::new();
 
         let mut entries = fs::read_dir(&self.directory).await.map_err(Error::Io)?;
 
-        let mut count = 0;
         while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
             let path = entry.path();
 
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                if count >= offset {
-                    if let Some(stem) = path.file_stem() {
-                        ids.push(stem.to_string_lossy().to_string());
-                    }
-
-                    if ids.len() >= limit {
-                        break;
-                    }
-                }
-                count += 1;
+            if path.extension().is_some_and(|e| e == "json")
+                && let Some(stem) = path.file_stem()
+            {
+                ids.push(stem.to_string_lossy().to_string());
             }
         }
 
-        Ok(ids)
+        ids.sort();
+        Ok(ids.into_iter().skip(offset).take(limit).collect())
     }
 }
 
@@ -231,6 +227,13 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         crate::state::conformance::assert_state_store_semantics(&store).await;
+    }
+
+    #[tokio::test]
+    async fn upload_inventory_conformance() {
+        let (store, _dir) = create_test_store().await;
+
+        crate::state::conformance::assert_upload_inventory_semantics(&store).await;
     }
 
     #[tokio::test]
@@ -392,25 +395,6 @@ mod tests {
         let expired = store.list_expired(Utc::now()).await.unwrap();
         assert_eq!(expired.len(), 1);
         assert!(expired.contains(&"expired".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_list_pagination() {
-        let (store, _dir) = create_test_store().await;
-
-        for i in 0..10 {
-            let state = UploadState::new(format!("upload-{:02}", i));
-            store.set(&state, true).await.unwrap();
-        }
-
-        let page1 = store.list(3, 0).await.unwrap();
-        assert_eq!(page1.len(), 3);
-
-        let page2 = store.list(3, 3).await.unwrap();
-        assert_eq!(page2.len(), 3);
-
-        let page_all = store.list(100, 0).await.unwrap();
-        assert_eq!(page_all.len(), 10);
     }
 
     #[tokio::test]

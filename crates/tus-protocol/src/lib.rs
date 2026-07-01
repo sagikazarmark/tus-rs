@@ -27,12 +27,13 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized around four required backend traits plus one optional
-//! read seam:
+//! The crate is organized around four required backend traits plus optional
+//! operational seams:
 //!
 //! - [`Storage`]: Stores upload file data for the upload lifecycle
 //! - [`StorageReader`]: Optionally reads stored bytes for non-standard download paths
 //! - [`StateStore`]: Stores upload metadata and progress
+//! - [`UploadInventory`]: Optionally enumerates upload IDs for operational tooling
 //! - [`Locker`]: Coordinates concurrent access to uploads
 //! - [`HookExecutor`]: Executes lifecycle hooks
 //!
@@ -88,7 +89,7 @@ pub use protocol::{
     BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
     ProtocolHandle, RequestBody, Response, UploadId,
 };
-pub use state::{MetadataValue, StateStore, UploadMetadata, UploadState};
+pub use state::{MetadataValue, StateStore, UploadInventory, UploadMetadata, UploadState};
 pub use storage::ByteStream;
 pub use storage::{
     AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
@@ -111,7 +112,7 @@ pub mod prelude {
         BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
         ProtocolHandle, RequestBody, Response, UploadId,
     };
-    pub use crate::state::{StateStore, UploadState};
+    pub use crate::state::{StateStore, UploadInventory, UploadState};
     pub use crate::storage::{AppendRequest, ConcatRequest, Storage, StorageHandle, StorageReader};
 }
 

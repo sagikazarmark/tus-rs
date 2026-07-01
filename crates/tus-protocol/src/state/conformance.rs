@@ -8,16 +8,17 @@
 //! tus-protocol = { version = "...", features = ["conformance-state"] }
 //! ```
 //!
-//! The suite covers behavior the protocol lifecycle depends on: create versus
-//! update semantics, duplicate create handling, snapshot reads, idempotent
-//! delete, expiration listing, upload-id safety, persistence of required
-//! protocol upload state, and round-tripping storage handle facts.
+//! The required suite covers behavior the protocol lifecycle depends on:
+//! create versus update semantics, duplicate create handling, snapshot reads,
+//! idempotent delete, expiration listing, upload-id safety, persistence of
+//! required protocol upload state, and round-tripping storage handle facts.
+//! Optional upload-inventory behavior is covered by a separate helper.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Duration, Utc};
 
-use super::{MetadataValue, StateStore, UploadMetadata, UploadState};
+use super::{MetadataValue, StateStore, UploadInventory, UploadMetadata, UploadState};
 use crate::StorageHandle;
 use crate::error::{Error, Result};
 
@@ -39,6 +40,19 @@ where
     list_expired_returns_only_uploads_before_cutoff(store).await;
     rejects_unsafe_upload_ids(store).await;
     persists_protocol_state_and_storage_handle_facts(store).await;
+}
+
+/// Asserts optional [`UploadInventory`] behavior.
+///
+/// These scenarios use only the public [`UploadInventory`] API plus
+/// [`StateStore::set`] to create fixture state. Adapter tests must provide an
+/// isolated empty backend namespace because inventory intentionally lists every
+/// known upload ID.
+pub async fn assert_upload_inventory_semantics<S>(store: &S)
+where
+    S: StateStore + UploadInventory + ?Sized,
+{
+    upload_inventory_lists_all_known_upload_ids_in_order(store).await;
 }
 
 async fn create_then_update_overwrites_state<S>(store: &S)
@@ -354,6 +368,52 @@ where
         "final state should not become partial"
     );
     assert_eq!(retrieved.parts(), Some(parts.as_slice()));
+}
+
+async fn upload_inventory_lists_all_known_upload_ids_in_order<S>(store: &S)
+where
+    S: StateStore + UploadInventory + ?Sized,
+{
+    let root = upload_id("inventory");
+    let active_id = format!("{root}-z-active");
+    let expired_id = format!("{root}-a-expired");
+    let partial_id = format!("{root}-m-partial");
+
+    store
+        .set(&UploadState::new(&active_id), true)
+        .await
+        .expect("creating active state should succeed");
+    store
+        .set(
+            &UploadState::new(&expired_id).with_expiration(Utc::now() - Duration::seconds(1)),
+            true,
+        )
+        .await
+        .expect("creating expired state should succeed");
+    store
+        .set(&UploadState::new(&partial_id).as_partial(), true)
+        .await
+        .expect("creating partial state should succeed");
+
+    let page1 = store
+        .list_upload_ids(2, 0)
+        .await
+        .expect("upload inventory page 1 should succeed");
+    assert_eq!(
+        page1,
+        vec![expired_id.clone(), partial_id.clone()],
+        "upload inventory should return deterministic upload-id ordered pages"
+    );
+
+    let page2 = store
+        .list_upload_ids(2, 2)
+        .await
+        .expect("upload inventory page 2 should succeed");
+    assert_eq!(
+        page2,
+        vec![active_id],
+        "upload inventory offset should continue deterministic upload-id ordering"
+    );
 }
 
 fn upload_id(scenario: &str) -> String {

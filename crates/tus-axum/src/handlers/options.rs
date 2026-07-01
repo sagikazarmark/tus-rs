@@ -93,9 +93,6 @@ mod tests {
         async fn list_expired(&self, _before: chrono::DateTime<Utc>) -> TusResult<Vec<String>> {
             Ok(vec![])
         }
-        async fn list(&self, _limit: usize, _offset: usize) -> TusResult<Vec<String>> {
-            Ok(self.states.lock().unwrap().keys().cloned().collect())
-        }
     }
 
     fn create_state(

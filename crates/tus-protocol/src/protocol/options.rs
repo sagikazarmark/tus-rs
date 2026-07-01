@@ -117,10 +117,6 @@ mod tests {
         async fn list_expired(&self, _before: DateTime<Utc>) -> Result<Vec<String>> {
             unreachable!()
         }
-
-        async fn list(&self, _limit: usize, _offset: usize) -> Result<Vec<String>> {
-            unreachable!()
-        }
     }
 
     fn options(config: &Config) -> Response {

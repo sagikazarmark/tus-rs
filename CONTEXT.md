@@ -21,3 +21,7 @@ The facts owned by TUS lifecycle rules: upload ID, offset, length, expiration, c
 ### Storage-owned facts
 
 The locator and backend-specific bookkeeping needed by a Storage adapter to find, append, concatenate, size, delete, recover, or clean up upload bytes. These facts are persisted as an opaque `StorageHandle` with upload state, but protocol lifecycle code does not interpret them.
+
+### Upload inventory
+
+The optional operational view that enumerates all known upload IDs for administration, debugging, inspection, or tooling, including uploads that protocol requests may reject until reclamation removes them. This is distinct from protocol upload state lookup and expired upload reclamation.

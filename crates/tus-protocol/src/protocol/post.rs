@@ -796,7 +796,8 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(store.list(100, 0).await.unwrap(), vec!["part1".to_string()]);
+        assert!(store.get("part1").await.unwrap().is_some());
+        assert_eq!(store.len(), 1);
     }
 
     #[tokio::test]
@@ -928,7 +929,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(store.list(100, 0).await.unwrap().is_empty());
+        assert!(store.is_empty());
     }
 
     #[tokio::test]
@@ -984,7 +985,7 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, Error::SizeExceeded { .. }));
-        assert!(store.list(100, 0).await.unwrap().is_empty());
+        assert!(store.is_empty());
     }
 
     #[tokio::test]
@@ -1023,7 +1024,7 @@ mod tests {
 
         assert!(matches!(err, Error::SizeExceeded { .. }));
         assert_eq!(post_create_calls.load(Ordering::SeqCst), 0);
-        assert!(store.list(100, 0).await.unwrap().is_empty());
+        assert!(store.is_empty());
     }
 
     #[tokio::test]
@@ -1051,7 +1052,7 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, Error::SizeExceeded { .. }));
-        assert!(store.list(100, 0).await.unwrap().is_empty());
+        assert!(store.is_empty());
     }
 
     #[tokio::test]
@@ -1099,7 +1100,7 @@ mod tests {
 
         assert!(matches!(err, Error::ExtensionNotSupported(ext) if ext == "creation-with-upload"));
         assert!(
-            store.list(100, 0).await.unwrap().is_empty(),
+            store.is_empty(),
             "POST body rejection must happen before allocating state",
         );
     }
@@ -1160,7 +1161,7 @@ mod tests {
 
         assert!(matches!(err, Error::ExtensionNotSupported(ext) if ext == "creation-with-upload"));
         assert!(
-            store.list(100, 0).await.unwrap().is_empty(),
+            store.is_empty(),
             "POST body rejection must happen before allocating state",
         );
     }
@@ -1192,7 +1193,7 @@ mod tests {
 
         assert!(matches!(err, Error::ExtensionNotSupported(ext) if ext == "creation-with-upload"));
         assert!(
-            store.list(100, 0).await.unwrap().is_empty(),
+            store.is_empty(),
             "chunked POST body rejection must happen before allocating state",
         );
     }
@@ -1269,11 +1270,6 @@ mod tests {
         assert!(matches!(err, Error::ChecksumMismatch { .. }));
 
         // No zombie state record should remain.
-        let list = store.list(100, 0).await.unwrap();
-        assert!(
-            list.is_empty(),
-            "expected empty state store, got {:?}",
-            list
-        );
+        assert!(store.is_empty(), "expected empty state store");
     }
 }
