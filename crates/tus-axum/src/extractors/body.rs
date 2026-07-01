@@ -10,6 +10,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures::stream;
+use http_body::Body as _;
 use http_body_util::BodyExt;
 
 use tus_protocol::{BodyFrame, RequestBody};
@@ -23,6 +24,13 @@ pub struct TusBody {
 }
 
 impl TusBody {
+    /// Creates a new TusBody for requests where no body was supplied.
+    pub fn absent() -> Self {
+        Self {
+            body: RequestBody::absent(),
+        }
+    }
+
     /// Creates a new TusBody with buffered data and optional trailers.
     pub fn buffered(bytes: Bytes, trailers: Option<HeaderMap>) -> Self {
         let body = match trailers {
@@ -52,7 +60,12 @@ where
     type Rejection = AxumError;
 
     async fn from_request(req: Request<Body>, _state: &S) -> Result<Self, Self::Rejection> {
-        let (_parts, body) = req.into_parts();
+        let (parts, body) = req.into_parts();
+        let supplied = body_is_supplied(&parts.headers, &body);
+        if !supplied {
+            return Ok(TusBody::absent());
+        }
+
         let stream = stream::unfold(body, |mut body| async {
             body.frame().await.map(|frame| {
                 let frame = frame.map_err(std::io::Error::other).and_then(|frame| {
@@ -75,6 +88,42 @@ where
     }
 }
 
+fn body_is_supplied(headers: &HeaderMap, body: &Body) -> bool {
+    if has_offset_content_type(headers) {
+        return true;
+    }
+
+    if let Some(content_length) = content_length(headers) {
+        return content_length > 0;
+    }
+
+    has_chunked_transfer_encoding(headers) || !body.is_end_stream()
+}
+
+fn has_offset_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|content_type| content_type.starts_with("application/offset+octet-stream"))
+}
+
+fn content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn has_chunked_transfer_encoding(headers: &HeaderMap) -> bool {
+    headers.get_all("transfer-encoding").iter().any(|value| {
+        value.to_str().ok().is_some_and(|value| {
+            value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +132,14 @@ mod tests {
     use http_body_util::{BodyExt, Full};
     use std::convert::Infallible;
     use tus_protocol::{BodyFrame, RequestBody};
+
+    #[test]
+    fn buffered_empty_body_is_supplied() {
+        let body = TusBody::buffered(Bytes::new(), None).into_body();
+
+        assert!(body.is_supplied());
+        assert!(matches!(body, RequestBody::Bytes(bytes) if bytes.is_empty()));
+    }
 
     #[tokio::test]
     async fn buffered_body_can_include_trailers() {
@@ -104,6 +161,53 @@ mod tests {
         assert!(
             matches!(second, BodyFrame::Trailers(headers) if headers.contains_key("upload-checksum"))
         );
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_axum_body_without_body_headers_is_absent() {
+        let request = Request::builder().body(Body::empty()).unwrap();
+
+        let body = TusBody::from_request(request, &())
+            .await
+            .unwrap()
+            .into_body();
+
+        assert!(matches!(body, RequestBody::Absent));
+    }
+
+    #[tokio::test]
+    async fn content_length_zero_axum_body_is_absent_even_before_end_stream() {
+        let empty_stream = futures::stream::empty::<Result<Bytes, Infallible>>();
+        let request = Request::builder()
+            .header("content-length", "0")
+            .body(Body::from_stream(empty_stream))
+            .unwrap();
+
+        let body = TusBody::from_request(request, &())
+            .await
+            .unwrap()
+            .into_body();
+
+        assert!(matches!(body, RequestBody::Absent));
+    }
+
+    #[tokio::test]
+    async fn offset_content_type_marks_empty_axum_body_supplied() {
+        let request = Request::builder()
+            .header("content-type", "application/offset+octet-stream")
+            .body(Body::empty())
+            .unwrap();
+
+        let body = TusBody::from_request(request, &())
+            .await
+            .unwrap()
+            .into_body();
+
+        assert!(body.is_supplied());
+        let RequestBody::Stream(mut stream) = body else {
+            panic!("empty offset-content body should be represented as supplied stream");
+        };
         assert!(stream.next().await.is_none());
     }
 

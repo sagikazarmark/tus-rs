@@ -2934,6 +2934,7 @@ dependencies = [
  "criterion",
  "futures",
  "http",
+ "http-body",
  "http-body-util",
  "proptest",
  "reqwest",

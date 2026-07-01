@@ -107,7 +107,7 @@ where
             body,
         )
         .await?;
-        let body_len = body.bytes.len() as u64;
+        let body_len = body.size;
         let receive_projection = validate_receive_body(self.config, &state, body_len)?;
 
         if receive_projection.completes_upload {

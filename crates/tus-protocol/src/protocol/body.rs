@@ -35,6 +35,8 @@ pub enum BodyFrame {
 
 /// Framework-neutral request body input for protocol handlers.
 pub enum RequestBody {
+    /// No request body was supplied.
+    Absent,
     /// Buffered body bytes.
     Bytes(Bytes),
     /// Streamed body frames.
@@ -48,16 +50,28 @@ impl RequestBody {
         Self::Bytes(bytes)
     }
 
-    /// Creates an empty request body.
+    /// Creates an empty request body that was supplied by the client.
     #[must_use]
     pub fn empty() -> Self {
         Self::Bytes(Bytes::new())
+    }
+
+    /// Creates an explicitly absent request body.
+    #[must_use]
+    pub fn absent() -> Self {
+        Self::Absent
     }
 
     /// Creates a request body from a body-frame stream.
     #[must_use]
     pub fn from_stream(stream: BodyStream) -> Self {
         Self::Stream(stream)
+    }
+
+    /// Returns whether the request supplied a body without polling streams.
+    #[must_use]
+    pub fn is_supplied(&self) -> bool {
+        !matches!(self, Self::Absent)
     }
 
     /// Creates a data-only request body from an existing storage chunk stream.
@@ -76,6 +90,8 @@ impl RequestBody {
 #[derive(Debug)]
 pub(crate) struct CollectedBody {
     pub(crate) bytes: Bytes,
+    pub(crate) size: u64,
+    pub(crate) supplied: bool,
 }
 
 /// Collects a request body according to protocol-owned body intake policy.
@@ -85,6 +101,8 @@ pub(crate) async fn collect(
     body_limit: Option<u64>,
     body: RequestBody,
 ) -> Result<CollectedBody, Error> {
+    let supplied = body.is_supplied();
+
     if let Some(checksum) = headers.upload_checksum.as_ref() {
         validate_checksum_algorithm(config, checksum.0)?;
     }
@@ -100,12 +118,17 @@ pub(crate) async fn collect(
     }
 
     let (bytes, trailers) = collect_frames(body, body_limit).await?;
-    validate_content_length(headers, bytes.len() as u64)?;
+    let size = bytes.len() as u64;
+    validate_content_length(headers, size)?;
 
     let checksum = effective_checksum(config, headers, trailers.as_ref())?;
     verify_checksum(config, checksum, &bytes)?;
 
-    Ok(CollectedBody { bytes })
+    Ok(CollectedBody {
+        bytes,
+        size,
+        supplied,
+    })
 }
 
 async fn collect_frames(
@@ -113,6 +136,7 @@ async fn collect_frames(
     body_limit: Option<u64>,
 ) -> Result<(Bytes, Option<HeaderMap>), Error> {
     match body {
+        RequestBody::Absent => Ok((Bytes::new(), None)),
         RequestBody::Bytes(bytes) => {
             enforce_body_limit(0, bytes.len(), body_limit)?;
             Ok((bytes, None))
@@ -234,9 +258,16 @@ fn verify_checksum(config: &Config, checksum: BodyChecksum, bytes: &[u8]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::error::Error;
+    use crate::protocol::Headers;
     use crate::storage::ByteStream;
     use bytes::Bytes;
     use futures::StreamExt;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     #[test]
     fn buffered_chunk_stream_becomes_buffered_request_body() {
@@ -244,6 +275,74 @@ mod tests {
             RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"abc")));
 
         assert!(matches!(body, RequestBody::Bytes(bytes) if bytes == Bytes::from_static(b"abc")));
+    }
+
+    #[test]
+    fn empty_chunk_stream_becomes_supplied_empty_request_body() {
+        let body = RequestBody::from_chunk_stream(ChunkStream::empty());
+
+        assert!(matches!(&body, RequestBody::Bytes(bytes) if bytes.is_empty()));
+        assert!(body.is_supplied());
+    }
+
+    #[test]
+    fn supplied_body_presence_does_not_poll_streams() {
+        let polled = Arc::new(AtomicBool::new(false));
+        let polled_for_stream = Arc::clone(&polled);
+        let stream: BodyStream = Box::pin(futures::stream::once(async move {
+            polled_for_stream.store(true, Ordering::SeqCst);
+            Ok(BodyFrame::Data(Bytes::from_static(b"abc")))
+        }));
+        let body = RequestBody::from_stream(stream);
+
+        assert!(body.is_supplied());
+        assert!(!polled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn collection_reports_presence_and_size_facts() {
+        let absent = collect(
+            &Config::default(),
+            &Headers::default(),
+            Some(10),
+            RequestBody::absent(),
+        )
+        .await
+        .unwrap();
+        assert!(!absent.supplied);
+        assert_eq!(absent.size, 0);
+        assert!(absent.bytes.is_empty());
+
+        let supplied = collect(
+            &Config::default(),
+            &Headers::default(),
+            Some(10),
+            RequestBody::empty(),
+        )
+        .await
+        .unwrap();
+        assert!(supplied.supplied);
+        assert_eq!(supplied.size, 0);
+        assert!(supplied.bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn body_limit_is_enforced_while_collecting_stream() {
+        let stream: BodyStream = Box::pin(futures::stream::iter([
+            Ok(BodyFrame::Data(Bytes::from_static(b"abc"))),
+            Ok(BodyFrame::Data(Bytes::from_static(b"def"))),
+        ]));
+
+        let err = collect(
+            &Config::default(),
+            &Headers::default(),
+            Some(5),
+            RequestBody::from_stream(stream),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::SizeExceeded { size: 6, max: 5 }));
     }
 
     #[tokio::test]
@@ -343,6 +442,30 @@ mod intake_tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn checksum_header_is_accepted_when_extension_enabled() {
+        let config = Config::default().with_extension(Extension::Checksum);
+        let headers = Headers {
+            upload_checksum: Some((
+                ChecksumAlgorithm::Sha1,
+                crate::checksum::calculate(ChecksumAlgorithm::Sha1, b"hello"),
+            )),
+            ..Default::default()
+        };
+
+        let collected = collect(
+            &config,
+            &headers,
+            Some(10),
+            RequestBody::from_bytes(Bytes::from_static(b"hello")),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(collected.bytes, Bytes::from_static(b"hello"));
+        assert_eq!(collected.size, 5);
     }
 
     #[tokio::test]

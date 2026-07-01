@@ -31,6 +31,7 @@ clap = { version = "4" }
 figment = { version = "0.10" }
 futures = "0.3"
 http = "1"
+http-body = "1"
 http-body-util = "0.1"
 humantime = "2"
 opendal = { version = "0.57", default-features = false }
