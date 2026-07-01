@@ -462,6 +462,7 @@ mod tests {
     use super::*;
     use opendal::services::Fs;
     use tus_protocol::Storage as StorageBackend;
+    use tus_protocol::storage::conformance;
 
     struct TestStorage {
         storage: Storage,
@@ -493,6 +494,13 @@ mod tests {
             storage: Storage::new(operator, ""),
             _tempdir: tempdir,
         }
+    }
+
+    #[tokio::test]
+    async fn storage_conformance() {
+        let storage = create_test_storage();
+
+        conformance::assert_full_semantics(&storage.storage).await;
     }
 
     #[tokio::test]

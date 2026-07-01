@@ -209,6 +209,13 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn storage_conformance() {
+        let storage = MemoryStorage::new();
+
+        crate::storage::conformance::assert_full_semantics(&storage).await;
+    }
+
+    #[tokio::test]
     async fn test_create_and_append() {
         let storage = MemoryStorage::new();
 

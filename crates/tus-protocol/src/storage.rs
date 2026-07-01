@@ -13,6 +13,9 @@
 
 // Feature-gated implementations
 // Native implementations are not available in local-futures builds.
+#[cfg(any(test, feature = "storage-conformance"))]
+pub mod conformance;
+
 #[cfg(all(feature = "storage-file", not(feature = "local-futures")))]
 pub mod file;
 
