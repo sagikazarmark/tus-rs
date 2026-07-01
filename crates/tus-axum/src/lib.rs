@@ -24,6 +24,10 @@
 //!
 //! # Example
 //!
+//! [`create_router`] builds the standard upload route table. Non-standard GET
+//! downloads are opt-in through [`create_router_with_download`] and require a
+//! storage adapter that implements [`tus_protocol::StorageReader`].
+//!
 //! See [`examples/server.rs`] for a complete runnable server.
 //!
 //! [`examples/server.rs`]: https://github.com/sagikazarmark/tus-rs/blob/main/crates/tus-axum/examples/server.rs
@@ -62,5 +66,5 @@ mod state;
 pub use error::Error;
 pub use extractors::{Headers, TusBody, UploadId};
 pub use response::TusResponse;
-pub use router::{build_cors_layer, create_router};
+pub use router::{build_cors_layer, create_router, create_router_with_download};
 pub use state::{TusProtocol, TusState};

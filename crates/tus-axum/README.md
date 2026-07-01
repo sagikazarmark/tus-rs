@@ -91,8 +91,10 @@ curl -i http://127.0.0.1:8080/files/<id> \
 
 ## Router Behavior
 
-`create_router` mounts tus routes at `Config::base_path`, which defaults to
-`/files`.
+`create_router` mounts standard tus upload routes at `Config::base_path`, which
+defaults to `/files`. The non-standard GET download endpoint is opt-in through
+`create_router_with_download` and requires storage that implements
+`tus_protocol::StorageReader`.
 
 | Route | Purpose |
 |-------|---------|
@@ -101,8 +103,13 @@ curl -i http://127.0.0.1:8080/files/<id> \
 | `HEAD /files/{upload_id}` | Inspect upload offset, length, metadata, expiration, and concatenation state. |
 | `PATCH /files/{upload_id}` | Append upload bytes. |
 | `DELETE /files/{upload_id}` | Terminate uploads when the termination extension is enabled. |
-| `GET /files/{upload_id}` | Download a completed upload unless downloads are disabled in `Config`. |
 | `POST /files/{upload_id}` with `X-HTTP-Method-Override` | Proxy-friendly fallback for `PATCH` and `DELETE`. |
+
+`create_router_with_download` adds:
+
+| Route | Purpose |
+|-------|---------|
+| `GET /files/{upload_id}` | Download a completed upload unless downloads are disabled in `Config`. |
 
 CORS middleware is applied only when allowed origins are configured through
 `Config`. When enabled, the layer allows tus request headers, exposes tus
@@ -140,7 +147,7 @@ Common `tus-protocol` features for axum servers:
 | Expiration | Supported | Expiration timestamps and rejection of expired uploads. |
 | Concatenation | Supported | Server-side final uploads from partial uploads. |
 | Checksum | Supported | Header and trailer checksum validation when `tus-protocol/checksum` is enabled. |
-| Download | Supported | Non-standard convenience `GET` endpoint for completed uploads, configurable through `Config`. |
+| Download | Opt-in | Non-standard convenience `GET` endpoint for completed uploads through `create_router_with_download`, configurable through `Config`. |
 
 ## Relationship To tus-protocol
 
@@ -151,7 +158,8 @@ into axum responses.
 Useful entry points:
 
 - `TusState` stores the `ProtocolHandle` as axum application state.
-- `create_router` builds the complete tus route table for the configured base path.
+- `create_router` builds the standard tus upload route table for the configured base path.
+- `create_router_with_download` adds the non-standard GET route for readable storage adapters.
 - `build_cors_layer` builds the CORS layer used when CORS origins are configured.
 - `Error` converts `tus_protocol::Error` into an axum response.
 - `Headers`, `TusBody`, and `UploadId` are axum extractors used by the handlers.
@@ -163,6 +171,8 @@ expiration, storage, state, locking, hooks, and checksum support.
 
 `tus-axum` targets native axum servers. The storage, state, locker, and hook
 implementations used with `create_router` must be `Send + Sync + 'static`.
+Use `create_router_with_download` only when the storage implementation also
+implements `StorageReader`.
 
 Use the built-in memory backends for tests and local development. Use the file
 backends or custom implementations for durable deployments. For deployments

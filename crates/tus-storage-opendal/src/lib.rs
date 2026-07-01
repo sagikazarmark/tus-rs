@@ -335,47 +335,6 @@ impl tus_protocol::Storage for Storage {
         Ok(handle)
     }
 
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
-        let key = handle.key();
-
-        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
-
-        // Convert OpenDAL reader to our ByteStream
-        let stream = reader
-            .into_bytes_stream(0..)
-            .await
-            .map_err(Error::storage)?;
-
-        Ok(Box::pin(
-            stream.map(|result| result.map_err(io::Error::other)),
-        ))
-    }
-
-    async fn get_range(
-        &self,
-        handle: &StorageHandle,
-        start: u64,
-        end: Option<u64>,
-    ) -> Result<ByteStream> {
-        let key = handle.key();
-
-        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
-        let stream = match end {
-            Some(end) => reader
-                .into_bytes_stream(start..end)
-                .await
-                .map_err(Error::storage)?,
-            None => reader
-                .into_bytes_stream(start..)
-                .await
-                .map_err(Error::storage)?,
-        };
-
-        Ok(Box::pin(
-            stream.map(|result| result.map_err(io::Error::other)),
-        ))
-    }
-
     async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
         let ConcatRequest { target, parts } = request;
         let target_key = target.key();
@@ -442,6 +401,50 @@ impl tus_protocol::Storage for Storage {
     }
 }
 
+#[async_trait]
+impl tus_protocol::StorageReader for Storage {
+    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+        let key = handle.key();
+
+        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
+
+        // Convert OpenDAL reader to our ByteStream
+        let stream = reader
+            .into_bytes_stream(0..)
+            .await
+            .map_err(Error::storage)?;
+
+        Ok(Box::pin(
+            stream.map(|result| result.map_err(io::Error::other)),
+        ))
+    }
+
+    async fn get_range(
+        &self,
+        handle: &StorageHandle,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<ByteStream> {
+        let key = handle.key();
+
+        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
+        let stream = match end {
+            Some(end) => reader
+                .into_bytes_stream(start..end)
+                .await
+                .map_err(Error::storage)?,
+            None => reader
+                .into_bytes_stream(start..)
+                .await
+                .map_err(Error::storage)?,
+        };
+
+        Ok(Box::pin(
+            stream.map(|result| result.map_err(io::Error::other)),
+        ))
+    }
+}
+
 /// Collects a `ChunkStream` into a contiguous `Bytes` buffer.
 async fn collect_chunk_stream(data: ChunkStream) -> Result<Bytes> {
     match data {
@@ -461,8 +464,8 @@ async fn collect_chunk_stream(data: ChunkStream) -> Result<Bytes> {
 mod tests {
     use super::*;
     use opendal::services::Fs;
-    use tus_protocol::Storage as StorageBackend;
     use tus_protocol::storage::conformance;
+    use tus_protocol::{Storage as StorageBackend, StorageReader};
 
     struct TestStorage {
         storage: Storage,

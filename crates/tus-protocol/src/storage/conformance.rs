@@ -22,17 +22,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytes::Bytes;
 use futures::StreamExt;
 
-use super::{AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle};
+use super::{
+    AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
+};
 
 static NEXT_UPLOAD_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Asserts the complete `Storage` conformance suite.
 ///
 /// Use this for adapters that support both upload writes and read/download
-/// behavior through [`Storage::get_stream`] and [`Storage::get_range`].
+/// behavior through [`StorageReader::get_stream`] and
+/// [`StorageReader::get_range`].
 pub async fn assert_full_semantics<S>(storage: &S)
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
 {
     assert_upload_write_semantics(storage).await;
     assert_read_download_semantics(storage).await;
@@ -59,11 +62,11 @@ where
 /// Asserts optional read/download semantics.
 ///
 /// Run these scenarios only for adapters that intend to expose download or
-/// inspection behavior through [`Storage::get_stream`] and
-/// [`Storage::get_range`].
+/// inspection behavior through [`StorageReader::get_stream`] and
+/// [`StorageReader::get_range`].
 pub async fn assert_read_download_semantics<S>(storage: &S)
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
 {
     get_stream_returns_uploaded_bytes(storage).await;
     get_range_returns_requested_bytes(storage).await;
@@ -334,7 +337,7 @@ where
 
 async fn get_stream_returns_uploaded_bytes<S>(storage: &S)
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
 {
     let handle = storage
         .create(&upload_id("get-stream"))
@@ -358,7 +361,7 @@ where
 
 async fn get_range_returns_requested_bytes<S>(storage: &S)
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
 {
     let handle = create_with_bytes(
         storage,
@@ -392,7 +395,7 @@ where
 
 async fn concat_preserves_part_order<S>(storage: &S)
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
 {
     let part1 =
         create_with_bytes(storage, "concat-order-1", Bytes::from_static(b"left"), true).await;
@@ -438,7 +441,7 @@ where
 
 async fn failed_concat_preserves_existing_target_body<S>(storage: &S)
 where
-    S: Storage + ?Sized,
+    S: Storage + StorageReader + ?Sized,
 {
     let part = create_with_bytes(
         storage,

@@ -62,8 +62,8 @@ use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    AppendRequest, ByteStream, ConcatRequest, Config, NoopHookExecutor, ProtocolHandle,
-    Result as TusResult, Storage, StorageHandle,
+    AppendRequest, ConcatRequest, Config, NoopHookExecutor, ProtocolHandle, Result as TusResult,
+    Storage, StorageHandle,
 };
 
 /// Wraps `MemoryStorage` and inserts a configurable sleep inside
@@ -90,9 +90,6 @@ impl Storage for SleepyStorage {
         let result = self.inner.append(request).await;
         tokio::time::sleep(self.delay).await;
         result
-    }
-    async fn get_stream(&self, handle: &StorageHandle) -> TusResult<ByteStream> {
-        self.inner.get_stream(handle).await
     }
     async fn concat(&self, request: ConcatRequest) -> TusResult<StorageHandle> {
         self.inner.concat(request).await

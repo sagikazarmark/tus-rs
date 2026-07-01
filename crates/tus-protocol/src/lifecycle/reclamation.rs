@@ -173,14 +173,13 @@ mod tests {
     use std::time::Duration as StdDuration;
 
     use async_trait::async_trait;
-    use bytes::Bytes;
     use chrono::Duration;
 
     use super::*;
     use crate::error::Error;
     use crate::locking::LockGuard;
     use crate::state::UploadState;
-    use crate::storage::{AppendRequest, ByteStream, ConcatRequest, StorageHandle};
+    use crate::storage::{AppendRequest, ConcatRequest, StorageHandle};
 
     #[tokio::test]
     async fn reclaim_expired_uploads_removes_storage_and_state() {
@@ -352,10 +351,6 @@ mod tests {
 
         async fn append(&self, request: AppendRequest) -> Result<StorageHandle> {
             Ok(request.handle)
-        }
-
-        async fn get_stream(&self, _handle: &StorageHandle) -> Result<ByteStream> {
-            Ok(Box::pin(futures::stream::empty::<std::io::Result<Bytes>>()))
         }
 
         async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {

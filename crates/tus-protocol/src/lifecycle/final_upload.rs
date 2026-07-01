@@ -571,7 +571,7 @@ mod materialization_tests {
     use super::*;
     use crate::hooks::{HookChain, HookEvent, PreHookResult};
     use crate::state::memory::MemoryStateStore;
-    use crate::storage::{AppendRequest, ChunkStream, memory::MemoryStorage};
+    use crate::storage::{AppendRequest, ChunkStream, StorageReader, memory::MemoryStorage};
     use bytes::{Bytes, BytesMut};
     use futures::StreamExt;
     use std::sync::{Arc, Mutex};

@@ -82,7 +82,8 @@ Useful entry points:
   and CORS-related response behavior.
 - `Protocol` contains the core `POST`, `HEAD`, `PATCH`, `DELETE`, and `OPTIONS`
   handlers.
-- `Storage`, `StateStore`, and `Locker` define the backend contracts.
+- `Storage`, `StateStore`, and `Locker` define the required backend contracts.
+- `StorageReader` is the optional read seam for non-standard download paths.
 - `HookChain` and `Hook` provide lifecycle extension points with hook-safe
   upload snapshots that hide storage-local facts.
 
