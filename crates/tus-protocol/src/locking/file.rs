@@ -205,6 +205,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn locker_conformance() {
+        let (locker, _dir) = create_test_locker().await;
+
+        crate::locking::conformance::assert_locker_semantics(&locker).await;
+    }
+
+    #[tokio::test]
     async fn test_lock_and_unlock() {
         let (locker, _dir) = create_test_locker().await;
 

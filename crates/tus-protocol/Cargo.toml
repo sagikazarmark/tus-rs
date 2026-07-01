@@ -56,8 +56,14 @@ native = ["tokio", "tokio-util"]
 # trait implementations. Intended for Cloudflare Workers and similar platforms.
 local-futures = []
 
+# Conformance suites
+conformance-lock = ["tokio/time"]
+conformance-state = []
+conformance-storage = []
+# Backward-compatible alias for adapter suites that adopted the original name.
+storage-conformance = ["conformance-storage"]
+
 # Storage implementations
-storage-conformance = []
 storage-file = ["native", "tokio/fs", "tokio/io-util"]
 storage-memory = []
 

@@ -169,6 +169,13 @@ mod tests {
     use tokio::time::sleep;
 
     #[tokio::test]
+    async fn locker_conformance() {
+        let locker = MemoryLocker::new();
+
+        crate::locking::conformance::assert_locker_semantics(&locker).await;
+    }
+
+    #[tokio::test]
     async fn test_lock_and_unlock() {
         let locker = MemoryLocker::new();
 

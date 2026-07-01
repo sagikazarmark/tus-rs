@@ -1,11 +1,11 @@
 //! Shared conformance scenarios for [`Storage`] implementations.
 //!
-//! Adapter crates can enable the `storage-conformance` feature in their
+//! Adapter crates can enable the `conformance-storage` feature in their
 //! `dev-dependencies` and call these helpers from their own async tests:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! tus-protocol = { version = "...", features = ["storage-conformance"] }
+//! tus-protocol = { version = "...", features = ["conformance-storage"] }
 //! ```
 //!
 //! Upload-write conformance covers behavior required by the protocol lifecycle
