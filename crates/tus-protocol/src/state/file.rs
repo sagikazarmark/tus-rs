@@ -174,8 +174,7 @@ impl StateStore for FileStateStore {
 
             if path.extension().is_some_and(|e| e == "json")
                 && let Some(state) = self.read_state(&path).await?
-                && let Some(expires_at) = state.expires_at()
-                && *expires_at < before
+                && state.expires_before(before)
             {
                 expired.push(state.id().to_string());
             }

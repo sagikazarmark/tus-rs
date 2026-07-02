@@ -5,6 +5,8 @@ use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::Storage;
 
+use super::reconcile_stored_completion;
+
 /// Outcomes produced by an expired upload reclamation scan.
 #[derive(Debug, Default)]
 pub struct ExpiredUploadReclamationReport {
@@ -103,7 +105,7 @@ impl ExpiredUploadReclamationOutcome {
     }
 }
 
-/// Reclaims expired uploads by deleting upload data before upload state.
+/// Reclaims protocol-expired uploads by deleting upload data before upload state.
 ///
 /// Candidates are loaded from [`StateStore::list_expired`]. Each candidate is
 /// locked with [`Locker::try_lock`], reloaded, checked for current expiration,
@@ -145,9 +147,11 @@ where
         return Ok(ExpiredUploadReclamationOutcome::Locked { upload_id });
     };
 
-    let Some(state) = state_store.get(&upload_id).await? else {
+    let Some(mut state) = state_store.get(&upload_id).await? else {
         return Ok(ExpiredUploadReclamationOutcome::MissingState { upload_id });
     };
+
+    reconcile_stored_completion(storage, state_store, &mut state).await?;
 
     if !state.is_expired() {
         return Ok(ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id });
@@ -275,6 +279,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reclaim_expired_uploads_recovers_storage_completed_upload_before_delete() {
+        let storage = TestStorage::default();
+        let state_store = TestStateStore::default();
+        let locker = TestLocker::default();
+        let mut state = expired_state("upload-1", "data-1").with_length(5);
+        state.set_offset(0);
+        state_store.insert_candidate("upload-1");
+        state_store.insert_state(state);
+        storage.set_size("data-1", 5);
+
+        let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+            .await
+            .unwrap();
+        let recovered = state_store.get("upload-1").await.unwrap().unwrap();
+
+        assert_eq!(report.removed(), 0);
+        assert!(matches!(
+            report.outcomes(),
+            [ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id }]
+                if upload_id == "upload-1"
+        ));
+        assert!(storage.deleted().is_empty());
+        assert!(state_store.deleted().is_empty());
+        assert_eq!(recovered.offset(), 5);
+    }
+
+    #[tokio::test]
     async fn reclaim_expired_uploads_reports_delete_failures() {
         let storage = TestStorage::default();
         let state_store = TestStateStore::default();
@@ -326,9 +357,14 @@ mod tests {
     struct TestStorage {
         deleted: Mutex<Vec<String>>,
         fail_delete: Mutex<HashSet<String>>,
+        sizes: Mutex<HashMap<String, u64>>,
     }
 
     impl TestStorage {
+        fn set_size(&self, key: &str, size: u64) {
+            self.sizes.lock().unwrap().insert(key.to_string(), size);
+        }
+
         fn fail_delete(&self, key: &str) {
             self.fail_delete.lock().unwrap().insert(key.to_string());
         }
@@ -369,8 +405,8 @@ mod tests {
             Ok(())
         }
 
-        async fn size(&self, _handle: &StorageHandle) -> Result<Option<u64>> {
-            Ok(None)
+        async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>> {
+            Ok(self.sizes.lock().unwrap().get(handle.key()).copied())
         }
     }
 

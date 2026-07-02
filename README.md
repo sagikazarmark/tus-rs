@@ -24,7 +24,7 @@
 | [Creation-With-Upload](https://tus.io/protocols/resumable-upload#creation-with-upload) | Supported | Include data in the initial `POST` request. |
 | [Creation-Defer-Length](https://tus.io/protocols/resumable-upload#creation) | Supported | Create uploads before the final size is known. |
 | [Termination](https://tus.io/protocols/resumable-upload#termination) | Supported | Cancel/delete uploads via `DELETE`. |
-| [Expiration](https://tus.io/protocols/resumable-upload#expiration) | Supported | Expiration timestamps, rejection of expired uploads, and background cleanup. |
+| [Expiration](https://tus.io/protocols/resumable-upload#expiration) | Supported | Expiration timestamps, rejection of expired unfinished/intermediate uploads, and background cleanup. |
 | [Concatenation](https://tus.io/protocols/resumable-upload#concatenation) | Supported | Standard final concatenation is supported. The non-standard `concatenation-unfinished` check is separate and outside the stable protocol contract. |
 | [Checksum](https://tus.io/protocols/resumable-upload#checksum) | Supported | Bodied and trailer checksums are supported. |
 
@@ -68,7 +68,7 @@ cargo run -p tus-server --features opendal-s3 -- serve
 
 Object storage only covers uploaded bytes. Upload state remains file-backed under `--state-dir`, and locking remains process-local through the in-memory locker.
 
-Expired upload reclamation is explicit. `tus-server serve` rejects expired uploads according to protocol configuration, but it only deletes expired upload data and state when started with `--cleanup`. To run one cleanup sweep and exit, use `tus-server cleanup` with the same storage and state configuration. The cleanup command is not safe to run concurrently with a live `serve` process until cross-process locking is available.
+Expired upload reclamation is explicit. `tus-server serve` rejects protocol-expired unfinished or intermediate uploads according to protocol configuration, but it only deletes expired upload data and state when started with `--cleanup`. Completed deliverable uploads do not expire through TUS expiration; deleting them is a separate retention policy. To run one cleanup sweep and exit, use `tus-server cleanup` with the same storage and state configuration. The cleanup command is not safe to run concurrently with a live `serve` process until cross-process locking is available.
 
 This repository currently provides `tus-protocol`, the framework-neutral core
 crate. It exposes typed request headers, response values, upload state, storage,

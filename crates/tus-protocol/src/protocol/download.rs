@@ -9,7 +9,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use crate::config::TUS_RESUMABLE;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
-use crate::lifecycle::{ensure_active, reconcile_state_offset};
+use crate::lifecycle::{ensure_active, reconcile_state_offset, reconcile_stored_completion};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ByteStream, Storage, StorageReader};
@@ -73,6 +73,7 @@ where
             .map_err(|err| Error::Internal(err.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
+        reconcile_stored_completion(self.storage, self.state_store, &mut state).await?;
         ensure_active(&state)?;
 
         reconcile_state_offset(

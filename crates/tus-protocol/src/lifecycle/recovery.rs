@@ -26,6 +26,56 @@ where
     reconcile_storage_offset(storage, state_store, state).await
 }
 
+pub(crate) async fn reconcile_stored_completion<S, I>(
+    storage: &S,
+    state_store: &I,
+    state: &mut UploadState,
+) -> Result<bool>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+{
+    if state.is_complete() || state.is_partial() {
+        return Ok(false);
+    }
+
+    let Some(length) = state.length() else {
+        return Ok(false);
+    };
+    let Some(handle) = state.storage_handle() else {
+        return Ok(false);
+    };
+
+    let actual_offset = storage
+        .size(&handle)
+        .await
+        .map_err(|err| Error::Internal(err.to_string()))?
+        .unwrap_or(0);
+    if actual_offset > length {
+        return Err(Error::Internal(format!(
+            "storage size {actual_offset} exceeds declared length {length} for upload {}",
+            state.id()
+        )));
+    }
+    if actual_offset != length {
+        return Ok(false);
+    }
+
+    tracing::warn!(
+        upload_id = %state.id(),
+        recorded_offset = state.offset(),
+        actual_offset,
+        "recovering completed upload offset against stored bytes"
+    );
+
+    state.set_offset(actual_offset);
+    state_store
+        .set(state, false)
+        .await
+        .map_err(|err| Error::Internal(err.to_string()))?;
+    Ok(true)
+}
+
 async fn reconcile_storage_offset<S, I>(
     storage: &S,
     state_store: &I,

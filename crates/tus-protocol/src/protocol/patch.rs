@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
     ReceiveRequest, apply_receive_commit, ensure_active, prepare_receive, receive_body_size_limit,
-    reconcile_state_offset, run_pre_finish, validate_receive_body,
+    reconcile_state_offset, reconcile_stored_completion, run_pre_finish, validate_receive_body,
 };
 use crate::locking::Locker;
 use crate::state::StateStore;
@@ -66,6 +66,7 @@ where
             .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
+        reconcile_stored_completion(self.storage, self.state_store, &mut state).await?;
         ensure_active(&state)?;
 
         reconcile_state_offset(

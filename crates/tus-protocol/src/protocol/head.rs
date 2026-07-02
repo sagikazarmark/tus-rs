@@ -8,7 +8,9 @@ use http::StatusCode;
 use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
-use crate::lifecycle::{ensure_active, final_upload_response_facts, reconcile_state_offset};
+use crate::lifecycle::{
+    ensure_active, final_upload_response_facts, reconcile_state_offset, reconcile_stored_completion,
+};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
 use crate::storage::Storage;
@@ -20,7 +22,7 @@ use super::{Protocol, Response, UploadId};
 ///
 /// Errors:
 /// - [`Error::NotFound`] if the upload doesn't exist.
-/// - [`Error::Expired`] if the upload has expired.
+/// - [`Error::Expired`] if the upload is protocol-expired.
 impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
 where
     S: Storage + ?Sized,
@@ -35,8 +37,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error if the upload does not exist, has expired, or if state
-    /// reconciliation against the storage backend fails.
+    /// Returns an error if the upload does not exist, is protocol-expired, or
+    /// if state reconciliation against the storage backend fails.
     pub async fn head(&self, upload_id: &UploadId) -> Result<Response, Error> {
         let hook_contexts = HookContextBuilder::new(self.config, HookRequestFacts::head(upload_id));
         let upload_id = upload_id.as_str();
@@ -52,6 +54,7 @@ where
             .map_err(|e| Error::Internal(e.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
+        reconcile_stored_completion(self.storage, self.state_store, &mut upload_state).await?;
         ensure_active(&upload_state)?;
 
         reconcile_state_offset(

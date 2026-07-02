@@ -29,12 +29,12 @@ pub use receive::{
 pub use reclamation::{
     ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };
-pub(crate) use recovery::reconcile_state_offset;
+pub(crate) use recovery::{reconcile_state_offset, reconcile_stored_completion};
 
 use crate::error::{Error, Result};
 use crate::state::UploadState;
 
-/// Rejects expired uploads before protocol handlers expose or mutate state.
+/// Rejects protocol-expired uploads before protocol handlers expose or mutate state.
 pub fn ensure_active(state: &UploadState) -> Result<()> {
     if state.is_expired() {
         return Err(Error::Expired(state.id().to_string()));

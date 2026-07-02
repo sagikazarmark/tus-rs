@@ -77,7 +77,7 @@ pub trait StateStore: MaybeSendSync {
     /// Deletes upload state.
     async fn delete(&self, id: &str) -> Result<()>;
 
-    /// Lists upload IDs that have expired before the given timestamp.
+    /// Lists upload IDs that are protocol-expired before the given timestamp.
     ///
     /// Used by expiration cleanup jobs.
     async fn list_expired(&self, before: DateTime<Utc>) -> Result<Vec<String>>;
@@ -143,7 +143,7 @@ pub struct UploadState {
     /// When the upload was created.
     created_at: DateTime<Utc>,
 
-    /// When the upload expires. None if expiration is disabled.
+    /// Advertised protocol expiration deadline. None if expiration is disabled.
     expires_at: Option<DateTime<Utc>>,
 
     // === Concatenation Extension ===
@@ -291,7 +291,11 @@ impl UploadState {
         &self.created_at
     }
 
-    /// Returns when the upload expires, if expiration is enabled.
+    /// Returns the advertised protocol expiration deadline, if expiration is enabled.
+    ///
+    /// This timestamp is not, by itself, a completed-upload retention deadline;
+    /// use [`UploadState::is_expired`] or [`UploadState::expires_before`] for
+    /// protocol expiration semantics.
     pub fn expires_at(&self) -> Option<&DateTime<Utc>> {
         self.expires_at.as_ref()
     }
@@ -350,12 +354,22 @@ impl UploadState {
         }
     }
 
-    /// Returns whether the upload has expired.
+    /// Returns whether this upload expires before the given cutoff.
+    ///
+    /// TUS expiration applies to unfinished upload resources. Completed
+    /// non-partial uploads are deliverable content and do not expire through
+    /// this policy.
+    pub fn expires_before(&self, before: DateTime<Utc>) -> bool {
+        self.expiration_is_eligible()
+            && self
+                .expires_at
+                .as_ref()
+                .is_some_and(|expires| *expires < before)
+    }
+
+    /// Returns whether the upload is protocol-expired.
     pub fn is_expired(&self) -> bool {
-        match self.expires_at {
-            Some(expires) => Utc::now() > expires,
-            None => false,
-        }
+        self.expires_before(Utc::now())
     }
 
     /// Returns the remaining bytes to upload.
@@ -393,8 +407,16 @@ impl UploadState {
 
     /// Formats the expiration time as an RFC 7231 date for the Upload-Expires header.
     pub fn expires_header(&self) -> Option<String> {
+        if !self.expiration_is_eligible() {
+            return None;
+        }
+
         self.expires_at
             .map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+    }
+
+    fn expiration_is_eligible(&self) -> bool {
+        !self.is_complete() || self.is_partial()
     }
 }
 

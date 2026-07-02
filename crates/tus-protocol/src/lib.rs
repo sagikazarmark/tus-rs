@@ -21,7 +21,8 @@
 //! - **Creation-With-Upload**: Include data in initial POST
 //! - **Creation-Defer-Length**: Create without knowing size upfront
 //! - **Termination**: Cancel/delete uploads via DELETE
-//! - **Expiration**: Expiration timestamps and rejection of expired uploads
+//! - **Expiration**: Expiration timestamps and rejection of protocol-expired
+//!   unfinished/intermediate uploads
 //! - **Concatenation**: Parallel uploads that merge server-side
 //! - **Checksum**: Verify chunk integrity
 //!

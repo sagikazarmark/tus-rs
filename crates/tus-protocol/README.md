@@ -66,7 +66,7 @@ enabled. In that mode, provide runtime-specific implementations of `Storage`,
 | Creation-With-Upload | Supported | Accept upload bytes in the initial `POST` when enabled. |
 | Creation-Defer-Length | Supported | Create uploads before the final size is known. |
 | Termination | Supported | Delete uploads with `DELETE`. |
-| Expiration | Supported | Expiration timestamps and rejection of expired uploads. |
+| Expiration | Supported | Expiration timestamps and rejection of expired unfinished/intermediate uploads. |
 | Concatenation | Supported | Server-side final uploads from partial uploads. |
 | Checksum | Supported | Header and trailer checksum validation when `checksum` is enabled. |
 
