@@ -3,7 +3,10 @@
 //! [`Headers`] is a newtype around [`tus_protocol::Headers`] so the
 //! [`FromRequestParts`] impl can live here without violating the orphan rule.
 
-use axum::{extract::FromRequestParts, http::request::Parts};
+use axum::{
+    extract::FromRequestParts,
+    http::{HeaderMap, request::Parts},
+};
 
 use crate::error::Error;
 
@@ -23,6 +26,14 @@ use crate::error::Error;
 #[derive(Debug, Clone)]
 pub struct Headers(pub tus_protocol::Headers);
 
+impl Headers {
+    pub(crate) fn from_header_map(headers: &HeaderMap) -> Result<Self, Error> {
+        tus_protocol::Headers::from_headers(headers)
+            .map(Self)
+            .map_err(Error)
+    }
+}
+
 impl<S> FromRequestParts<S> for Headers
 where
     S: Send + Sync,
@@ -30,9 +41,7 @@ where
     type Rejection = Error;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        tus_protocol::Headers::from_headers(&parts.headers)
-            .map(Self)
-            .map_err(Error)
+        Self::from_header_map(&parts.headers)
     }
 }
 

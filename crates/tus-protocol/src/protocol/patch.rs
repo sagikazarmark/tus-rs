@@ -7,11 +7,8 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
-use crate::lifecycle::{
-    ReceiveBodyKind, ReceiveRequest, commit_receive_body, prepare_receive, prepare_receive_body,
-    prepare_upload_mutation_access, run_post_finish_best_effort,
-};
+use crate::hooks::HookExecutor;
+use crate::lifecycle::{ByteReceiver, ReceiveRequest, prepare_upload_mutation_access};
 use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::Storage;
@@ -68,35 +65,25 @@ where
 
         prepare_upload_mutation_access(self.storage, self.state_store, &mut state).await?;
 
-        prepare_receive(
-            self.config,
-            &mut state,
-            ReceiveRequest {
-                client_offset,
-                upload_length: headers.upload_length,
-            },
-        )?;
-
-        let prepared_body = prepare_receive_body(
-            self.config,
+        let receiver = ByteReceiver::new(
+            self.storage,
+            self.state_store,
             self.hooks,
+            self.config,
             hook_contexts.request_info(),
-            &headers,
-            &mut state,
-            body,
-            ReceiveBodyKind::Patch,
-        )
-        .await?;
-        let response_headers = prepared_body.response_headers.clone();
-
-        commit_receive_body(self.storage, self.state_store, &mut state, prepared_body).await?;
-
-        let post_receive_ctx = hook_contexts.context(HookEvent::PostReceive, state.clone());
-        execute_post_best_effort(self.hooks, &post_receive_ctx).await;
-
-        if state.is_complete() {
-            run_post_finish_best_effort(self.hooks, hook_contexts.request_info(), &state).await;
-        }
+        );
+        let received = receiver
+            .receive_patch(
+                &headers,
+                &mut state,
+                ReceiveRequest {
+                    client_offset,
+                    upload_length: headers.upload_length,
+                },
+                body,
+            )
+            .await?;
+        let response_headers = received.response_headers;
 
         let mut response = Response::new(StatusCode::NO_CONTENT)
             .with_header("upload-offset", state.offset().to_string());

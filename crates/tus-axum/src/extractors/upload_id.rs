@@ -9,6 +9,12 @@ use crate::error::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UploadId(pub tus_protocol::UploadId);
 
+impl UploadId {
+    pub(crate) fn from_string(upload_id: String) -> Result<Self, Error> {
+        Ok(tus_protocol::UploadId::try_from(upload_id).map(Self)?)
+    }
+}
+
 impl<S> FromRequestParts<S> for UploadId
 where
     S: Send + Sync,
@@ -23,7 +29,7 @@ where
                     tus_protocol::Error::InvalidUploadId(format!("path extraction failed: {err}"))
                 })?;
 
-        Ok(tus_protocol::UploadId::try_from(upload_id).map(Self)?)
+        Self::from_string(upload_id)
     }
 }
 

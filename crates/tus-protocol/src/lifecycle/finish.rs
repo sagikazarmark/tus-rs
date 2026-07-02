@@ -4,39 +4,58 @@ use crate::hooks::{
 };
 use crate::state::UploadState;
 
-/// Runs the PreFinish hook gate for an upload that is about to become complete.
-pub async fn run_pre_finish<H>(
-    hooks: &H,
-    request_info: &HookRequestInfo,
-    state: UploadState,
-) -> Result<()>
+/// Owns upload completion hook timing around durable completion commits.
+pub(crate) struct UploadCompletion<'a, H>
 where
     H: HookExecutor + ?Sized,
 {
-    let pre_finish_ctx = HookContext::new(HookEvent::PreFinish, state, request_info.clone());
-    let pre_finish_result = hooks.execute_pre(&pre_finish_ctx).await?;
-
-    if !pre_finish_result.proceed {
-        return Err(Error::HookRejected {
-            status_code: pre_finish_result.reject_status.unwrap_or(400),
-            message: pre_finish_result.reject_message.unwrap_or_default(),
-        });
-    }
-
-    Ok(())
+    hooks: &'a H,
+    request_info: &'a HookRequestInfo,
 }
 
-/// Runs the PostFinish hook after an upload completion commit is observable.
-pub(crate) async fn run_post_finish_best_effort<H>(
-    hooks: &H,
-    request_info: &HookRequestInfo,
-    state: &UploadState,
-) where
+impl<'a, H> UploadCompletion<'a, H>
+where
     H: HookExecutor + ?Sized,
 {
-    let post_finish_ctx =
-        HookContext::new(HookEvent::PostFinish, state.clone(), request_info.clone());
-    execute_post_best_effort(hooks, &post_finish_ctx).await;
+    pub(crate) fn new(hooks: &'a H, request_info: &'a HookRequestInfo) -> Self {
+        Self {
+            hooks,
+            request_info,
+        }
+    }
+
+    /// Runs the PreFinish hook gate before completion is durable.
+    pub(crate) async fn before_commit(&self, state: UploadState) -> Result<()> {
+        let pre_finish_ctx =
+            HookContext::new(HookEvent::PreFinish, state, self.request_info.clone());
+        let pre_finish_result = self.hooks.execute_pre(&pre_finish_ctx).await?;
+
+        if !pre_finish_result.proceed {
+            return Err(Error::HookRejected {
+                status_code: pre_finish_result.reject_status.unwrap_or(400),
+                message: pre_finish_result.reject_message.unwrap_or_default(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Runs the PostFinish hook after completion is observable.
+    pub(crate) async fn after_commit(&self, state: &UploadState) {
+        let post_finish_ctx = HookContext::new(
+            HookEvent::PostFinish,
+            state.clone(),
+            self.request_info.clone(),
+        );
+        execute_post_best_effort(self.hooks, &post_finish_ctx).await;
+    }
+
+    /// Runs the PostFinish hook after commit when the upload is complete.
+    pub(crate) async fn after_commit_if_complete(&self, state: &UploadState) {
+        if state.is_complete() {
+            self.after_commit(state).await;
+        }
+    }
 }
 
 #[cfg(all(test, not(feature = "local-futures")))]
@@ -45,13 +64,14 @@ mod tests {
     use crate::hooks::{HookChain, PreHookResult};
 
     #[tokio::test]
-    async fn run_pre_finish_returns_hook_rejection() {
+    async fn completion_before_commit_returns_hook_rejection() {
         let hooks = HookChain::new()
             .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) });
         let request_info = HookRequestInfo::default();
         let state = UploadState::new("upload-1").with_length(5);
 
-        let err = run_pre_finish(&hooks, &request_info, state)
+        let err = UploadCompletion::new(&hooks, &request_info)
+            .before_commit(state)
             .await
             .unwrap_err();
 
@@ -65,7 +85,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_pre_finish_defaults_rejection_response() {
+    async fn completion_before_commit_defaults_rejection_response() {
         let hooks = HookChain::new().on_pre_finish(|_| async {
             Ok(PreHookResult {
                 proceed: false,
@@ -75,7 +95,8 @@ mod tests {
         let request_info = HookRequestInfo::default();
         let state = UploadState::new("upload-1").with_length(5);
 
-        let err = run_pre_finish(&hooks, &request_info, state)
+        let err = UploadCompletion::new(&hooks, &request_info)
+            .before_commit(state)
             .await
             .unwrap_err();
 

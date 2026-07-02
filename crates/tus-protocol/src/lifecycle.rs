@@ -17,10 +17,9 @@ mod recovery;
 pub(crate) use access::{prepare_upload_access, prepare_upload_mutation_access};
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub(crate) use final_upload::FinalUploadMaterializer;
-pub(crate) use finish::run_post_finish_best_effort;
-pub use finish::run_pre_finish;
-pub(crate) use receive::{ReceiveBodyKind, commit_receive_body, prepare_receive_body};
-pub use receive::{ReceiveRequest, prepare_receive};
+pub(crate) use finish::UploadCompletion;
+pub(crate) use receive::ByteReceiver;
+pub(crate) use receive::ReceiveRequest;
 pub use reclamation::{
     ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };

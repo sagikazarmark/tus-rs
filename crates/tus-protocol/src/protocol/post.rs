@@ -6,8 +6,7 @@ use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
-    CreationRequest, CreationTransition, FinalUploadMaterializer, ReceiveBodyKind,
-    commit_receive_body, prepare_creation, prepare_receive_body, run_post_finish_best_effort,
+    ByteReceiver, CreationRequest, CreationTransition, FinalUploadMaterializer, prepare_creation,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
@@ -83,52 +82,24 @@ where
                 .as_deref()
                 .map(|ct| ct.starts_with("application/offset+octet-stream"))
                 .unwrap_or(false);
-        let creation_body = if is_creation_with_upload {
-            let prepared = prepare_receive_body(
-                self.config,
+        if is_creation_with_upload {
+            let receiver = ByteReceiver::new(
+                self.storage,
+                self.state_store,
                 self.hooks,
+                self.config,
                 hook_contexts.request_info(),
-                &headers,
-                &mut state,
-                body,
-                ReceiveBodyKind::CreationWithUpload,
-            )
-            .await?;
-            response_headers.extend(prepared.response_headers.clone());
-            Some(prepared)
+            );
+            let received = receiver
+                .receive_creation_with_upload(&headers, state, body, response_headers)
+                .await?;
+            state = received.state;
+            response_headers = received.response_headers;
         } else {
-            None
-        };
+            let handle = self.storage.create(state.id()).await?;
+            state.set_storage_handle(handle);
+            self.state_store.set(&state, true).await?;
 
-        let handle = self.storage.create(state.id()).await?;
-        state.set_storage_handle(handle);
-        self.state_store.set(&state, true).await?;
-
-        if let Some(prepared_body) = creation_body {
-            if let Err(e) =
-                commit_receive_body(self.storage, self.state_store, &mut state, prepared_body).await
-            {
-                // Something in the body-write phase (storage append or state
-                // persistence) failed. Roll back the just-created state record and
-                // storage object so the upload ID does not survive as a zombie
-                // record.
-                if let Some(handle) = state.storage_handle() {
-                    let _ = self.storage.delete(&handle).await;
-                }
-                let _ = self.state_store.delete(state.id()).await;
-                return Err(e);
-            }
-
-            let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
-            execute_post_best_effort(self.hooks, &post_ctx).await;
-
-            let post_receive_ctx = hook_contexts.context(HookEvent::PostReceive, state.clone());
-            execute_post_best_effort(self.hooks, &post_receive_ctx).await;
-
-            if state.is_complete() {
-                run_post_finish_best_effort(self.hooks, hook_contexts.request_info(), &state).await;
-            }
-        } else {
             let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
             execute_post_best_effort(self.hooks, &post_ctx).await;
         }
