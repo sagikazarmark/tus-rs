@@ -1,0 +1,7 @@
+[advisories]
+# OpenDAL 0.57.0 pins quick-xml to ^0.39.3 and no crates.io release
+# currently allows the fixed quick-xml >=0.41.0 line.
+ignore = [
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
