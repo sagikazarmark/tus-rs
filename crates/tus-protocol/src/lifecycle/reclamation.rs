@@ -111,6 +111,12 @@ impl ExpiredUploadReclamationOutcome {
 /// locked with [`Locker::try_lock`], reloaded, checked for current expiration,
 /// and then reclaimed. Deletion failures are reported as per-upload outcomes so
 /// callers can continue scanning other candidates.
+///
+/// Reclamation does not retain an expired partial upload because a planned final
+/// upload references it, and does not cascade deletion to referencing final
+/// uploads. A final upload that is itself expired is reclaimed as its own
+/// candidate; otherwise protocol reads treat expired or missing referenced parts
+/// as making the planned final upload expired until it has been materialized.
 pub async fn reclaim_expired_uploads<S, I, L>(
     storage: &S,
     state_store: &I,
@@ -173,7 +179,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration as StdDuration;
 
     use async_trait::async_trait;
@@ -184,6 +190,8 @@ mod tests {
     use crate::locking::LockGuard;
     use crate::state::UploadState;
     use crate::storage::{AppendRequest, ConcatRequest, StorageHandle};
+
+    type OperationLog = Arc<Mutex<Vec<String>>>;
 
     #[tokio::test]
     async fn reclaim_expired_uploads_removes_storage_and_state() {
@@ -208,6 +216,32 @@ mod tests {
         assert_eq!(storage.deleted(), vec!["data-1"]);
         assert_eq!(state_store.deleted(), vec!["upload-1"]);
         assert!(!state_store.contains("upload-1"));
+    }
+
+    #[tokio::test]
+    async fn reclaim_expired_uploads_locks_reloads_and_deletes_data_before_state() {
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let storage = TestStorage::with_operations(Arc::clone(&operations));
+        let state_store = TestStateStore::with_operations(Arc::clone(&operations));
+        let locker = TestLocker::with_operations(Arc::clone(&operations));
+        state_store.insert_candidate("upload-1");
+        state_store.insert_state(expired_state("upload-1", "data-1"));
+
+        let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(report.removed(), 1);
+        assert_eq!(
+            *operations.lock().unwrap(),
+            vec![
+                "list_expired".to_string(),
+                "try_lock upload-1".to_string(),
+                "get upload-1".to_string(),
+                "delete_storage data-1".to_string(),
+                "delete_state upload-1".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -257,9 +291,10 @@ mod tests {
 
     #[tokio::test]
     async fn reclaim_expired_uploads_reports_no_longer_expired_after_locking() {
-        let storage = TestStorage::default();
-        let state_store = TestStateStore::default();
-        let locker = TestLocker::default();
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let storage = TestStorage::with_operations(Arc::clone(&operations));
+        let state_store = TestStateStore::with_operations(Arc::clone(&operations));
+        let locker = TestLocker::with_operations(Arc::clone(&operations));
         state_store.insert_candidate("upload-1");
         state_store.insert_state(active_state("upload-1", "data-1"));
 
@@ -276,6 +311,59 @@ mod tests {
         assert!(storage.deleted().is_empty());
         assert!(state_store.deleted().is_empty());
         assert!(state_store.contains("upload-1"));
+        assert_eq!(
+            *operations.lock().unwrap(),
+            vec![
+                "list_expired".to_string(),
+                "try_lock upload-1".to_string(),
+                "get upload-1".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reclaim_expired_uploads_passes_storage_owned_handle_facts_to_delete() {
+        let storage = TestStorage::default();
+        let state_store = TestStateStore::default();
+        let locker = TestLocker::default();
+        let mut handle = StorageHandle::new("data-1");
+        handle.set_internal("multipart-upload-id", "session-1");
+        let mut state =
+            UploadState::new("upload-1").with_expiration(Utc::now() - Duration::hours(1));
+        state.set_storage_handle(handle.clone());
+        state_store.insert_candidate("upload-1");
+        state_store.insert_state(state);
+
+        let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(report.removed(), 1);
+        assert_eq!(storage.deleted_handles(), vec![handle]);
+    }
+
+    #[tokio::test]
+    async fn reclaim_expired_uploads_does_not_retain_or_cascade_referenced_partials() {
+        let storage = TestStorage::default();
+        let state_store = TestStateStore::default();
+        let locker = TestLocker::default();
+        let partial = expired_state("part-1", "part-data").as_partial();
+        let mut final_upload = active_state("final-1", "final-data")
+            .with_length(10)
+            .as_final(vec!["part-1".to_string()]);
+        final_upload.set_offset(5);
+        state_store.insert_candidate("part-1");
+        state_store.insert_state(partial);
+        state_store.insert_state(final_upload);
+
+        let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(report.removed(), 1);
+        assert_eq!(storage.deleted(), vec!["part-data"]);
+        assert!(!state_store.contains("part-1"));
+        assert!(state_store.contains("final-1"));
     }
 
     #[tokio::test]
@@ -355,12 +443,20 @@ mod tests {
 
     #[derive(Default)]
     struct TestStorage {
-        deleted: Mutex<Vec<String>>,
+        deleted: Mutex<Vec<StorageHandle>>,
         fail_delete: Mutex<HashSet<String>>,
         sizes: Mutex<HashMap<String, u64>>,
+        operations: Option<OperationLog>,
     }
 
     impl TestStorage {
+        fn with_operations(operations: OperationLog) -> Self {
+            Self {
+                operations: Some(operations),
+                ..Self::default()
+            }
+        }
+
         fn set_size(&self, key: &str, size: u64) {
             self.sizes.lock().unwrap().insert(key.to_string(), size);
         }
@@ -370,7 +466,22 @@ mod tests {
         }
 
         fn deleted(&self) -> Vec<String> {
+            self.deleted
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|handle| handle.key().to_string())
+                .collect()
+        }
+
+        fn deleted_handles(&self) -> Vec<StorageHandle> {
             self.deleted.lock().unwrap().clone()
+        }
+
+        fn record(&self, operation: impl Into<String>) {
+            if let Some(operations) = &self.operations {
+                operations.lock().unwrap().push(operation.into());
+            }
         }
     }
 
@@ -401,7 +512,8 @@ mod tests {
                 )));
             }
 
-            self.deleted.lock().unwrap().push(handle.key().to_string());
+            self.record(format!("delete_storage {}", handle.key()));
+            self.deleted.lock().unwrap().push(handle.clone());
             Ok(())
         }
 
@@ -416,9 +528,17 @@ mod tests {
         expired: Mutex<Vec<String>>,
         deleted: Mutex<Vec<String>>,
         fail_delete: Mutex<HashSet<String>>,
+        operations: Option<OperationLog>,
     }
 
     impl TestStateStore {
+        fn with_operations(operations: OperationLog) -> Self {
+            Self {
+                operations: Some(operations),
+                ..Self::default()
+            }
+        }
+
         fn insert_candidate(&self, upload_id: &str) {
             self.expired.lock().unwrap().push(upload_id.to_string());
         }
@@ -444,6 +564,12 @@ mod tests {
         fn contains(&self, upload_id: &str) -> bool {
             self.states.lock().unwrap().contains_key(upload_id)
         }
+
+        fn record(&self, operation: impl Into<String>) {
+            if let Some(operations) = &self.operations {
+                operations.lock().unwrap().push(operation.into());
+            }
+        }
     }
 
     #[cfg_attr(not(feature = "local-futures"), async_trait)]
@@ -463,6 +589,7 @@ mod tests {
         }
 
         async fn get(&self, id: &str) -> Result<Option<UploadState>> {
+            self.record(format!("get {id}"));
             Ok(self.states.lock().unwrap().get(id).cloned())
         }
 
@@ -471,12 +598,14 @@ mod tests {
                 return Err(Error::Internal(format!("state delete failed for {id}")));
             }
 
+            self.record(format!("delete_state {id}"));
             self.deleted.lock().unwrap().push(id.to_string());
             self.states.lock().unwrap().remove(id);
             Ok(())
         }
 
         async fn list_expired(&self, _before: DateTime<Utc>) -> Result<Vec<String>> {
+            self.record("list_expired");
             Ok(self.expired.lock().unwrap().clone())
         }
     }
@@ -484,11 +613,25 @@ mod tests {
     #[derive(Default)]
     struct TestLocker {
         locked: Mutex<HashSet<String>>,
+        operations: Option<OperationLog>,
     }
 
     impl TestLocker {
+        fn with_operations(operations: OperationLog) -> Self {
+            Self {
+                operations: Some(operations),
+                ..Self::default()
+            }
+        }
+
         fn mark_locked(&self, upload_id: &str) {
             self.locked.lock().unwrap().insert(upload_id.to_string());
+        }
+
+        fn record(&self, operation: impl Into<String>) {
+            if let Some(operations) = &self.operations {
+                operations.lock().unwrap().push(operation.into());
+            }
         }
     }
 
@@ -504,6 +647,7 @@ mod tests {
         }
 
         async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>> {
+            self.record(format!("try_lock {upload_id}"));
             if self.locked.lock().unwrap().contains(upload_id) {
                 return Ok(None);
             }
