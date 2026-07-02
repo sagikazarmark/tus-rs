@@ -86,6 +86,8 @@ Useful entry points:
 - `StorageReader` is the optional read seam for non-standard download paths.
 - `HookChain` and `Hook` provide lifecycle extension points with hook-safe
   upload snapshots that hide storage-local facts.
+- `reclaim_expired_uploads` is the operational cleanup entry point for expired
+  unfinished or intermediate uploads.
 
 Feature flags enable optional built-in backends and checksum support:
 

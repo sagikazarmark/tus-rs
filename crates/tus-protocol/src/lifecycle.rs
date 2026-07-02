@@ -15,10 +15,6 @@ mod recovery;
 
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub(crate) use final_upload::FinalUploadMaterializer;
-pub use final_upload::{
-    FinalUploadPlan, FinalUploadStatus, load_final_upload_plan, load_final_upload_status,
-    summarize_final_parts,
-};
 pub use finish::run_pre_finish;
 pub use receive::{
     ReceiveProjection, ReceiveRequest, apply_receive_commit, prepare_receive,

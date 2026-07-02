@@ -17,9 +17,9 @@
 //! They return `Result<Response, Error>`; adapters convert the
 //! response into their framework's response type.
 //!
-//! Upload lifecycle decisions live in [`crate::lifecycle`]. Protocol handlers
-//! map parsed HTTP inputs into lifecycle requests, then adapt lifecycle results
-//! into storage, state-store, hook, and response operations.
+//! Upload lifecycle decisions live behind this facade. Protocol handlers map
+//! parsed HTTP inputs into lifecycle requests, then adapt lifecycle results into
+//! storage, state-store, hook, and response operations.
 //!
 //! Upload ID validation is exposed through [`UploadId`] parsing, not through
 //! lower-level validation helpers.

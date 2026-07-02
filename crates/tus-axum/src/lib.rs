@@ -2,8 +2,8 @@
 //!
 //! This crate carries the axum-specific surface of a TUS server: error
 //! conversion ([`Error`]), request extractors ([`extractors`]), the
-//! route table ([`router`]), and the [`tus_protocol`]-backed handlers wired
-//! into axum signatures ([`handlers`]).
+//! route table ([`router`]), and internal [`tus_protocol`]-backed handlers wired
+//! into axum signatures.
 //!
 //! The protocol logic itself stays in [`tus_protocol`]. This crate is a thin
 //! adapter that translates axum requests into the framework-neutral inputs
@@ -20,6 +20,13 @@
 //!
 //! ```compile_fail
 //! use tus_axum::response::TusResponse;
+//! ```
+//!
+//! `handlers` is an internal adapter wiring module. Use [`create_router`] or
+//! [`create_router_with_download`] instead of importing handler functions:
+//!
+//! ```compile_fail
+//! use tus_axum::handlers::handle_post;
 //! ```
 //!
 //! # Example
@@ -58,7 +65,7 @@
 
 pub mod error;
 pub mod extractors;
-pub mod handlers;
+mod handlers;
 mod response;
 pub mod router;
 mod state;

@@ -10,6 +10,11 @@ servers. It does not depend on a web framework. Instead, adapters parse incoming
 HTTP requests, call the matching protocol handler, and convert the returned
 framework-neutral response back into their own response type.
 
+The public request-handling seam is `Protocol` or the owned `ProtocolHandle`.
+Lower-level lifecycle transition helpers are internal implementation details.
+Servers that run cleanup use the root-level `reclaim_expired_uploads` operation
+and its report/outcome types.
+
 ## Install
 
 Enable only the built-in backends and extensions your server needs:
