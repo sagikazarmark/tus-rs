@@ -14,12 +14,10 @@ mod reclamation;
 mod recovery;
 
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
+pub(crate) use final_upload::FinalUploadMaterializer;
 pub use final_upload::{
     FinalUploadPlan, FinalUploadStatus, load_final_upload_plan, load_final_upload_status,
     summarize_final_parts,
-};
-pub(crate) use final_upload::{
-    create_final_upload, final_upload_response_facts, repair_final_upload,
 };
 pub use finish::run_pre_finish;
 pub use receive::{

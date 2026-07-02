@@ -9,7 +9,9 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use crate::config::TUS_RESUMABLE;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
-use crate::lifecycle::{ensure_active, reconcile_state_offset, reconcile_stored_completion};
+use crate::lifecycle::{
+    FinalUploadMaterializer, ensure_active, reconcile_state_offset, reconcile_stored_completion,
+};
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ByteStream, Storage, StorageReader};
@@ -73,17 +75,24 @@ where
             .map_err(|err| Error::Internal(err.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        reconcile_stored_completion(self.storage, self.state_store, &mut state).await?;
-        ensure_active(&state)?;
-
-        reconcile_state_offset(
-            self.storage,
-            self.state_store,
-            self.hooks,
-            hook_contexts.request_info(),
-            &mut state,
-        )
-        .await?;
+        let final_read = if state.is_final() {
+            let materializer = FinalUploadMaterializer::new(
+                self.storage,
+                self.state_store,
+                self.hooks,
+                self.config,
+                hook_contexts.request_info(),
+            );
+            materializer.prepare_read(&mut state).await?
+        } else {
+            reconcile_stored_completion(self.storage, self.state_store, &mut state).await?;
+            ensure_active(&state)?;
+            reconcile_state_offset(self.storage, self.state_store, &mut state).await?;
+            None
+        };
+        if final_read.is_some() {
+            ensure_active(&state)?;
+        }
 
         if !state.is_complete() {
             return Err(Error::IncompleteUpload(state.id().to_string()));
@@ -238,7 +247,7 @@ mod tests {
     use bytes::Bytes;
     use futures::StreamExt;
 
-    use crate::config::Config;
+    use crate::config::{Config, Extension};
     use crate::hooks::NoopHookExecutor;
     use crate::locking::NoopLocker;
     use crate::protocol::Protocol;
@@ -269,6 +278,24 @@ mod tests {
         store.set(&state, true).await.unwrap();
 
         (storage, store)
+    }
+
+    async fn append_storage(storage: &MemoryStorage, state: &mut UploadState, bytes: Bytes) {
+        let projected_offset = state.offset().saturating_add(bytes.len() as u64);
+        let completes_upload = state
+            .length()
+            .is_some_and(|length| projected_offset == length);
+        let handle = storage
+            .append(AppendRequest {
+                handle: state.require_storage_handle().unwrap(),
+                expected_offset: state.offset(),
+                data: ChunkStream::from_bytes(bytes),
+                completes_upload,
+            })
+            .await
+            .unwrap();
+        state.set_storage_handle(handle);
+        state.set_offset(projected_offset);
     }
 
     async fn body_bytes(response: DownloadResponse) -> Bytes {
@@ -323,6 +350,56 @@ mod tests {
         );
         assert_eq!(response.headers.get("content-length").unwrap(), "5");
         assert_eq!(body_bytes(response).await.as_ref(), b"world");
+    }
+
+    #[tokio::test]
+    async fn download_materializes_final_upload_once_partials_complete() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut part1 = UploadState::new("part-1").with_length(4).as_partial();
+        let handle = storage.create(part1.id()).await.unwrap();
+        part1.set_storage_handle(handle);
+        append_storage(&storage, &mut part1, Bytes::from_static(b"ABCD")).await;
+        store.set(&part1, true).await.unwrap();
+
+        let mut part2 = UploadState::new("part-2").with_length(4).as_partial();
+        let handle = storage.create(part2.id()).await.unwrap();
+        part2.set_storage_handle(handle);
+        append_storage(&storage, &mut part2, Bytes::from_static(b"EFGH")).await;
+        store.set(&part2, true).await.unwrap();
+
+        let mut final_upload = UploadState::new("final-1");
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
+        final_upload.set_length(8);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id = "final-1".parse().unwrap();
+        let response = Protocol::new(
+            &Config::default().with_extension(Extension::Concatenation),
+            &storage,
+            &store,
+            &locker,
+            &hooks,
+        )
+        .download(DownloadRequest {
+            upload_id: &upload_id,
+            range: None,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.headers.get("content-length").unwrap(), "8");
+        assert_eq!(body_bytes(response).await.as_ref(), b"ABCDEFGH");
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 8);
     }
 
     #[test]

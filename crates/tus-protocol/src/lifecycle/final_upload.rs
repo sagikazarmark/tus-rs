@@ -9,7 +9,7 @@ use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ConcatRequest, Storage};
 
-use super::run_pre_finish;
+use super::{ensure_active, run_pre_finish};
 
 /// Loaded and validated final-upload parts.
 #[derive(Debug, Clone)]
@@ -73,7 +73,97 @@ pub(crate) struct FinalUploadResponseFacts {
     pub(crate) length: Option<u64>,
 }
 
-pub(crate) async fn create_final_upload<S, I, H>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PreparedFinalUploadRead {
+    pub(crate) response_facts: FinalUploadResponseFacts,
+}
+
+pub(crate) struct FinalUploadMaterializer<'a, S, I, H>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    storage: &'a S,
+    state_store: &'a I,
+    hooks: &'a H,
+    config: &'a Config,
+    request_info: &'a HookRequestInfo,
+}
+
+impl<'a, S, I, H> FinalUploadMaterializer<'a, S, I, H>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    pub(crate) fn new(
+        storage: &'a S,
+        state_store: &'a I,
+        hooks: &'a H,
+        config: &'a Config,
+        request_info: &'a HookRequestInfo,
+    ) -> Self {
+        Self {
+            storage,
+            state_store,
+            hooks,
+            config,
+            request_info,
+        }
+    }
+
+    pub(crate) async fn create(
+        &self,
+        state: UploadState,
+        part_urls: Vec<String>,
+    ) -> Result<CreatedFinalUpload> {
+        create_final_upload(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            self.config,
+            self.request_info,
+            state,
+            part_urls,
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_read(
+        &self,
+        state: &mut UploadState,
+    ) -> Result<Option<PreparedFinalUploadRead>> {
+        if !state.is_final() {
+            return Ok(None);
+        }
+
+        if recover_materialized_final_upload(self.storage, self.state_store, state).await? {
+            return Ok(Some(PreparedFinalUploadRead {
+                response_facts: final_upload_response_facts(state)
+                    .expect("final upload should have response facts"),
+            }));
+        }
+
+        ensure_active(state)?;
+
+        repair_final_upload(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            self.request_info,
+            state,
+        )
+        .await?;
+
+        Ok(Some(PreparedFinalUploadRead {
+            response_facts: final_upload_response_facts(state)
+                .expect("final upload should have response facts"),
+        }))
+    }
+}
+
+async fn create_final_upload<S, I, H>(
     storage: &S,
     state_store: &I,
     hooks: &H,
@@ -130,7 +220,7 @@ where
     })
 }
 
-pub(crate) async fn repair_final_upload<S, I, H>(
+async fn repair_final_upload<S, I, H>(
     storage: &S,
     state_store: &I,
     hooks: &H,
@@ -142,15 +232,6 @@ where
     I: StateStore + ?Sized,
     H: HookExecutor + ?Sized,
 {
-    if state.is_complete()
-        && let Some(length) = state.length()
-    {
-        let actual_size = storage_size(storage, state).await?;
-        if actual_size == length {
-            return Ok(true);
-        }
-    }
-
     let Some(FinalUploadPlan { parts, status, .. }) =
         load_final_upload_status(state_store, state).await?
     else {
@@ -214,6 +295,49 @@ where
 
     if will_complete {
         run_post_event(hooks, HookEvent::PostFinish, request_info, state).await;
+    }
+
+    Ok(true)
+}
+
+async fn recover_materialized_final_upload<S, I>(
+    storage: &S,
+    state_store: &I,
+    state: &mut UploadState,
+) -> Result<bool>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+{
+    let Some(length) = state.length() else {
+        return Ok(false);
+    };
+    let Some(handle) = state.storage_handle() else {
+        return Ok(false);
+    };
+
+    let actual_size = storage
+        .size(&handle)
+        .await
+        .map_err(|err| Error::Internal(err.to_string()))?
+        .unwrap_or(0);
+    if actual_size != length {
+        return Ok(false);
+    }
+
+    if state.offset() != length {
+        tracing::warn!(
+            upload_id = %state.id(),
+            recorded_offset = state.offset(),
+            actual_offset = actual_size,
+            "recovering materialized final upload offset against stored bytes"
+        );
+
+        state.set_offset(length);
+        state_store
+            .set(state, false)
+            .await
+            .map_err(|err| Error::Internal(err.to_string()))?;
     }
 
     Ok(true)
@@ -589,10 +713,11 @@ mod tests {
 ))]
 mod materialization_tests {
     use super::*;
-    use crate::hooks::{HookChain, HookEvent, PreHookResult};
+    use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
     use crate::state::memory::MemoryStateStore;
     use crate::storage::{AppendRequest, ChunkStream, StorageReader, memory::MemoryStorage};
     use bytes::{Bytes, BytesMut};
+    use chrono::{Duration, Utc};
     use futures::StreamExt;
     use std::sync::{Arc, Mutex};
 
@@ -635,6 +760,431 @@ mod materialization_tests {
                 acc
             })
             .freeze()
+    }
+
+    #[tokio::test]
+    async fn materializer_prepares_planned_final_upload_for_read() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut part = UploadState::new("part-1").with_length(10).as_partial();
+        part.set_offset(4);
+        store.set(&part, true).await.unwrap();
+
+        let mut final_upload = UploadState::new("final-1");
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        final_upload.set_length(10);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let prepared = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(prepared.response_facts.offset, None);
+        assert_eq!(prepared.response_facts.length, Some(10));
+        assert_eq!(final_upload.offset(), 4);
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 4);
+    }
+
+    #[tokio::test]
+    async fn materializer_materializes_complete_final_upload_for_read() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        store_partial(&storage, &store, "part-1", b"ABCD").await;
+        store_partial(&storage, &store, "part-2", b"EFGH").await;
+
+        let mut final_upload = UploadState::new("final-1");
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
+        final_upload.set_length(8);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let prepared = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(prepared.response_facts.offset, Some(8));
+        assert_eq!(prepared.response_facts.length, Some(8));
+        assert_eq!(final_upload.offset(), 8);
+        assert_eq!(
+            stored_bytes(&storage, &final_upload).await.as_ref(),
+            b"ABCDEFGH"
+        );
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 8);
+        assert_eq!(stored.length(), Some(8));
+    }
+
+    #[tokio::test]
+    async fn materializer_repairs_completed_final_upload_storage_for_read() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        store_partial(&storage, &store, "part-1", b"ABCD").await;
+
+        let mut final_upload = UploadState::new("final-1");
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        final_upload.set_length(4);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let prepared = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(prepared.response_facts.offset, Some(4));
+        assert_eq!(prepared.response_facts.length, Some(4));
+        assert_eq!(
+            stored_bytes(&storage, &final_upload).await.as_ref(),
+            b"ABCD"
+        );
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 4);
+        assert_eq!(stored.length(), Some(4));
+    }
+
+    #[tokio::test]
+    async fn materializer_repairs_oversized_final_target_from_parts() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        store_partial(&storage, &store, "part-1", b"ABCD").await;
+
+        let mut final_upload = UploadState::new("final-1").with_length(4);
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: final_upload.require_storage_handle().unwrap(),
+                expected_offset: final_upload.offset(),
+                data: ChunkStream::from_bytes(Bytes::from_static(b"ABCDEF")),
+                completes_upload: false,
+            })
+            .await
+            .unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let prepared = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(prepared.response_facts.offset, Some(4));
+        assert_eq!(prepared.response_facts.length, Some(4));
+        assert_eq!(
+            stored_bytes(&storage, &final_upload).await.as_ref(),
+            b"ABCD"
+        );
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 4);
+        assert_eq!(stored.length(), Some(4));
+    }
+
+    #[tokio::test]
+    async fn materializer_rejects_planned_final_upload_with_expired_part() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut part = UploadState::new("part-1")
+            .with_length(10)
+            .with_expiration(Utc::now() - Duration::seconds(1))
+            .as_partial();
+        part.set_offset(4);
+        store.set(&part, true).await.unwrap();
+
+        let mut final_upload = UploadState::new("final-1");
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        final_upload.set_length(10);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let err = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Expired(id) if id == "final-1"));
+    }
+
+    #[tokio::test]
+    async fn materializer_rejects_expired_planned_final_before_materializing_complete_parts() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        store_partial(&storage, &store, "part-1", b"ABCD").await;
+
+        let mut final_upload = UploadState::new("final-1")
+            .with_length(4)
+            .with_expiration(Utc::now() - Duration::seconds(1));
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle.clone());
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        store.set(&final_upload, true).await.unwrap();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new().on_pre_finish({
+            let events = Arc::clone(&events);
+            move |_| {
+                let events = Arc::clone(&events);
+                async move {
+                    events.lock().unwrap().push(HookEvent::PreFinish);
+                    Ok(PreHookResult::proceed())
+                }
+            }
+        });
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let err = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Expired(id) if id == "final-1"));
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(0));
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 0);
+    }
+
+    #[tokio::test]
+    async fn materializer_preserves_state_when_read_finish_hook_rejects() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        store_partial(&storage, &store, "part-1", b"ABCD").await;
+
+        let mut final_upload = UploadState::new("final-1");
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        final_upload.set_length(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let observed = Arc::new(Mutex::new(None));
+        let hooks = HookChain::new().on_pre_finish({
+            let observed = Arc::clone(&observed);
+            move |ctx| {
+                let observed = Arc::clone(&observed);
+                let method = ctx.request.method.clone();
+                let path = ctx.request.path.clone();
+                let upload_id = ctx.upload.id().to_string();
+                let offset = ctx.upload.offset();
+                async move {
+                    *observed.lock().unwrap() = Some((method, path, upload_id, offset));
+                    Ok(PreHookResult::reject(409, "finish blocked"))
+                }
+            }
+        });
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let request_info = HookRequestInfo {
+            method: "GET".to_string(),
+            path: "/files/final-1".to_string(),
+            ..Default::default()
+        };
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let err = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::HookRejected {
+                status_code: 409,
+                ..
+            }
+        ));
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some((
+                "GET".to_string(),
+                "/files/final-1".to_string(),
+                "final-1".to_string(),
+                4,
+            ))
+        );
+        assert_eq!(final_upload.offset(), 0);
+        assert_eq!(
+            storage
+                .size(&final_upload.require_storage_handle().unwrap())
+                .await
+                .unwrap(),
+            Some(0)
+        );
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 0);
+    }
+
+    #[tokio::test]
+    async fn materializer_accepts_already_materialized_final_without_partial_state() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut final_upload = UploadState::new("final-1").with_length(4);
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: final_upload.require_storage_handle().unwrap(),
+                expected_offset: final_upload.offset(),
+                data: ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["missing-part".to_string()]);
+        final_upload.set_offset(4);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let prepared = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(prepared.response_facts.offset, Some(4));
+        assert_eq!(prepared.response_facts.length, Some(4));
+        assert_eq!(
+            stored_bytes(&storage, &final_upload).await.as_ref(),
+            b"ABCD"
+        );
+    }
+
+    #[tokio::test]
+    async fn materializer_accepts_materialized_final_with_stale_offset_without_partial_state() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut final_upload = UploadState::new("final-1").with_length(4);
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        let handle = storage
+            .append(AppendRequest {
+                handle: final_upload.require_storage_handle().unwrap(),
+                expected_offset: final_upload.offset(),
+                data: ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
+                completes_upload: true,
+            })
+            .await
+            .unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["missing-part".to_string()]);
+        store.set(&final_upload, true).await.unwrap();
+
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let prepared = materializer
+            .prepare_read(&mut final_upload)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(prepared.response_facts.offset, Some(4));
+        assert_eq!(prepared.response_facts.length, Some(4));
+        assert_eq!(final_upload.offset(), 4);
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 4);
+    }
+
+    #[tokio::test]
+    async fn materializer_creates_planned_final_upload_from_incomplete_part() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut part = UploadState::new("part-1").with_length(10).as_partial();
+        part.set_offset(4);
+        store.set(&part, true).await.unwrap();
+
+        let config = Config::default()
+            .with_extension(Extension::Concatenation)
+            .with_extension(Extension::ConcatenationUnfinished);
+        let hooks = NoopHookExecutor::new();
+        let request_info = HookRequestInfo::default();
+        let materializer =
+            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+
+        let created = materializer
+            .create(
+                UploadState::new("final-1"),
+                vec!["/files/part-1".to_string()],
+            )
+            .await
+            .unwrap();
+        let facts = created.response_facts();
+
+        assert_eq!(facts.offset, None);
+        assert_eq!(facts.length, Some(10));
+        assert_eq!(created.state.offset(), 4);
+        assert!(!created.state.is_complete());
+        assert!(created.state.is_final());
+
+        let stored = store.get("final-1").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 4);
+        assert_eq!(stored.length(), Some(10));
     }
 
     #[tokio::test]
