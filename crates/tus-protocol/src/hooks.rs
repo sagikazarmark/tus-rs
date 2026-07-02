@@ -342,7 +342,12 @@ impl HookUpload {
     /// non-partial uploads are deliverable content and do not expire through
     /// this policy.
     pub fn is_expired(&self) -> bool {
-        crate::expiration::is_expired(self.expires_at, self.is_complete(), self.is_partial)
+        crate::expiration::ProtocolExpiration::from_parts(
+            self.expires_at,
+            self.is_complete(),
+            self.is_partial,
+        )
+        .is_expired()
     }
 
     fn set_metadata(&mut self, metadata: UploadMetadata) {

@@ -391,6 +391,36 @@ mod tests {
         assert_eq!(stored.offset(), 8);
     }
 
+    #[tokio::test]
+    async fn download_rejects_planned_final_upload_with_missing_part_as_expired() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut final_upload = UploadState::new("final-1").with_length(4);
+        let handle = storage.create(final_upload.id()).await.unwrap();
+        final_upload.set_storage_handle(handle);
+        final_upload.mark_final(vec!["missing-part".to_string()]);
+        store.set(&final_upload, true).await.unwrap();
+
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id = "final-1".parse().unwrap();
+        let result = Protocol::new(
+            &Config::default().with_extension(Extension::Concatenation),
+            &storage,
+            &store,
+            &locker,
+            &hooks,
+        )
+        .download(DownloadRequest {
+            upload_id: &upload_id,
+            range: None,
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Expired(id)) if id == "final-1"));
+    }
+
     #[test]
     fn parse_range_rejects_unsatisfiable_start() {
         let err = parse_range(Some("bytes=10-20"), 5).unwrap_err();

@@ -36,9 +36,7 @@ where
         ));
     }
 
-    reconcile_stored_completion(storage, state_store, state).await?;
-    ensure_active(state)?;
-    reconcile_state_offset(storage, state_store, state).await?;
+    prepare_regular_upload_access(storage, state_store, state).await?;
 
     Ok(())
 }
@@ -74,9 +72,7 @@ where
         });
     }
 
-    reconcile_stored_completion(storage, state_store, state).await?;
-    ensure_active(state)?;
-    reconcile_state_offset(storage, state_store, state).await?;
+    prepare_regular_upload_access(storage, state_store, state).await?;
 
     Ok(PreparedUploadAccess {
         facts: UploadAccessFacts {
@@ -85,4 +81,20 @@ where
             defer_length: state.length().is_none(),
         },
     })
+}
+
+async fn prepare_regular_upload_access<S, I>(
+    storage: &S,
+    state_store: &I,
+    state: &mut UploadState,
+) -> Result<()>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+{
+    reconcile_stored_completion(storage, state_store, state).await?;
+    ensure_active(state)?;
+    reconcile_state_offset(storage, state_store, state).await?;
+
+    Ok(())
 }

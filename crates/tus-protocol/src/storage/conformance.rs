@@ -51,6 +51,7 @@ where
     S: Storage + ?Sized,
 {
     create_and_append_accept_upload_bytes(storage).await;
+    append_preserves_existing_handle_internal_facts(storage).await;
     append_rejects_stale_offset_without_consuming_body(storage).await;
     append_stream_error_leaves_previous_bytes_visible(storage).await;
     size_supports_recovery_from_stale_handle(storage).await;
@@ -99,6 +100,31 @@ where
         storage.size(&handle).await.expect("size should succeed"),
         Some(11),
         "size should reflect all appended bytes"
+    );
+}
+
+async fn append_preserves_existing_handle_internal_facts<S>(storage: &S)
+where
+    S: Storage + ?Sized,
+{
+    let mut handle = storage
+        .create(&upload_id("append-handle-internals"))
+        .await
+        .expect("create should succeed");
+    handle.set_internal("conformance_fact", "keep-me");
+
+    let handle = append_bytes(storage, handle, 0, Bytes::from_static(b"hello"), false).await;
+    assert_eq!(
+        handle.get_internal("conformance_fact"),
+        Some("keep-me"),
+        "append should preserve existing StorageHandle internal facts"
+    );
+
+    let handle = append_bytes(storage, handle, 5, Bytes::from_static(b"world"), true).await;
+    assert_eq!(
+        handle.get_internal("conformance_fact"),
+        Some("keep-me"),
+        "completion append should preserve existing StorageHandle internal facts"
     );
 }
 

@@ -589,10 +589,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_preserves_existing_handle_internals() {
+    async fn append_advances_part_cursor() {
         let storage = create_test_storage();
-        let mut handle = storage.create("handle-internals").await.unwrap();
-        handle.set_internal("adapter_fact", "keep-me");
+        let handle = storage.create("handle-internals").await.unwrap();
 
         let handle = storage
             .append(AppendRequest {
@@ -604,7 +603,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(handle.get_internal("adapter_fact"), Some("keep-me"));
         assert_eq!(handle.get_internal(INTERNAL_NEXT_PART), Some("2"));
     }
 

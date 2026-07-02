@@ -347,17 +347,12 @@ impl UploadState {
     /// non-partial uploads are deliverable content and do not expire through
     /// this policy.
     pub fn expires_before(&self, before: DateTime<Utc>) -> bool {
-        crate::expiration::expires_before(
-            self.expires_at,
-            self.is_complete(),
-            self.is_partial,
-            before,
-        )
+        crate::expiration::ProtocolExpiration::for_upload(self).expires_before(before)
     }
 
     /// Returns whether the upload is protocol-expired.
     pub fn is_expired(&self) -> bool {
-        crate::expiration::is_expired(self.expires_at, self.is_complete(), self.is_partial)
+        crate::expiration::ProtocolExpiration::for_upload(self).is_expired()
     }
 
     /// Returns the remaining bytes to upload.
@@ -367,7 +362,7 @@ impl UploadState {
 
     /// Formats the expiration time as an RFC 7231 date for the Upload-Expires header.
     pub fn expires_header(&self) -> Option<String> {
-        crate::expiration::expires_header(self.expires_at, self.is_complete(), self.is_partial)
+        crate::expiration::ProtocolExpiration::for_upload(self).header()
     }
 }
 
@@ -808,5 +803,28 @@ mod tests {
     fn test_expires_header_none_when_no_expiration() {
         let state = UploadState::new("test");
         assert!(state.expires_header().is_none());
+    }
+
+    #[test]
+    fn completed_upload_expiration_policy_distinguishes_deliverable_and_partial_uploads() {
+        use chrono::TimeZone;
+
+        let expires_at = Utc.with_ymd_and_hms(2030, 6, 25, 14, 30, 0).unwrap();
+        let mut deliverable = UploadState::new("deliverable")
+            .with_length(5)
+            .with_expiration(expires_at);
+        deliverable.set_offset(5);
+
+        let mut partial = UploadState::new("partial")
+            .with_length(5)
+            .with_expiration(expires_at)
+            .as_partial();
+        partial.set_offset(5);
+
+        assert_eq!(deliverable.expires_header(), None);
+        assert_eq!(
+            partial.expires_header().as_deref(),
+            Some("Tue, 25 Jun 2030 14:30:00 GMT")
+        );
     }
 }

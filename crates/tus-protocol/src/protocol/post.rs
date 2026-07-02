@@ -7,7 +7,7 @@ use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
     CreationRequest, CreationTransition, FinalUploadMaterializer, ReceiveBodyKind,
-    commit_receive_body, prepare_creation, prepare_receive_body,
+    commit_receive_body, prepare_creation, prepare_receive_body, run_post_finish_best_effort,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
@@ -126,8 +126,7 @@ where
             execute_post_best_effort(self.hooks, &post_receive_ctx).await;
 
             if state.is_complete() {
-                let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
-                execute_post_best_effort(self.hooks, &post_finish_ctx).await;
+                run_post_finish_best_effort(self.hooks, hook_contexts.request_info(), &state).await;
             }
         } else {
             let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());

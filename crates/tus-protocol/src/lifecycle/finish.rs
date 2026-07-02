@@ -1,5 +1,7 @@
 use crate::error::{Error, Result};
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{
+    HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
+};
 use crate::state::UploadState;
 
 /// Runs the PreFinish hook gate for an upload that is about to become complete.
@@ -22,6 +24,19 @@ where
     }
 
     Ok(())
+}
+
+/// Runs the PostFinish hook after an upload completion commit is observable.
+pub(crate) async fn run_post_finish_best_effort<H>(
+    hooks: &H,
+    request_info: &HookRequestInfo,
+    state: &UploadState,
+) where
+    H: HookExecutor + ?Sized,
+{
+    let post_finish_ctx =
+        HookContext::new(HookEvent::PostFinish, state.clone(), request_info.clone());
+    execute_post_best_effort(hooks, &post_finish_ctx).await;
 }
 
 #[cfg(all(test, not(feature = "local-futures")))]
