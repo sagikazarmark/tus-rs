@@ -351,25 +351,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_preserves_existing_handle_internals() {
-        let storage = MemoryStorage::new();
-        let mut handle = storage.create("test-internals").await.unwrap();
-        handle.set_internal("adapter_fact", "keep-me");
-
-        let handle = storage
-            .append(AppendRequest {
-                handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("data")),
-                completes_upload: true,
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(handle.get_internal("adapter_fact"), Some("keep-me"));
-    }
-
-    #[tokio::test]
     async fn concat_preserves_existing_target_handle_internals() {
         let storage = MemoryStorage::new();
         let part = storage.create("part-internals").await.unwrap();

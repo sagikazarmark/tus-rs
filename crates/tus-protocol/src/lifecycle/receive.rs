@@ -191,13 +191,7 @@ where
         state.set_metadata(metadata);
     }
 
-    let collected = body::collect(
-        config,
-        headers,
-        receive_body_limit(config, state, kind),
-        request_body,
-    )
-    .await?;
+    let collected = collect_receive_body(config, headers, state, request_body, kind).await?;
     if matches!(kind, ReceiveBodyKind::CreationWithUpload) {
         debug_assert!(
             collected.supplied,
@@ -258,6 +252,22 @@ fn receive_body_limit(config: &Config, state: &UploadState, kind: ReceiveBodyKin
         ReceiveBodyKind::Patch => receive_body_size_limit(config, state),
         ReceiveBodyKind::CreationWithUpload => creation_with_upload_body_size_limit(config, state),
     }
+}
+
+async fn collect_receive_body(
+    config: &Config,
+    headers: &Headers,
+    state: &UploadState,
+    request_body: RequestBody,
+    kind: ReceiveBodyKind,
+) -> Result<body::CollectedBody> {
+    body::collect(
+        config,
+        headers,
+        receive_body_limit(config, state, kind),
+        request_body,
+    )
+    .await
 }
 
 fn validate_body_for_receive(

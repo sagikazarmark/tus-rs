@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
     ReceiveBodyKind, ReceiveRequest, commit_receive_body, prepare_receive, prepare_receive_body,
-    prepare_upload_mutation_access,
+    prepare_upload_mutation_access, run_post_finish_best_effort,
 };
 use crate::locking::Locker;
 use crate::state::StateStore;
@@ -95,8 +95,7 @@ where
         execute_post_best_effort(self.hooks, &post_receive_ctx).await;
 
         if state.is_complete() {
-            let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
-            execute_post_best_effort(self.hooks, &post_finish_ctx).await;
+            run_post_finish_best_effort(self.hooks, hook_contexts.request_info(), &state).await;
         }
 
         let mut response = Response::new(StatusCode::NO_CONTENT)
@@ -643,6 +642,40 @@ mod tests {
             stored.metadata().get("stage").and_then(|v| v.as_str()),
             Some("received")
         );
+    }
+
+    #[cfg(feature = "checksum")]
+    #[tokio::test]
+    async fn patch_accepts_checksum_trailer() {
+        use crate::{BodyFrame, BodyStream};
+        use base64::Engine;
+
+        let (storage, store) = setup(UploadState::new("test-id").with_length(5)).await;
+        let config = Config::default().with_extension(Extension::ChecksumTrailer);
+        let checksum = base64::engine::general_purpose::STANDARD.encode(crate::calculate_checksum(
+            crate::config::ChecksumAlgorithm::Sha1,
+            b"hello",
+        ));
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert(
+            "upload-checksum",
+            format!("sha1 {checksum}").parse().unwrap(),
+        );
+        let stream: BodyStream = Box::pin(futures::stream::iter([
+            Ok(BodyFrame::Data(Bytes::from_static(b"hello"))),
+            Ok(BodyFrame::Trailers(trailers)),
+        ]));
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let response = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .patch(headers(0), &upload_id, RequestBody::from_stream(stream))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::NO_CONTENT);
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
     }
 
     #[tokio::test]

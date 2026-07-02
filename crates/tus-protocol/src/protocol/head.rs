@@ -152,6 +152,7 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
     use futures::StreamExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration as StdDuration;
 
     struct RecordingLocker {
@@ -455,6 +456,51 @@ mod tests {
 
         let bytes = body_bytes(&storage, &stored).await;
         assert_eq!(&bytes[..], b"ABCDEFGH");
+    }
+
+    #[tokio::test]
+    async fn head_materialization_post_finish_observes_completed_offset() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        create_storage(&storage, &mut part).await;
+        append_storage(&storage, &mut part, Bytes::from_static(b"ABCD")).await;
+        store.set(&part, true).await.unwrap();
+
+        let mut final_upload = UploadState::new("final-1").with_length(4);
+        create_storage(&storage, &mut final_upload).await;
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        store.set(&final_upload, true).await.unwrap();
+
+        let observed_offsets = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new().on_post_finish({
+            let observed_offsets = Arc::clone(&observed_offsets);
+            move |ctx| {
+                let observed_offsets = Arc::clone(&observed_offsets);
+                let offset = ctx.upload.offset();
+                async move {
+                    observed_offsets.lock().unwrap().push(offset);
+                    Ok(())
+                }
+            }
+        });
+        let locker = NoopLocker::new();
+        let upload_id: UploadId = "final-1".parse().unwrap();
+
+        let response = Protocol::new(
+            &Config::default().with_extension(Extension::Concatenation),
+            &storage,
+            &store,
+            &locker,
+            &hooks,
+        )
+        .head(&upload_id)
+        .await
+        .unwrap();
+
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "4");
+        assert_eq!(*observed_offsets.lock().unwrap(), vec![4]);
     }
 
     #[tokio::test]

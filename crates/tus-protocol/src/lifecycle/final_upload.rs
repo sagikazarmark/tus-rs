@@ -9,7 +9,7 @@ use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ConcatRequest, Storage};
 
-use super::{ensure_active, run_pre_finish};
+use super::{ensure_active, run_post_finish_best_effort, run_pre_finish};
 
 /// Loaded and validated final-upload parts.
 #[derive(Debug, Clone)]
@@ -210,7 +210,7 @@ where
     run_post_event(hooks, HookEvent::PostCreate, request_info, &state).await;
 
     if status.all_complete {
-        run_post_event(hooks, HookEvent::PostFinish, request_info, &state).await;
+        run_post_finish_best_effort(hooks, request_info, &state).await;
     }
 
     Ok(CreatedFinalUpload {
@@ -294,7 +294,7 @@ where
     }
 
     if will_complete {
-        run_post_event(hooks, HookEvent::PostFinish, request_info, state).await;
+        run_post_finish_best_effort(hooks, request_info, state).await;
     }
 
     Ok(true)
