@@ -48,19 +48,15 @@ where
 
     match override_method {
         Some(m) if m == Method::PATCH => {
-            let headers = parse_headers(req.headers())?;
+            let headers = Headers::from_header_map(req.headers())?;
             let body = TusBody::from_request(req, &()).await?;
-            let upload_id = tus_protocol::UploadId::try_from(upload_id)
-                .map(UploadId)
-                .map_err(Error)?;
+            let upload_id = UploadId::from_string(upload_id)?;
 
             handle_patch(State(protocol), headers, upload_id, body).await
         }
         Some(m) if m == Method::DELETE => {
-            let headers = parse_headers(req.headers())?;
-            let upload_id = tus_protocol::UploadId::try_from(upload_id)
-                .map(UploadId)
-                .map_err(Error)?;
+            let headers = Headers::from_header_map(req.headers())?;
+            let upload_id = UploadId::from_string(upload_id)?;
 
             handle_delete(State(protocol), headers, upload_id).await
         }
@@ -68,10 +64,4 @@ where
             "POST is not allowed on upload resources without X-HTTP-Method-Override".to_string(),
         ))),
     }
-}
-
-fn parse_headers(headers: &axum::http::HeaderMap) -> Result<Headers, Error> {
-    tus_protocol::Headers::from_headers(headers)
-        .map(Headers)
-        .map_err(Error)
 }

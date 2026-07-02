@@ -9,7 +9,7 @@ use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ConcatRequest, Storage};
 
-use super::{ensure_active, run_post_finish_best_effort, run_pre_finish};
+use super::{UploadCompletion, ensure_active};
 
 /// Loaded and validated final-upload parts.
 #[derive(Debug, Clone)]
@@ -73,11 +73,6 @@ pub(crate) struct FinalUploadResponseFacts {
     pub(crate) length: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PreparedFinalUploadRead {
-    pub(crate) response_facts: FinalUploadResponseFacts,
-}
-
 pub(crate) struct FinalUploadMaterializer<'a, S, I, H>
 where
     S: Storage + ?Sized,
@@ -130,19 +125,13 @@ where
         .await
     }
 
-    pub(crate) async fn prepare_read(
-        &self,
-        state: &mut UploadState,
-    ) -> Result<Option<PreparedFinalUploadRead>> {
+    pub(crate) async fn prepare_read(&self, state: &mut UploadState) -> Result<bool> {
         if !state.is_final() {
-            return Ok(None);
+            return Ok(false);
         }
 
         if recover_materialized_final_upload(self.storage, self.state_store, state).await? {
-            return Ok(Some(PreparedFinalUploadRead {
-                response_facts: final_upload_response_facts(state)
-                    .expect("final upload should have response facts"),
-            }));
+            return Ok(true);
         }
 
         ensure_active(state)?;
@@ -156,10 +145,7 @@ where
         )
         .await?;
 
-        Ok(Some(PreparedFinalUploadRead {
-            response_facts: final_upload_response_facts(state)
-                .expect("final upload should have response facts"),
-        }))
+        Ok(true)
     }
 }
 
@@ -188,8 +174,9 @@ where
     let pre_create = run_pre_create(hooks, request_info, state).await?;
     state = pre_create.state;
 
+    let completion = UploadCompletion::new(hooks, request_info);
     if status.all_complete {
-        run_pre_finish(hooks, request_info, state.clone()).await?;
+        completion.before_commit(state.clone()).await?;
     }
 
     let handle = storage.create(state.id()).await?;
@@ -210,7 +197,7 @@ where
     run_post_event(hooks, HookEvent::PostCreate, request_info, &state).await;
 
     if status.all_complete {
-        run_post_finish_best_effort(hooks, request_info, &state).await;
+        completion.after_commit(&state).await;
     }
 
     Ok(CreatedFinalUpload {
@@ -266,7 +253,9 @@ where
             .expect("ready final upload has total length");
         completed_state.set_length(total_length);
         completed_state.set_offset(total_length);
-        run_pre_finish(hooks, request_info, completed_state).await?;
+        UploadCompletion::new(hooks, request_info)
+            .before_commit(completed_state)
+            .await?;
     }
 
     if needs_materialization {
@@ -294,7 +283,9 @@ where
     }
 
     if will_complete {
-        run_post_finish_best_effort(hooks, request_info, state).await;
+        UploadCompletion::new(hooks, request_info)
+            .after_commit(state)
+            .await;
     }
 
     Ok(true)
@@ -341,13 +332,6 @@ where
     }
 
     Ok(true)
-}
-
-pub(crate) fn final_upload_response_facts(state: &UploadState) -> Option<FinalUploadResponseFacts> {
-    state.is_final().then_some(FinalUploadResponseFacts {
-        offset: state.is_complete().then_some(state.offset()),
-        length: state.length(),
-    })
 }
 
 /// Loads and validates parts referenced by a final Upload-Concat header.
@@ -659,26 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn final_upload_response_facts_expose_offset_only_when_complete() {
-        let mut incomplete = UploadState::new("final-1").with_length(10);
-        incomplete.mark_final(vec!["part-1".to_string()]);
-        incomplete.set_offset(5);
-
-        let facts = final_upload_response_facts(&incomplete).unwrap();
-
-        assert_eq!(facts.offset, None);
-        assert_eq!(facts.length, Some(10));
-
-        let mut complete = incomplete;
-        complete.set_offset(10);
-
-        let facts = final_upload_response_facts(&complete).unwrap();
-
-        assert_eq!(facts.offset, Some(10));
-        assert_eq!(facts.length, Some(10));
-    }
-
-    #[test]
     fn extract_partial_id_accepts_relative_and_absolute_urls() {
         assert_eq!(
             extract_partial_id("/files/abc123", "/files").map(UploadId::into_string),
@@ -782,14 +746,9 @@ mod materialization_tests {
         let materializer =
             FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
 
-        let prepared = materializer
-            .prepare_read(&mut final_upload)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
-        assert_eq!(prepared.response_facts.offset, None);
-        assert_eq!(prepared.response_facts.length, Some(10));
+        assert!(prepared);
         assert_eq!(final_upload.offset(), 4);
 
         let stored = store.get("final-1").await.unwrap().unwrap();
@@ -817,14 +776,9 @@ mod materialization_tests {
         let materializer =
             FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
 
-        let prepared = materializer
-            .prepare_read(&mut final_upload)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
-        assert_eq!(prepared.response_facts.offset, Some(8));
-        assert_eq!(prepared.response_facts.length, Some(8));
+        assert!(prepared);
         assert_eq!(final_upload.offset(), 8);
         assert_eq!(
             stored_bytes(&storage, &final_upload).await.as_ref(),
@@ -856,14 +810,9 @@ mod materialization_tests {
         let materializer =
             FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
 
-        let prepared = materializer
-            .prepare_read(&mut final_upload)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
-        assert_eq!(prepared.response_facts.offset, Some(4));
-        assert_eq!(prepared.response_facts.length, Some(4));
+        assert!(prepared);
         assert_eq!(
             stored_bytes(&storage, &final_upload).await.as_ref(),
             b"ABCD"
@@ -903,14 +852,9 @@ mod materialization_tests {
         let materializer =
             FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
 
-        let prepared = materializer
-            .prepare_read(&mut final_upload)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
-        assert_eq!(prepared.response_facts.offset, Some(4));
-        assert_eq!(prepared.response_facts.length, Some(4));
+        assert!(prepared);
         assert_eq!(
             stored_bytes(&storage, &final_upload).await.as_ref(),
             b"ABCD"
@@ -1095,14 +1039,9 @@ mod materialization_tests {
         let materializer =
             FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
 
-        let prepared = materializer
-            .prepare_read(&mut final_upload)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
-        assert_eq!(prepared.response_facts.offset, Some(4));
-        assert_eq!(prepared.response_facts.length, Some(4));
+        assert!(prepared);
         assert_eq!(
             stored_bytes(&storage, &final_upload).await.as_ref(),
             b"ABCD"
@@ -1136,14 +1075,9 @@ mod materialization_tests {
         let materializer =
             FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
 
-        let prepared = materializer
-            .prepare_read(&mut final_upload)
-            .await
-            .unwrap()
-            .unwrap();
+        let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
-        assert_eq!(prepared.response_facts.offset, Some(4));
-        assert_eq!(prepared.response_facts.length, Some(4));
+        assert!(prepared);
         assert_eq!(final_upload.offset(), 4);
 
         let stored = store.get("final-1").await.unwrap().unwrap();

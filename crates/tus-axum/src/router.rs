@@ -572,6 +572,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn router_post_override_dispatches_patch_body() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "upload-1", 100, None).await;
+        let router = router_with_parts(Config::with_all_extensions(), storage, state_store.clone());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/files/upload-1")
+                    .header("x-http-method-override", "PATCH")
+                    .header("tus-resumable", "1.0.0")
+                    .header("upload-offset", "0")
+                    .header("content-type", "application/offset+octet-stream")
+                    .body(Body::from(Bytes::from_static(b"Hello")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers().get("upload-offset").unwrap(), "5");
+        assert_eq!(
+            state_store.get("upload-1").await.unwrap().unwrap().offset(),
+            5
+        );
+    }
+
+    #[tokio::test]
     async fn create_router_with_download_registers_download_route() {
         let storage = Arc::new(MemoryStorage::new());
         let state_store = Arc::new(MemoryStateStore::new());

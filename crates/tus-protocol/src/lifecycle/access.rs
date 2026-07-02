@@ -20,6 +20,24 @@ pub(crate) struct UploadAccessFacts {
     pub(crate) defer_length: bool,
 }
 
+impl UploadAccessFacts {
+    fn for_regular_upload(state: &UploadState) -> Self {
+        Self {
+            offset: Some(state.offset()),
+            length: state.length(),
+            defer_length: state.length().is_none(),
+        }
+    }
+
+    fn for_final_upload(state: &UploadState) -> Self {
+        Self {
+            offset: state.is_complete().then_some(state.offset()),
+            length: state.length(),
+            defer_length: false,
+        }
+    }
+}
+
 pub(crate) async fn prepare_upload_mutation_access<S, I>(
     storage: &S,
     state_store: &I,
@@ -57,29 +75,22 @@ where
     if state.is_final() {
         let materializer =
             FinalUploadMaterializer::new(storage, state_store, hooks, config, request_info);
-        let prepared = materializer
-            .prepare_read(state)
-            .await?
-            .expect("final upload preparation should return final upload facts");
+        let prepared = materializer.prepare_read(state).await?;
+        debug_assert!(
+            prepared,
+            "final upload preparation should handle final uploads"
+        );
         ensure_active(state)?;
 
         return Ok(PreparedUploadAccess {
-            facts: UploadAccessFacts {
-                offset: prepared.response_facts.offset,
-                length: prepared.response_facts.length,
-                defer_length: false,
-            },
+            facts: UploadAccessFacts::for_final_upload(state),
         });
     }
 
     prepare_regular_upload_access(storage, state_store, state).await?;
 
     Ok(PreparedUploadAccess {
-        facts: UploadAccessFacts {
-            offset: Some(state.offset()),
-            length: state.length(),
-            defer_length: state.length().is_none(),
-        },
+        facts: UploadAccessFacts::for_regular_upload(state),
     })
 }
 

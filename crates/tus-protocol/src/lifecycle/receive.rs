@@ -4,18 +4,20 @@ use bytes::Bytes;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookRequestInfo};
+use crate::hooks::{
+    HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
+};
 use crate::protocol::body;
 use crate::protocol::{Headers, RequestBody};
 use crate::state::StateStore;
 use crate::state::UploadState;
 use crate::storage::{AppendRequest, ChunkStream, Storage, StorageHandle};
 
-use super::{ensure_active, run_pre_finish};
+use super::{UploadCompletion, ensure_active};
 
 /// Request fields needed before a PATCH body is accepted.
 #[derive(Debug, Clone, Copy)]
-pub struct ReceiveRequest {
+pub(crate) struct ReceiveRequest {
     /// Client-supplied Upload-Offset.
     pub client_offset: u64,
     /// Optional Upload-Length used to resolve deferred length uploads.
@@ -24,7 +26,7 @@ pub struct ReceiveRequest {
 
 /// Result of projecting a receive body against the current upload state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReceiveProjection {
+struct ReceiveProjection {
     /// Offset expected after the body is committed.
     pub projected_offset: u64,
     /// Whether the receive operation completes the upload.
@@ -33,7 +35,7 @@ pub struct ReceiveProjection {
 
 /// Receive body path selected by the protocol request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ReceiveBodyKind {
+enum ReceiveBodyKind {
     /// Body bytes supplied by a PATCH request.
     Patch,
     /// Initial body bytes supplied by Creation-With-Upload.
@@ -42,14 +44,143 @@ pub(crate) enum ReceiveBodyKind {
 
 /// Body bytes and lifecycle projection that have passed receive gates.
 #[derive(Debug)]
-pub(crate) struct PreparedReceiveBody {
+struct PreparedReceiveBody {
     pub(crate) bytes: Bytes,
     pub(crate) projection: ReceiveProjection,
     pub(crate) response_headers: HashMap<String, String>,
 }
 
+/// Result of accepting bytes for an existing upload.
+#[derive(Debug)]
+pub(crate) struct ReceiveOutcome {
+    pub(crate) response_headers: HashMap<String, String>,
+}
+
+/// Result of accepting initial bytes during Creation-With-Upload.
+#[derive(Debug)]
+pub(crate) struct CreationWithUploadOutcome {
+    pub(crate) state: UploadState,
+    pub(crate) response_headers: HashMap<String, String>,
+}
+
+/// Internal Byte receive module for PATCH and Creation-With-Upload bytes.
+pub(crate) struct ByteReceiver<'a, S, I, H>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    storage: &'a S,
+    state_store: &'a I,
+    hooks: &'a H,
+    config: &'a Config,
+    request_info: &'a HookRequestInfo,
+}
+
+impl<'a, S, I, H> ByteReceiver<'a, S, I, H>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    pub(crate) fn new(
+        storage: &'a S,
+        state_store: &'a I,
+        hooks: &'a H,
+        config: &'a Config,
+        request_info: &'a HookRequestInfo,
+    ) -> Self {
+        Self {
+            storage,
+            state_store,
+            hooks,
+            config,
+            request_info,
+        }
+    }
+
+    pub(crate) async fn receive_patch(
+        &self,
+        headers: &Headers,
+        state: &mut UploadState,
+        request: ReceiveRequest,
+        request_body: RequestBody,
+    ) -> Result<ReceiveOutcome> {
+        prepare_receive(self.config, state, request)?;
+        let prepared = prepare_receive_body(
+            self.config,
+            self.hooks,
+            self.request_info,
+            headers,
+            state,
+            request_body,
+            ReceiveBodyKind::Patch,
+        )
+        .await?;
+        let response_headers = prepared.response_headers.clone();
+
+        commit_receive_body(self.storage, self.state_store, state, prepared).await?;
+        self.run_post_event(HookEvent::PostReceive, state).await;
+        self.completion().after_commit_if_complete(state).await;
+
+        Ok(ReceiveOutcome { response_headers })
+    }
+
+    pub(crate) async fn receive_creation_with_upload(
+        &self,
+        headers: &Headers,
+        mut state: UploadState,
+        request_body: RequestBody,
+        mut response_headers: HashMap<String, String>,
+    ) -> Result<CreationWithUploadOutcome> {
+        let prepared = prepare_receive_body(
+            self.config,
+            self.hooks,
+            self.request_info,
+            headers,
+            &mut state,
+            request_body,
+            ReceiveBodyKind::CreationWithUpload,
+        )
+        .await?;
+        response_headers.extend(prepared.response_headers.clone());
+
+        let handle = self.storage.create(state.id()).await?;
+        state.set_storage_handle(handle);
+        self.state_store.set(&state, true).await?;
+
+        if let Err(err) =
+            commit_receive_body(self.storage, self.state_store, &mut state, prepared).await
+        {
+            if let Some(handle) = state.storage_handle() {
+                let _ = self.storage.delete(&handle).await;
+            }
+            let _ = self.state_store.delete(state.id()).await;
+            return Err(err);
+        }
+
+        self.run_post_event(HookEvent::PostCreate, &state).await;
+        self.run_post_event(HookEvent::PostReceive, &state).await;
+        self.completion().after_commit_if_complete(&state).await;
+
+        Ok(CreationWithUploadOutcome {
+            state,
+            response_headers,
+        })
+    }
+
+    fn completion(&self) -> UploadCompletion<'_, H> {
+        UploadCompletion::new(self.hooks, self.request_info)
+    }
+
+    async fn run_post_event(&self, event: HookEvent, state: &UploadState) {
+        let ctx = HookContext::new(event, state.clone(), self.request_info.clone());
+        execute_post_best_effort(self.hooks, &ctx).await;
+    }
+}
+
 /// Validates PATCH preflight state and applies deferred Upload-Length.
-pub fn prepare_receive(
+fn prepare_receive(
     config: &Config,
     state: &mut UploadState,
     request: ReceiveRequest,
@@ -103,7 +234,7 @@ pub fn prepare_receive(
 
 /// Computes the maximum body bytes this receive may accept before buffering.
 #[must_use]
-pub fn receive_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
+fn receive_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
     [
         config.max_chunk_size_limit(),
         config
@@ -119,7 +250,7 @@ pub fn receive_body_size_limit(config: &Config, state: &UploadState) -> Option<u
 }
 
 /// Validates body length and computes the resulting offset.
-pub fn validate_receive_body(
+fn validate_receive_body(
     config: &Config,
     state: &UploadState,
     body_len: u64,
@@ -162,7 +293,7 @@ pub fn validate_receive_body(
 }
 
 /// Runs receive hook gates, Body intake, and completion projection for accepted bytes.
-pub(crate) async fn prepare_receive_body<H>(
+async fn prepare_receive_body<H>(
     config: &Config,
     hooks: &H,
     request_info: &HookRequestInfo,
@@ -203,7 +334,9 @@ where
     if projection.completes_upload {
         let mut completed_state = state.clone();
         completed_state.set_offset(projection.projected_offset);
-        run_pre_finish(hooks, request_info, completed_state).await?;
+        UploadCompletion::new(hooks, request_info)
+            .before_commit(completed_state)
+            .await?;
     }
 
     Ok(PreparedReceiveBody {
@@ -214,7 +347,7 @@ where
 }
 
 /// Commits accepted receive bytes to storage and persists the resulting upload state.
-pub(crate) async fn commit_receive_body<S, I>(
+async fn commit_receive_body<S, I>(
     storage: &S,
     state_store: &I,
     state: &mut UploadState,
