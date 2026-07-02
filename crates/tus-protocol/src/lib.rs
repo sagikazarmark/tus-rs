@@ -66,6 +66,7 @@
 // Core modules (always available)
 pub mod config;
 pub mod error;
+mod expiration;
 mod extensions;
 pub mod hooks;
 mod lifecycle;

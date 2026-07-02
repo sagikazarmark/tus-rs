@@ -9,13 +9,12 @@ use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
-    FinalUploadMaterializer, ReceiveRequest, apply_receive_commit, ensure_active, prepare_receive,
-    receive_body_size_limit, reconcile_state_offset, reconcile_stored_completion, run_pre_finish,
-    validate_receive_body,
+    ReceiveBodyKind, ReceiveRequest, commit_receive_body, prepare_receive, prepare_receive_body,
+    prepare_upload_mutation_access,
 };
 use crate::locking::Locker;
 use crate::state::StateStore;
-use crate::storage::{AppendRequest, ChunkStream, Storage};
+use crate::storage::Storage;
 
 use super::body::RequestBody;
 use super::hook_context::{HookContextBuilder, HookRequestFacts};
@@ -67,21 +66,7 @@ where
             .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        reconcile_stored_completion(self.storage, self.state_store, &mut state).await?;
-        ensure_active(&state)?;
-
-        if state.is_final() {
-            let materializer = FinalUploadMaterializer::new(
-                self.storage,
-                self.state_store,
-                self.hooks,
-                self.config,
-                hook_contexts.request_info(),
-            );
-            materializer.prepare_read(&mut state).await?;
-        } else {
-            reconcile_state_offset(self.storage, self.state_store, &mut state).await?;
-        }
+        prepare_upload_mutation_access(self.storage, self.state_store, &mut state).await?;
 
         prepare_receive(
             self.config,
@@ -92,47 +77,19 @@ where
             },
         )?;
 
-        let pre_ctx = hook_contexts.context(HookEvent::PreReceive, state.clone());
-        let pre_result = self.hooks.execute_pre(&pre_ctx).await?;
-
-        if !pre_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_result.reject_status.unwrap_or(400),
-                message: pre_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        if let Some(metadata) = pre_result.metadata {
-            state.set_metadata(metadata);
-        }
-
-        let body = super::body::collect(
+        let prepared_body = prepare_receive_body(
             self.config,
+            self.hooks,
+            hook_contexts.request_info(),
             &headers,
-            receive_body_size_limit(self.config, &state),
+            &mut state,
             body,
+            ReceiveBodyKind::Patch,
         )
         .await?;
-        let body_len = body.size;
-        let receive_projection = validate_receive_body(self.config, &state, body_len)?;
+        let response_headers = prepared_body.response_headers.clone();
 
-        if receive_projection.completes_upload {
-            let mut completed_state = state.clone();
-            completed_state.set_offset(receive_projection.projected_offset);
-            run_pre_finish(self.hooks, hook_contexts.request_info(), completed_state).await?;
-        }
-
-        let handle = self
-            .storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle()?,
-                expected_offset: state.offset(),
-                data: ChunkStream::Buffered(body.bytes),
-                completes_upload: receive_projection.completes_upload,
-            })
-            .await?;
-        apply_receive_commit(&mut state, receive_projection, handle);
-        self.state_store.set(&state, false).await?;
+        commit_receive_body(self.storage, self.state_store, &mut state, prepared_body).await?;
 
         let post_receive_ctx = hook_contexts.context(HookEvent::PostReceive, state.clone());
         execute_post_best_effort(self.hooks, &post_receive_ctx).await;
@@ -151,7 +108,7 @@ where
             response = response.with_header("upload-expires", &expires);
         }
 
-        for (name, value) in pre_result.response_headers {
+        for (name, value) in response_headers {
             response = response.with_header_owned(name, value);
         }
 
@@ -171,7 +128,7 @@ mod tests {
     use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
     use crate::state::{UploadMetadata, UploadState, memory::MemoryStateStore};
-    use crate::storage::memory::MemoryStorage;
+    use crate::storage::{AppendRequest, ChunkStream, memory::MemoryStorage};
     use bytes::Bytes;
     use chrono::{Duration, Utc};
     use std::sync::{Arc, Mutex};
@@ -395,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_upload_patch_materializes_before_rejecting_modification() {
+    async fn final_upload_patch_rejects_without_materializing_or_running_finish_hooks() {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
@@ -462,33 +419,66 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, Error::FinalUploadModificationForbidden(_)));
-        assert_eq!(
-            *events.lock().unwrap(),
-            vec![
-                (
-                    HookEvent::PreFinish,
-                    "PATCH".to_string(),
-                    "/files/final-1".to_string(),
-                    4,
-                ),
-                (
-                    HookEvent::PostFinish,
-                    "PATCH".to_string(),
-                    "/files/final-1".to_string(),
-                    4,
-                ),
-            ]
-        );
+        assert!(events.lock().unwrap().is_empty());
 
         let stored = store.get("final-1").await.unwrap().unwrap();
-        assert_eq!(stored.offset(), 4);
+        assert_eq!(stored.offset(), 0);
         assert_eq!(
             storage
                 .size(&stored.require_storage_handle().unwrap())
                 .await
                 .unwrap(),
-            Some(4)
+            Some(0)
         );
+    }
+
+    #[tokio::test]
+    async fn final_upload_patch_rejection_precedes_pre_finish_hook_rejection() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+
+        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        create_storage(&storage, &mut part).await;
+        append_storage(&storage, &mut part, b"ABCD").await;
+        store.set(&part, true).await.unwrap();
+
+        let mut final_upload = UploadState::new("final-1").with_length(4);
+        create_storage(&storage, &mut final_upload).await;
+        final_upload.mark_final(vec!["part-1".to_string()]);
+        store.set(&final_upload, true).await.unwrap();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new().on_pre_finish({
+            let events = Arc::clone(&events);
+            move |ctx| {
+                let events = Arc::clone(&events);
+                let method = ctx.request.method.clone();
+                async move {
+                    events.lock().unwrap().push(method);
+                    Ok(PreHookResult::reject(403, "finish blocked"))
+                }
+            }
+        });
+        let locker = NoopLocker::new();
+        let upload_id: UploadId = "final-1".parse().unwrap();
+
+        let err = Protocol::new(
+            &Config::default().with_extension(Extension::Concatenation),
+            &storage,
+            &store,
+            &locker,
+            &hooks,
+        )
+        .patch(
+            headers(0),
+            &upload_id,
+            RequestBody::from_chunk_stream(body(b"ignored")),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::FinalUploadModificationForbidden(_)));
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

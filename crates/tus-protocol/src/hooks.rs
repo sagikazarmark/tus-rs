@@ -342,11 +342,7 @@ impl HookUpload {
     /// non-partial uploads are deliverable content and do not expire through
     /// this policy.
     pub fn is_expired(&self) -> bool {
-        self.expiration_is_eligible() && self.expires_at.is_some_and(|expires| Utc::now() > expires)
-    }
-
-    fn expiration_is_eligible(&self) -> bool {
-        !self.is_complete() || self.is_partial()
+        crate::expiration::is_expired(self.expires_at, self.is_complete(), self.is_partial)
     }
 
     fn set_metadata(&mut self, metadata: UploadMetadata) {
@@ -822,6 +818,7 @@ impl HookExecutor for NoopHookExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::StorageHandle;
 
     struct TestHook {
         name: String,
@@ -882,8 +879,9 @@ mod tests {
     #[test]
     fn hook_upload_serialization_hides_storage_facts() {
         let mut state = UploadState::new("test-id").with_length(5);
-        state.set_storage_key("storage-secret");
-        state.set_internal("backend-upload-id", "internal-secret");
+        let mut handle = StorageHandle::new("storage-secret");
+        handle.set_internal("backend-upload-id", "internal-secret");
+        state.set_storage_handle(handle);
         let ctx = HookContext::new(HookEvent::PreCreate, state, HookRequestInfo::default());
 
         let json = serde_json::to_value(&ctx).unwrap();

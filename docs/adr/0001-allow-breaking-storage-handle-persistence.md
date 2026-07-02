@@ -53,4 +53,6 @@ Final upload repair reloads the final upload handle and part handles from state.
 
 The persisted upload state contains storage-owned facts, but only as an opaque handle snapshot. This preserves locality for adapter-specific recovery and cleanup logic while keeping protocol lifecycle code independent of object-store, filesystem, or memory-storage details.
 
+`StorageHandle` is the public API for storage-owned facts. Removing direct `UploadState` storage-key and internal-fact helpers is an intentional breaking public API cleanup for this release; downstream storage adapters should read and write those facts through `UploadState::storage_handle` and `UploadState::set_storage_handle`.
+
 Changing the serialized handle shape remains a breaking persisted-state change. We accept that compatibility break if a future representation better preserves the same seam: protocol facts stay in `UploadState`, storage facts stay behind `StorageHandle`, and no generic storage metadata store is introduced without real adapter pressure.

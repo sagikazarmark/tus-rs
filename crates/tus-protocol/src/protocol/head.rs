@@ -8,9 +8,7 @@ use http::StatusCode;
 use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
-use crate::lifecycle::{
-    FinalUploadMaterializer, ensure_active, reconcile_state_offset, reconcile_stored_completion,
-};
+use crate::lifecycle::prepare_upload_access;
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
 use crate::storage::Storage;
@@ -54,43 +52,26 @@ where
             .map_err(|e| Error::Internal(e.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        let final_read = if upload_state.is_final() {
-            let materializer = FinalUploadMaterializer::new(
-                self.storage,
-                self.state_store,
-                self.hooks,
-                self.config,
-                hook_contexts.request_info(),
-            );
-            materializer.prepare_read(&mut upload_state).await?
-        } else {
-            reconcile_stored_completion(self.storage, self.state_store, &mut upload_state).await?;
-            ensure_active(&upload_state)?;
-            reconcile_state_offset(self.storage, self.state_store, &mut upload_state).await?;
-            None
-        };
-        if final_read.is_some() {
-            ensure_active(&upload_state)?;
-        }
+        let prepared = prepare_upload_access(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            self.config,
+            hook_contexts.request_info(),
+            &mut upload_state,
+        )
+        .await?;
+        let facts = prepared.facts;
 
         let mut response = Response::new(StatusCode::OK).with_header("cache-control", "no-store");
 
-        let final_facts = final_read.map(|prepared| prepared.response_facts);
-        if let Some(offset) = final_facts
-            .as_ref()
-            .map(|facts| facts.offset)
-            .unwrap_or(Some(upload_state.offset()))
-        {
+        if let Some(offset) = facts.offset {
             response = response.with_header("upload-offset", offset.to_string());
         }
 
-        let length = final_facts
-            .as_ref()
-            .map(|facts| facts.length)
-            .unwrap_or_else(|| upload_state.length());
-        if let Some(length) = length {
+        if let Some(length) = facts.length {
             response = response.with_header("upload-length", length.to_string());
-        } else if final_facts.is_none() {
+        } else if facts.defer_length {
             // `Upload-Defer-Length` is a creation-time signal for non-final
             // uploads. Final uploads always have a known length (sum of parts)
             // or are unfinished with length-not-yet-known, which we simply omit.

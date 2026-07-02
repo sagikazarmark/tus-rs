@@ -46,6 +46,10 @@ The facts owned by TUS lifecycle rules: upload ID, offset, length, expiration, c
 
 The locator and backend-specific bookkeeping needed by a Storage adapter to find, append, concatenate, size, delete, recover, or clean up upload bytes. These facts are persisted as an opaque `StorageHandle` with upload state, but protocol lifecycle code does not interpret them.
 
+### Upload access preparation
+
+The protocol responsibility of reconciling an upload's stored bytes and lifecycle availability before a request observes, downloads, or attempts to modify it. It includes final upload materialization when applicable, but is distinct from Body intake and Byte receive.
+
 ### Upload completion
 
 The lifecycle point where accepted upload bytes reach the declared upload length and the upload becomes complete.
