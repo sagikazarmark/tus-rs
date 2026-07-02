@@ -9,7 +9,7 @@ use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
 use crate::lifecycle::{
-    ensure_active, final_upload_response_facts, reconcile_state_offset, reconcile_stored_completion,
+    FinalUploadMaterializer, ensure_active, reconcile_state_offset, reconcile_stored_completion,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
@@ -54,21 +54,28 @@ where
             .map_err(|e| Error::Internal(e.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        reconcile_stored_completion(self.storage, self.state_store, &mut upload_state).await?;
-        ensure_active(&upload_state)?;
-
-        reconcile_state_offset(
-            self.storage,
-            self.state_store,
-            self.hooks,
-            hook_contexts.request_info(),
-            &mut upload_state,
-        )
-        .await?;
+        let final_read = if upload_state.is_final() {
+            let materializer = FinalUploadMaterializer::new(
+                self.storage,
+                self.state_store,
+                self.hooks,
+                self.config,
+                hook_contexts.request_info(),
+            );
+            materializer.prepare_read(&mut upload_state).await?
+        } else {
+            reconcile_stored_completion(self.storage, self.state_store, &mut upload_state).await?;
+            ensure_active(&upload_state)?;
+            reconcile_state_offset(self.storage, self.state_store, &mut upload_state).await?;
+            None
+        };
+        if final_read.is_some() {
+            ensure_active(&upload_state)?;
+        }
 
         let mut response = Response::new(StatusCode::OK).with_header("cache-control", "no-store");
 
-        let final_facts = final_upload_response_facts(&upload_state);
+        let final_facts = final_read.map(|prepared| prepared.response_facts);
         if let Some(offset) = final_facts
             .as_ref()
             .map(|facts| facts.offset)

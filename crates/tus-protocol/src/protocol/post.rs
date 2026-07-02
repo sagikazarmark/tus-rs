@@ -8,8 +8,8 @@ use crate::config::{Config, Extension};
 use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
-    CreationRequest, CreationTransition, ReceiveProjection, apply_receive_commit,
-    create_final_upload as create_lifecycle_final_upload, prepare_creation, run_pre_finish,
+    CreationRequest, CreationTransition, FinalUploadMaterializer, ReceiveProjection,
+    apply_receive_commit, prepare_creation, run_pre_finish,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
@@ -251,16 +251,14 @@ where
         state: UploadState,
         part_urls: Vec<String>,
     ) -> Result<Response, Error> {
-        let created = create_lifecycle_final_upload(
+        let materializer = FinalUploadMaterializer::new(
             self.storage,
             self.state_store,
             self.hooks,
             self.config,
             hook_contexts.request_info(),
-            state,
-            part_urls,
-        )
-        .await?;
+        );
+        let created = materializer.create(state, part_urls).await?;
         let facts = created.response_facts();
 
         let location = self

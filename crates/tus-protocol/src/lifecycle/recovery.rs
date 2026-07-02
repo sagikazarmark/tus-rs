@@ -1,28 +1,16 @@
 use crate::error::{Error, Result};
-use crate::hooks::{HookExecutor, HookRequestInfo};
 use crate::state::{StateStore, UploadState};
 use crate::storage::Storage;
 
-use super::repair_final_upload;
-
-pub(crate) async fn reconcile_state_offset<S, I, H>(
+pub(crate) async fn reconcile_state_offset<S, I>(
     storage: &S,
     state_store: &I,
-    hooks: &H,
-    request_info: &HookRequestInfo,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
-    H: HookExecutor + ?Sized,
 {
-    if state.is_final()
-        && repair_final_upload(storage, state_store, hooks, request_info, state).await?
-    {
-        return Ok(());
-    }
-
     reconcile_storage_offset(storage, state_store, state).await
 }
 
