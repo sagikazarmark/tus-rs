@@ -162,7 +162,7 @@ Useful entry points:
 - `create_router_with_download` adds the non-standard GET route for readable storage adapters.
 - `build_cors_layer` builds the CORS layer used when CORS origins are configured.
 - `Error` converts `tus_protocol::Error` into an axum response.
-- `Headers`, `TusBody`, and `UploadId` are axum extractors used by the handlers.
+- `Headers`, `TusBody`, and `UploadId` are axum extractors used by the internal handlers and available for custom axum integrations.
 
 Use `tus-protocol` directly to configure protocol extensions, upload limits,
 expiration, storage, state, locking, hooks, and checksum support.

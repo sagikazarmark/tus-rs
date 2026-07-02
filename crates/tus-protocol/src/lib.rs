@@ -40,6 +40,14 @@
 //!
 //! [`Protocol`] bundles those traits with [`Config`] and exposes the
 //! framework-neutral protocol handlers adapters call from HTTP integrations.
+//! Expired upload reclamation is the root-level operational cleanup interface
+//! for servers that run background or one-shot cleanup.
+//! Lower-level lifecycle transition helpers are internal implementation behind
+//! that facade:
+//!
+//! ```compile_fail
+//! use tus_protocol::lifecycle::prepare_creation;
+//! ```
 //!
 //! Each trait has multiple implementations available through feature flags:
 //!
@@ -56,7 +64,7 @@ pub mod config;
 pub mod error;
 mod extensions;
 pub mod hooks;
-pub mod lifecycle;
+mod lifecycle;
 pub mod locking;
 pub mod protocol;
 #[doc(hidden)]
@@ -79,11 +87,7 @@ pub use hooks::{
     NoopHookExecutor, PreHookResult,
 };
 pub use lifecycle::{
-    CreationRequest, CreationTransition, ExpiredUploadReclamationOutcome,
-    ExpiredUploadReclamationReport, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
-    ReceiveRequest, apply_receive_commit, ensure_active, load_final_upload_plan,
-    load_final_upload_status, prepare_creation, prepare_receive, receive_body_size_limit,
-    reclaim_expired_uploads, run_pre_finish, summarize_final_parts, validate_receive_body,
+    ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };
 pub use locking::{LockGuard, Locker, NoopLocker};
 pub use protocol::{
@@ -104,9 +108,7 @@ pub mod prelude {
         HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo, HookUpload,
     };
     pub use crate::lifecycle::{
-        CreationRequest, CreationTransition, ExpiredUploadReclamationOutcome,
-        ExpiredUploadReclamationReport, FinalUploadPlan, FinalUploadStatus, ReceiveProjection,
-        ReceiveRequest, prepare_creation, prepare_receive, reclaim_expired_uploads, run_pre_finish,
+        ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
     };
     pub use crate::locking::Locker;
     pub use crate::protocol::{
