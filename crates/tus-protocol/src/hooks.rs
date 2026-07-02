@@ -243,7 +243,7 @@ pub struct HookUpload {
     /// When the upload was created.
     created_at: DateTime<Utc>,
 
-    /// When the upload expires. None if expiration is disabled.
+    /// Advertised protocol expiration deadline. None if expiration is disabled.
     expires_at: Option<DateTime<Utc>>,
 
     /// Whether this is a partial upload (for concatenation).
@@ -300,7 +300,10 @@ impl HookUpload {
         &self.created_at
     }
 
-    /// Returns when the upload expires, if expiration is enabled.
+    /// Returns the advertised protocol expiration deadline, if expiration is enabled.
+    ///
+    /// This timestamp is not, by itself, a completed-upload retention deadline;
+    /// use [`HookUpload::is_expired`] for protocol expiration semantics.
     pub fn expires_at(&self) -> Option<&DateTime<Utc>> {
         self.expires_at.as_ref()
     }
@@ -333,9 +336,17 @@ impl HookUpload {
         }
     }
 
-    /// Returns whether the upload has expired.
+    /// Returns whether the upload is protocol-expired.
+    ///
+    /// TUS expiration applies to unfinished upload resources. Completed
+    /// non-partial uploads are deliverable content and do not expire through
+    /// this policy.
     pub fn is_expired(&self) -> bool {
-        self.expires_at.is_some_and(|expires| Utc::now() > expires)
+        self.expiration_is_eligible() && self.expires_at.is_some_and(|expires| Utc::now() > expires)
+    }
+
+    fn expiration_is_eligible(&self) -> bool {
+        !self.is_complete() || self.is_partial()
     }
 
     fn set_metadata(&mut self, metadata: UploadMetadata) {
@@ -883,6 +894,23 @@ mod tests {
         assert!(json["upload"].get("internal").is_none());
         assert!(!serialized.contains("storage-secret"));
         assert!(!serialized.contains("internal-secret"));
+    }
+
+    #[test]
+    fn hook_upload_expiration_matches_completed_upload_policy() {
+        let expired_at = Utc::now() - chrono::Duration::minutes(1);
+        let mut completed = UploadState::new("completed")
+            .with_length(5)
+            .with_expiration(expired_at);
+        completed.set_offset(5);
+        let mut completed_partial = UploadState::new("completed-partial")
+            .with_length(5)
+            .with_expiration(expired_at)
+            .as_partial();
+        completed_partial.set_offset(5);
+
+        assert!(!HookUpload::from_state(&completed).is_expired());
+        assert!(HookUpload::from_state(&completed_partial).is_expired());
     }
 
     #[tokio::test]

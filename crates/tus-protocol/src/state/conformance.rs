@@ -212,6 +212,10 @@ where
 {
     let cutoff = Utc::now();
     let expired_id = upload_id("expired");
+    let completed_expired_id = upload_id("completed-expired");
+    let completed_partial_expired_id = upload_id("completed-partial-expired");
+    let completed_final_expired_id = upload_id("completed-final-expired");
+    let unfinished_final_expired_id = upload_id("unfinished-final-expired");
     let active_id = upload_id("active");
     let no_expiration_id = upload_id("no-expiration");
     let exact_cutoff_id = upload_id("exact-cutoff");
@@ -223,6 +227,41 @@ where
         )
         .await
         .expect("creating expired state should succeed");
+    let mut completed_expired = UploadState::new(&completed_expired_id)
+        .with_length(5)
+        .with_expiration(cutoff - Duration::seconds(1));
+    completed_expired.set_offset(5);
+    store
+        .set(&completed_expired, true)
+        .await
+        .expect("creating completed expired state should succeed");
+    let mut completed_partial_expired = UploadState::new(&completed_partial_expired_id)
+        .with_length(5)
+        .with_expiration(cutoff - Duration::seconds(1))
+        .as_partial();
+    completed_partial_expired.set_offset(5);
+    store
+        .set(&completed_partial_expired, true)
+        .await
+        .expect("creating completed expired partial state should succeed");
+    let mut completed_final_expired = UploadState::new(&completed_final_expired_id)
+        .with_length(5)
+        .with_expiration(cutoff - Duration::seconds(1))
+        .as_final(vec![completed_partial_expired_id.clone()]);
+    completed_final_expired.set_offset(5);
+    store
+        .set(&completed_final_expired, true)
+        .await
+        .expect("creating completed expired final state should succeed");
+    let mut unfinished_final_expired = UploadState::new(&unfinished_final_expired_id)
+        .with_length(10)
+        .with_expiration(cutoff - Duration::seconds(1))
+        .as_final(vec![completed_partial_expired_id.clone()]);
+    unfinished_final_expired.set_offset(5);
+    store
+        .set(&unfinished_final_expired, true)
+        .await
+        .expect("creating unfinished expired final state should succeed");
     store
         .set(
             &UploadState::new(&active_id).with_expiration(cutoff + Duration::seconds(1)),
@@ -247,6 +286,26 @@ where
         .await
         .expect("list_expired should succeed");
     assert_contains(&expired, &expired_id, "expired upload should be listed");
+    assert_not_contains(
+        &expired,
+        &completed_expired_id,
+        "completed regular upload should not be listed for TUS expiration",
+    );
+    assert_contains(
+        &expired,
+        &completed_partial_expired_id,
+        "completed partial upload should still be listed for TUS expiration",
+    );
+    assert_not_contains(
+        &expired,
+        &completed_final_expired_id,
+        "completed final upload should not be listed for TUS expiration",
+    );
+    assert_contains(
+        &expired,
+        &unfinished_final_expired_id,
+        "unfinished final upload should be listed for TUS expiration",
+    );
     assert_not_contains(
         &expired,
         &active_id,

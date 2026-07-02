@@ -103,7 +103,7 @@ impl StateStore for MemoryStateStore {
         let states = self.states.read().unwrap();
         let expired: Vec<String> = states
             .values()
-            .filter(|s| s.expires_at().map(|exp| *exp < before).unwrap_or(false))
+            .filter(|s| s.expires_before(before))
             .map(|s| s.id().to_string())
             .collect();
         Ok(expired)

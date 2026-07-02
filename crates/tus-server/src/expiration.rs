@@ -144,7 +144,7 @@ mod tests {
         let state_store = Arc::new(FileStateStore::new(&state_dir).await.unwrap());
 
         let mut state = UploadState::new("expired-test")
-            .with_length(5)
+            .with_length(10)
             .with_expiration(Utc::now() - ChronoDuration::seconds(1));
         let handle = storage.create(state.id()).await.unwrap();
         state.set_storage_handle(handle);
@@ -153,7 +153,7 @@ mod tests {
                 handle: state.storage_handle().unwrap(),
                 expected_offset: state.offset(),
                 data: ChunkStream::from_bytes(b"hello".to_vec().into()),
-                completes_upload: true,
+                completes_upload: false,
             })
             .await
             .unwrap();
