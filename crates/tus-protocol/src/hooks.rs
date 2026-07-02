@@ -73,7 +73,7 @@
 //! | Request path | Hook events | Notes |
 //! | --- | --- | --- |
 //! | `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may reject, add response headers, or replace user metadata before storage/state creation. `PostCreate` runs after storage and state are committed. |
-//! | `POST` with Creation-With-Upload body | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreFinish` runs before the body bytes are committed. `PostFinish` runs after the body bytes and final offset are committed. |
+//! | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreReceive` runs before the body is collected and may reject, add response headers, or replace user metadata after `PreCreate`. `PreFinish` runs after body validation with the projected completed state, but before commit. Post-hooks run only after storage and state commit; if commit fails, the upload is rolled back and no post-hooks fire. |
 //! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may replace user metadata. |
 //! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. |
 //! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PostTerminate` runs after state deletion and best-effort storage deletion. |

@@ -104,7 +104,7 @@ notifications; failures are logged and do not fail already-committed requests.
 | Request path | Hook events | Notes |
 |--------------|-------------|-------|
 | `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may replace user metadata before storage/state creation. |
-| `POST` with Creation-With-Upload body | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if the body completes the upload | `PreFinish` gates committing the completing body. |
+| `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` if the body completes the upload | `PreReceive` gates the initial body before it is collected and may replace metadata after `PreCreate`. `PreFinish` gates a completing body after validation. Post-hooks run only after storage and state commit; commit failure rolls back without post-hooks. |
 | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete | Final upload facts are derived from referenced partials before `PreCreate`. |
 | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload | `PreReceive` may replace user metadata before bytes are committed. |
 | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. |
