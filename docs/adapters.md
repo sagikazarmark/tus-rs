@@ -175,6 +175,8 @@ Required behavior:
   `HEAD`, `PATCH`, and `DELETE`.
 - Map `Response` headers, status, and body into the framework response type.
 - Map `tus_protocol::Error` into HTTP responses with required TUS headers.
+- Treat `X-HTTP-Method-Override` as standard tus core behavior. First-party
+  adapters expose the proxy-friendly `POST` fallback for `PATCH` and `DELETE`.
 - Keep non-standard download routes behind an explicit `StorageReader` seam.
 - Keep framework-specific handler functions internal unless downstream users
   have a real need for that seam.

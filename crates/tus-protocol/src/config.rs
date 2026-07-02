@@ -17,9 +17,10 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 /// # Defaults
 ///
 /// [`Config::default`] enables Creation, Termination, and
-/// Creation-Defer-Length; uses `/files` as the base path; has no maximum upload
-/// size, no expiration, no CORS origins, and a 30-second lock timeout; and does
-/// not trust forwarded proxy headers.
+/// Creation-Defer-Length; accepts standard empty Creation requests; uses
+/// `/files` as the base path; has no maximum upload size, no expiration, no
+/// CORS origins, and a 30-second lock timeout; and does not trust forwarded
+/// proxy headers.
 ///
 /// # Examples
 ///
@@ -73,7 +74,7 @@ pub struct Config {
     /// Whether to disable download (GET) endpoint.
     disable_download: bool,
 
-    /// Whether to allow creation with deferred length.
+    /// Whether to allow standard empty Creation requests.
     allow_empty_creation: bool,
 }
 
@@ -248,6 +249,12 @@ impl Config {
     }
 
     /// Controls whether empty creation requests are allowed.
+    ///
+    /// The tus Creation extension uses an empty `POST` with `Upload-Length` as
+    /// its standard creation example. Leave this enabled for compliant tus
+    /// behavior. Setting it to `false` is an opt-in non-compliant mode for
+    /// deployments that only want Creation-With-Upload requests to create new
+    /// resources.
     #[must_use]
     pub fn allow_empty_creation(mut self, allow: bool) -> Self {
         self.allow_empty_creation = allow;

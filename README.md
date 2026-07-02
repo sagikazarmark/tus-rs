@@ -9,7 +9,7 @@
 
 ## Features
 
-- **Full standard TUS 1.0.0 protocol support on the native server path**
+- **Standard TUS 1.0.0 core and extension support on the native server path**
 - **Extensible storage backends**
 - **Pluggable state storage**
 - **Distributed locking support**
@@ -27,6 +27,13 @@
 | [Expiration](https://tus.io/protocols/resumable-upload#expiration) | Supported | Expiration timestamps, rejection of expired unfinished/intermediate uploads, and background cleanup. |
 | [Concatenation](https://tus.io/protocols/resumable-upload#concatenation) | Supported | Standard final concatenation is supported. The non-standard `concatenation-unfinished` check is separate and outside the stable protocol contract. |
 | [Checksum](https://tus.io/protocols/resumable-upload#checksum) | Supported | Bodied and trailer checksums are supported. |
+
+Standard protocol behavior is advertised through `Tus-Extension` only when the
+matching extension is enabled. Non-standard conveniences are explicit opt-ins:
+GET download routes require the `StorageReader` seam and download-enabled router,
+and `concatenation-unfinished` is separate from standard final concatenation.
+`Config::allow_empty_creation(false)` is also an opt-in non-compliant mode: leave
+the default enabled to accept standard empty Creation requests.
 
 ## Documentation
 

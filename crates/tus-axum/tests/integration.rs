@@ -1004,6 +1004,43 @@ async fn x_http_method_override_rewrites_post_to_patch() {
     assert_eq!(response.headers().get("upload-offset").unwrap(), "5");
 }
 
+#[tokio::test]
+async fn x_http_method_override_rewrites_post_to_delete() {
+    let router = build_router();
+
+    let post = send(
+        router.clone(),
+        tus_request(Method::POST, "/files")
+            .header("upload-length", "5")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let item = format!(
+        "/files/{}",
+        upload_id_from_location(post.headers().get("location").unwrap().to_str().unwrap())
+    );
+
+    let response = send(
+        router.clone(),
+        tus_request(Method::POST, &item)
+            .header("x-http-method-override", "DELETE")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = send(
+        router,
+        tus_request(Method::HEAD, &item)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 // ---------------------------------------------------------------------------
 // Metadata edge cases: empty-value pair and invalid-key rejection
 // ---------------------------------------------------------------------------
