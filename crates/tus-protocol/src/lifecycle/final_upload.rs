@@ -94,6 +94,7 @@ where
     } = load_final_upload_plan(state_store, config, &part_urls).await?;
 
     apply_final_upload_plan(&mut state, part_ids, &status);
+    cap_planned_final_upload_expiration(&mut state, &parts);
     let pre_create = run_pre_create(hooks, request_info, state).await?;
     state = pre_create.state;
 
@@ -302,22 +303,19 @@ where
             .get(part_id)
             .await
             .map_err(|err| Error::Internal(err.to_string()))?
-            .ok_or_else(|| {
-                Error::Internal(format!(
-                    "final upload {} references missing partial {}",
-                    state.id(),
-                    part_id
-                ))
-            })?;
+            .ok_or_else(|| Error::Expired(state.id().to_string()))?;
 
         if part_state.is_expired() {
-            return Err(Error::Expired(part_id.clone()));
+            return Err(Error::Expired(state.id().to_string()));
         }
 
         parts.push(part_state);
     }
 
-    let status = summarize_final_parts(&parts)?;
+    let status = summarize_final_parts(&parts).map_err(|err| match err {
+        Error::Expired(_) => Error::Expired(state.id().to_string()),
+        err => err,
+    })?;
     Ok(Some(FinalUploadPlan {
         part_ids,
         parts,
@@ -369,6 +367,28 @@ fn apply_final_upload_plan(
         state.set_length(total_length);
     }
     state.set_offset(status.expected_offset());
+}
+
+fn cap_planned_final_upload_expiration(state: &mut UploadState, parts: &[UploadState]) {
+    if state.is_complete() {
+        return;
+    }
+
+    let Some(earliest_part_expiration) = parts
+        .iter()
+        .filter_map(|part| part.expires_at().cloned())
+        .min()
+    else {
+        return;
+    };
+
+    let should_cap = match state.expires_at() {
+        Some(expires_at) => earliest_part_expiration < *expires_at,
+        None => true,
+    };
+    if should_cap {
+        state.set_expiration(earliest_part_expiration);
+    }
 }
 
 struct PreCreateDecision {
