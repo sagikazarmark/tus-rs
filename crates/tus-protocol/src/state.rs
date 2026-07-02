@@ -251,19 +251,6 @@ impl UploadState {
         self.length = Some(length);
     }
 
-    /// Returns the storage backend key/path, if assigned.
-    pub fn storage_key(&self) -> Option<&str> {
-        self.storage_key.as_deref()
-    }
-
-    /// Sets the storage backend key/path.
-    ///
-    /// Prefer [`set_storage_handle`](Self::set_storage_handle) when persisting
-    /// a handle returned by [`Storage::create`](crate::storage::Storage::create).
-    pub fn set_storage_key(&mut self, storage_key: impl Into<String>) {
-        self.storage_key = Some(storage_key.into());
-    }
-
     /// Returns the persisted storage handle, if assigned.
     pub fn storage_handle(&self) -> Option<StorageHandle> {
         self.storage_key
@@ -360,16 +347,17 @@ impl UploadState {
     /// non-partial uploads are deliverable content and do not expire through
     /// this policy.
     pub fn expires_before(&self, before: DateTime<Utc>) -> bool {
-        self.expiration_is_eligible()
-            && self
-                .expires_at
-                .as_ref()
-                .is_some_and(|expires| *expires < before)
+        crate::expiration::expires_before(
+            self.expires_at,
+            self.is_complete(),
+            self.is_partial,
+            before,
+        )
     }
 
     /// Returns whether the upload is protocol-expired.
     pub fn is_expired(&self) -> bool {
-        self.expires_before(Utc::now())
+        crate::expiration::is_expired(self.expires_at, self.is_complete(), self.is_partial)
     }
 
     /// Returns the remaining bytes to upload.
@@ -377,46 +365,9 @@ impl UploadState {
         self.length.map(|len| len.saturating_sub(self.offset))
     }
 
-    /// Stashes backend-specific bookkeeping alongside the upload.
-    ///
-    /// Prefer [`StorageHandle`] for new storage
-    /// adapter code. These helpers remain available for code that needs direct
-    /// access to persisted backend facts, for example migration or inspection
-    /// tooling. The keys are never exposed on the wire and are not part of the
-    /// TUS protocol. Application code and hooks should not read or write this
-    /// map.
-    pub fn set_internal(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.internal.insert(key.into(), value.into());
-    }
-
-    /// Reads a backend-specific value previously stored by
-    /// [`set_internal`](Self::set_internal).
-    ///
-    /// See [`set_internal`](Self::set_internal) for the intended audience.
-    pub fn get_internal(&self, key: &str) -> Option<&str> {
-        self.internal.get(key).map(|s| s.as_str())
-    }
-
-    /// Removes a backend-specific value previously stored by
-    /// [`set_internal`](Self::set_internal), returning it if present.
-    ///
-    /// See [`set_internal`](Self::set_internal) for the intended audience.
-    pub fn remove_internal(&mut self, key: &str) -> Option<String> {
-        self.internal.remove(key)
-    }
-
     /// Formats the expiration time as an RFC 7231 date for the Upload-Expires header.
     pub fn expires_header(&self) -> Option<String> {
-        if !self.expiration_is_eligible() {
-            return None;
-        }
-
-        self.expires_at
-            .map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
-    }
-
-    fn expiration_is_eligible(&self) -> bool {
-        !self.is_complete() || self.is_partial()
+        crate::expiration::expires_header(self.expires_at, self.is_complete(), self.is_partial)
     }
 }
 
@@ -804,19 +755,6 @@ mod tests {
         // Deferred length has no remaining
         let deferred = UploadState::new("test2");
         assert_eq!(deferred.remaining(), None);
-    }
-
-    #[test]
-    fn test_internal_state() {
-        let mut state = UploadState::new("test");
-        state.set_internal("r2_upload_id", "abc123");
-        assert_eq!(state.get_internal("r2_upload_id"), Some("abc123"));
-        assert_eq!(
-            state.remove_internal("r2_upload_id"),
-            Some("abc123".to_string())
-        );
-        assert_eq!(state.get_internal("r2_upload_id"), None);
-        assert_eq!(state.get_internal("nonexistent"), None);
     }
 
     #[test]

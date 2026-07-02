@@ -129,7 +129,7 @@ where
     let mut state = UploadState::new(&id)
         .with_length(100)
         .with_metadata(metadata);
-    state.set_storage_key(format!("objects/{id}"));
+    state.set_storage_handle(StorageHandle::new(format!("objects/{id}")));
 
     store
         .set(&state, true)
@@ -142,7 +142,7 @@ where
         .expect("first get should succeed")
         .expect("state should exist");
     snapshot.set_offset(90);
-    snapshot.set_storage_key("mutated-key");
+    snapshot.set_storage_handle(StorageHandle::new("mutated-key"));
     snapshot.metadata_mut().insert("filename", "mutated.txt");
 
     let retrieved = store
@@ -156,7 +156,7 @@ where
         "mutating a retrieved UploadState must not mutate persisted state before set"
     );
     assert_eq!(
-        retrieved.storage_key(),
+        retrieved.storage_handle().as_ref().map(StorageHandle::key),
         Some(format!("objects/{id}").as_str()),
         "mutating a retrieved storage key must not mutate persisted state before set"
     );

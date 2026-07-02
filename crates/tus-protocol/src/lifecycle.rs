@@ -6,6 +6,7 @@
 //! let _ = tus_protocol::lifecycle::extract_partial_id("/files/part", "/files");
 //! ```
 
+mod access;
 mod creation;
 mod final_upload;
 mod finish;
@@ -13,13 +14,12 @@ mod receive;
 mod reclamation;
 mod recovery;
 
+pub(crate) use access::{prepare_upload_access, prepare_upload_mutation_access};
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub(crate) use final_upload::FinalUploadMaterializer;
 pub use finish::run_pre_finish;
-pub use receive::{
-    ReceiveProjection, ReceiveRequest, apply_receive_commit, prepare_receive,
-    receive_body_size_limit, validate_receive_body,
-};
+pub(crate) use receive::{ReceiveBodyKind, commit_receive_body, prepare_receive_body};
+pub use receive::{ReceiveRequest, prepare_receive};
 pub use reclamation::{
     ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };

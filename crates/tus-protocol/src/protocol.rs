@@ -45,7 +45,7 @@
 //! # }
 //! ```
 
-mod body;
+pub(crate) mod body;
 mod delete;
 mod download;
 mod head;

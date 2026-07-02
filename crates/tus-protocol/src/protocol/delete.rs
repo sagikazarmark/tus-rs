@@ -104,7 +104,7 @@ mod tests {
     use crate::hooks::NoopHookExecutor;
     use crate::locking::NoopLocker;
     use crate::state::{UploadState, memory::MemoryStateStore};
-    use crate::storage::memory::MemoryStorage;
+    use crate::storage::{StorageHandle, memory::MemoryStorage};
 
     fn config() -> Config {
         Config::default().with_extension(Extension::Termination)
@@ -135,7 +135,7 @@ mod tests {
     #[tokio::test]
     async fn basic_delete() {
         let mut state = UploadState::new("test-id").with_length(1000);
-        state.set_storage_key("uploads/test-id");
+        state.set_storage_handle(StorageHandle::new("uploads/test-id"));
         let (storage, store) = setup(state).await;
 
         let response = call(&config(), &storage, &store, &Headers::default(), "test-id")

@@ -1,19 +1,17 @@
 //! Core POST handler (TUS Creation + related extensions).
 
-use std::collections::HashMap;
-
 use http::StatusCode;
 
-use crate::config::{Config, Extension};
+use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
-    CreationRequest, CreationTransition, FinalUploadMaterializer, ReceiveProjection,
-    apply_receive_commit, prepare_creation, run_pre_finish,
+    CreationRequest, CreationTransition, FinalUploadMaterializer, ReceiveBodyKind,
+    commit_receive_body, prepare_creation, prepare_receive_body,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
-use crate::storage::{AppendRequest, ChunkStream, Storage};
+use crate::storage::Storage;
 
 use super::body::RequestBody;
 use super::hook_context::{HookContextBuilder, HookRequestFacts};
@@ -86,11 +84,18 @@ where
                 .map(|ct| ct.starts_with("application/offset+octet-stream"))
                 .unwrap_or(false);
         let creation_body = if is_creation_with_upload {
-            let prepared = self
-                .prepare_creation_body(&headers, &hook_contexts, &mut state, body)
-                .await?;
-            response_headers.extend(prepared.response_headers);
-            Some(prepared.bytes)
+            let prepared = prepare_receive_body(
+                self.config,
+                self.hooks,
+                hook_contexts.request_info(),
+                &headers,
+                &mut state,
+                body,
+                ReceiveBodyKind::CreationWithUpload,
+            )
+            .await?;
+            response_headers.extend(prepared.response_headers.clone());
+            Some(prepared)
         } else {
             None
         };
@@ -99,8 +104,10 @@ where
         state.set_storage_handle(handle);
         self.state_store.set(&state, true).await?;
 
-        if let Some(data) = creation_body {
-            if let Err(e) = self.commit_creation_body(&mut state, data).await {
+        if let Some(prepared_body) = creation_body {
+            if let Err(e) =
+                commit_receive_body(self.storage, self.state_store, &mut state, prepared_body).await
+            {
                 // Something in the body-write phase (storage append or state
                 // persistence) failed. Roll back the just-created state record and
                 // storage object so the upload ID does not survive as a zombie
@@ -150,8 +157,7 @@ where
     }
 }
 
-/// Handles the Creation-With-Upload body in two phases: validate the complete
-/// body before create side effects, then commit it after the upload exists.
+/// Handles final-upload creation and response mapping.
 impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
 where
     S: Storage + ?Sized,
@@ -159,91 +165,6 @@ where
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
-    async fn prepare_creation_body(
-        &self,
-        headers: &Headers,
-        hook_contexts: &HookContextBuilder,
-        state: &mut UploadState,
-        body: RequestBody,
-    ) -> Result<PreparedCreationBody, Error> {
-        let pre_receive_ctx = hook_contexts.context(HookEvent::PreReceive, state.clone());
-        let pre_receive_result = self.hooks.execute_pre(&pre_receive_ctx).await?;
-
-        if !pre_receive_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_receive_result.reject_status.unwrap_or(400),
-                message: pre_receive_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        let response_headers = pre_receive_result.response_headers;
-
-        if let Some(metadata) = pre_receive_result.metadata {
-            state.set_metadata(metadata);
-        }
-
-        let data = super::body::collect(
-            self.config,
-            headers,
-            creation_body_size_limit(self.config, state),
-            body,
-        )
-        .await?;
-        debug_assert!(
-            data.supplied,
-            "creation body collection should only run for supplied bodies"
-        );
-        let body_len = data.size;
-        validate_creation_body_size(self.config, state, body_len)?;
-
-        let projected_offset = state.offset().saturating_add(body_len);
-        if state
-            .length()
-            .is_some_and(|length| projected_offset == length)
-        {
-            let mut completed_state = state.clone();
-            completed_state.set_offset(projected_offset);
-            self.execute_pre_finish(hook_contexts, completed_state)
-                .await?;
-        }
-
-        Ok(PreparedCreationBody {
-            bytes: data.bytes,
-            response_headers,
-        })
-    }
-
-    async fn commit_creation_body(
-        &self,
-        state: &mut UploadState,
-        data: bytes::Bytes,
-    ) -> Result<(), Error> {
-        let projected_offset = state.offset().saturating_add(data.len() as u64);
-        let completes_upload = state
-            .length()
-            .is_some_and(|length| projected_offset == length);
-        let handle = self
-            .storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle()?,
-                expected_offset: state.offset(),
-                data: ChunkStream::Buffered(data),
-                completes_upload,
-            })
-            .await?;
-        apply_receive_commit(
-            state,
-            ReceiveProjection {
-                projected_offset,
-                completes_upload,
-            },
-            handle,
-        );
-        self.state_store.set(state, false).await?;
-
-        Ok(())
-    }
-
     async fn create_final_upload(
         &self,
         headers: &Headers,
@@ -286,61 +207,6 @@ where
 
         Ok(response)
     }
-
-    async fn execute_pre_finish(
-        &self,
-        hook_contexts: &HookContextBuilder,
-        state: UploadState,
-    ) -> Result<(), Error> {
-        run_pre_finish(self.hooks, hook_contexts.request_info(), state).await
-    }
-}
-
-struct PreparedCreationBody {
-    bytes: bytes::Bytes,
-    response_headers: HashMap<String, String>,
-}
-
-fn creation_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
-    [
-        config
-            .max_size_limit()
-            .map(|max_size| max_size.saturating_sub(state.offset())),
-        state
-            .length()
-            .map(|length| length.saturating_sub(state.offset())),
-    ]
-    .into_iter()
-    .flatten()
-    .min()
-}
-
-fn validate_creation_body_size(
-    config: &Config,
-    state: &UploadState,
-    body_len: u64,
-) -> Result<(), Error> {
-    if let Some(max_size) = config.max_size_limit() {
-        let projected = state.offset().saturating_add(body_len);
-        if projected > max_size {
-            return Err(Error::SizeExceeded {
-                size: projected,
-                max: max_size,
-            });
-        }
-    }
-
-    if let Some(length) = state.length() {
-        let projected = state.offset().saturating_add(body_len);
-        if projected > length {
-            return Err(Error::SizeExceeded {
-                size: projected,
-                max: length,
-            });
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(all(
@@ -357,7 +223,7 @@ mod tests {
     use crate::locking::NoopLocker;
     use crate::state::UploadMetadata;
     use crate::state::memory::MemoryStateStore;
-    use crate::storage::memory::MemoryStorage;
+    use crate::storage::{AppendRequest, ChunkStream, StorageHandle, memory::MemoryStorage};
     use bytes::Bytes;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -931,7 +797,7 @@ mod tests {
 
         let mut part1 = UploadState::new("part1").with_length(50).as_partial();
         part1.set_offset(25);
-        part1.set_storage_key("uploads/part1");
+        part1.set_storage_handle(StorageHandle::new("uploads/part1"));
         store.set(&part1, true).await.unwrap();
 
         let headers = Headers {
@@ -1054,6 +920,7 @@ mod tests {
             }
         ));
         assert!(store.is_empty());
+        assert!(storage.is_empty());
     }
 
     #[tokio::test]

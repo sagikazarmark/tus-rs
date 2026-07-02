@@ -212,14 +212,20 @@ pub fn build_cors_layer(config: &Config) -> CorsLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{body::Body, http::Request};
     use bytes::Bytes;
+    use http::HeaderMap;
     use http::StatusCode;
-    use http_body_util::BodyExt;
+    use http_body_util::{BodyExt, Full};
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
     use tus_protocol::{
-        AppendRequest, ChunkStream, ConcatRequest, NoopHookExecutor, NoopLocker, ProtocolHandle,
-        Result, StorageHandle, UploadState,
+        AppendRequest, ChunkStream, ConcatRequest, Extension, NoopHookExecutor, NoopLocker,
+        ProtocolHandle, Result, StorageHandle, UploadState,
     };
 
     fn upload_only_router() -> Router {
@@ -232,6 +238,66 @@ mod tests {
         );
 
         create_router(TusState::new(protocol))
+    }
+
+    fn router_with_parts(
+        config: Config,
+        storage: Arc<MemoryStorage>,
+        state_store: Arc<MemoryStateStore>,
+    ) -> Router {
+        let protocol = ProtocolHandle::from_arcs(
+            Arc::new(config),
+            storage,
+            state_store,
+            Arc::new(MemoryLocker::new()),
+            Arc::new(NoopHookExecutor::new()),
+        );
+
+        create_router(TusState::new(protocol))
+    }
+
+    fn download_router_with_parts(
+        config: Config,
+        storage: Arc<MemoryStorage>,
+        state_store: Arc<MemoryStateStore>,
+    ) -> Router {
+        let protocol = ProtocolHandle::from_arcs(
+            Arc::new(config),
+            storage,
+            state_store,
+            Arc::new(MemoryLocker::new()),
+            Arc::new(NoopHookExecutor::new()),
+        );
+
+        create_router_with_download(TusState::new(protocol))
+    }
+
+    async fn seed_upload(
+        storage: &MemoryStorage,
+        state_store: &MemoryStateStore,
+        id: &str,
+        length: u64,
+        bytes: Option<Bytes>,
+    ) {
+        let mut upload = UploadState::new(id).with_length(length);
+        let handle = storage.create(upload.id()).await.unwrap();
+        upload.set_storage_handle(handle);
+
+        if let Some(bytes) = bytes {
+            let projected_offset = upload.offset().saturating_add(bytes.len() as u64);
+            let handle = storage
+                .append(AppendRequest {
+                    handle: upload.storage_handle().unwrap(),
+                    expected_offset: upload.offset(),
+                    data: ChunkStream::from_bytes(bytes),
+                    completes_upload: projected_offset == length,
+                })
+                .await
+                .unwrap();
+            upload.set_storage_handle(handle);
+        }
+
+        state_store.set(&upload, true).await.unwrap();
     }
 
     struct UploadOnlyStorage;
@@ -270,10 +336,6 @@ mod tests {
 
     #[tokio::test]
     async fn create_router_does_not_register_download_route() {
-        use axum::body::Body;
-        use axum::http::Request;
-        use tower::ServiceExt;
-
         let response = upload_only_router()
             .oneshot(
                 Request::builder()
@@ -289,36 +351,239 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_router_with_download_registers_download_route() {
-        use axum::body::Body;
-        use axum::http::Request;
-        use tower::ServiceExt;
+    async fn router_options_returns_tus_headers() {
+        let router = upload_only_router();
 
-        let storage = MemoryStorage::new();
-        let state_store = MemoryStateStore::new();
-        let mut upload = UploadState::new("test-id").with_length(5);
-        let handle = storage.create(upload.id()).await.unwrap();
-        upload.set_storage_handle(handle);
-        let handle = storage
-            .append(AppendRequest {
-                handle: upload.storage_handle().unwrap(),
-                expected_offset: upload.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-                completes_upload: true,
-            })
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        upload.set_storage_handle(handle);
-        state_store.set(&upload, true).await.unwrap();
 
-        let protocol = ProtocolHandle::new(
-            Config::default(),
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("tus-resumable").unwrap(), "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn router_creates_upload() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        let router = router_with_parts(Config::default(), storage, state_store.clone());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/files")
+                    .header("tus-resumable", "1.0.0")
+                    .header("upload-length", "1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let location = response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let id = location.rsplit('/').next().unwrap();
+        let stored = state_store.get(id).await.unwrap().unwrap();
+        assert_eq!(stored.length(), Some(1000));
+    }
+
+    #[tokio::test]
+    async fn router_reports_upload_status() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 1000, None).await;
+        let router = router_with_parts(Config::default(), storage, state_store);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri("/files/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("upload-length").unwrap(), "1000");
+    }
+
+    #[tokio::test]
+    async fn router_writes_patch_body() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 100, None).await;
+        let router = router_with_parts(Config::default(), storage, state_store.clone());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/files/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .header("upload-offset", "0")
+                    .header("content-type", "application/offset+octet-stream")
+                    .body(Body::from(Bytes::from_static(b"Hello World")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers().get("upload-offset").unwrap(), "11");
+        assert_eq!(
+            state_store.get("test-id").await.unwrap().unwrap().offset(),
+            11
+        );
+    }
+
+    #[tokio::test]
+    async fn router_passes_checksum_trailers_to_protocol() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 100, None).await;
+        let router = router_with_parts(
+            Config::default().with_extension(Extension::ChecksumTrailer),
             storage,
             state_store,
-            NoopLocker::new(),
-            NoopHookExecutor::new(),
         );
-        let router = create_router_with_download(TusState::new(protocol));
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            "upload-checksum",
+            "sha1 qvTGHdzF6KLavt4PO0gs2a6pQ00=".parse().unwrap(),
+        );
+        let body = Full::new(Bytes::from_static(b"hello"))
+            .with_trailers(std::future::ready(Some(Ok::<_, Infallible>(trailers))))
+            .map_err(|never| match never {});
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/files/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .header("upload-offset", "0")
+                    .header("content-type", "application/offset+octet-stream")
+                    .body(Body::new(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers().get("upload-offset").unwrap(), "5");
+    }
+
+    #[tokio::test]
+    async fn router_deletes_upload() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 1000, None).await;
+        let router = router_with_parts(
+            Config::default().with_extension(Extension::Termination),
+            storage,
+            state_store.clone(),
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::DELETE)
+                    .uri("/files/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(state_store.get("test-id").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn router_post_override_requires_supported_method() {
+        let router = upload_only_router();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/files/test-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        let router = upload_only_router();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/files/test-id")
+                    .header("x-http-method-override", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn router_post_override_dispatches_delete() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "upload-1", 100, None).await;
+        let router = router_with_parts(Config::with_all_extensions(), storage, state_store.clone());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/files/upload-1")
+                    .header("x-http-method-override", "DELETE")
+                    .header("tus-resumable", "1.0.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(state_store.get("upload-1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn create_router_with_download_registers_download_route() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(
+            &storage,
+            &state_store,
+            "test-id",
+            5,
+            Some(Bytes::from_static(b"hello")),
+        )
+        .await;
+        let router = download_router_with_parts(Config::default(), storage, state_store);
 
         let response = router
             .oneshot(
