@@ -75,6 +75,21 @@ enabled. In that mode, provide runtime-specific implementations of `Storage`,
 | Concatenation | Supported | Server-side final uploads from partial uploads. |
 | Checksum | Supported | Header and trailer checksum validation when `checksum` is enabled. |
 
+Compliance notes:
+
+- `X-HTTP-Method-Override` is part of the tus core protocol. Framework adapters
+  can expose it as a proxy-friendly fallback for clients that cannot send
+  `PATCH` or `DELETE` directly.
+- `StorageReader` is not required for tus uploads. It supports non-standard
+  download or inspection paths in framework adapters that opt into them.
+- `concatenation-unfinished` is a non-standard advertised token. It allows final
+  uploads to be planned before every partial upload is complete; strict standard
+  concatenation should enable `Concatenation` without `ConcatenationUnfinished`.
+- `Config::allow_empty_creation(false)` is an opt-in non-compliant mode. Leave
+  the default enabled to accept standard empty Creation requests.
+- Final upload `HEAD` responses report `Upload-Concat` as `final;<parts>` with
+  part URLs normalized to the configured base path in the original order.
+
 ## Storage, State, And Locking
 
 The protocol is built around three required backend traits plus one optional read seam:

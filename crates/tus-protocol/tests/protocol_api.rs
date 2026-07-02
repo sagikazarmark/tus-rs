@@ -6,7 +6,7 @@
 
 use bytes::Bytes;
 use chrono::{Duration as ChronoDuration, Utc};
-use http::StatusCode;
+use http::{HeaderMap, HeaderValue, StatusCode};
 use std::time::Duration as StdDuration;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
@@ -60,6 +60,24 @@ fn upload_id_from_location(response: &Response) -> UploadId {
         .unwrap()
 }
 
+#[test]
+fn upload_defer_length_header_must_be_one() {
+    let mut raw = HeaderMap::new();
+    raw.insert("tus-resumable", HeaderValue::from_static("1.0.0"));
+    raw.insert("upload-length", HeaderValue::from_static("5"));
+    raw.insert("upload-defer-length", HeaderValue::from_static("0"));
+
+    let err = Headers::from_headers(&raw).unwrap_err();
+
+    assert!(matches!(
+        err,
+        Error::InvalidHeader {
+            header: "Upload-Defer-Length",
+            ..
+        }
+    ));
+}
+
 #[tokio::test]
 async fn protocol_head_uses_bundled_dependencies() {
     let config = Config::default();
@@ -98,6 +116,29 @@ async fn protocol_head_uses_bundled_dependencies() {
 
     let stored = state_store.get("test-id").await.unwrap().unwrap();
     assert_eq!(stored.offset(), 5);
+}
+
+#[tokio::test]
+async fn protocol_can_opt_into_rejecting_standard_empty_creation_requests() {
+    let config = Config::default().allow_empty_creation(false);
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    let err = protocol
+        .post(post_headers_with_length(5), RequestBody::absent())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        Error::InvalidHeader {
+            header: "Upload-Length",
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -256,6 +297,69 @@ async fn protocol_head_accepts_expired_completed_final_upload() {
     assert_eq!(response.headers.get("upload-length").unwrap(), "5");
     assert!(response.headers.get("upload-expires").is_none());
     assert!(!expired.contains(&final_id.as_str().to_string()));
+}
+
+#[tokio::test]
+async fn protocol_head_reports_exact_final_upload_concat_parts_in_order() {
+    let config = Config::default().with_extension(Extension::Concatenation);
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    let first_part = upload_id_from_location(
+        &protocol
+            .post(partial_post_headers(2), RequestBody::absent())
+            .await
+            .unwrap(),
+    );
+    protocol
+        .patch(
+            patch_headers(0),
+            &first_part,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"ab"))),
+        )
+        .await
+        .unwrap();
+
+    let second_part = upload_id_from_location(
+        &protocol
+            .post(partial_post_headers(3), RequestBody::absent())
+            .await
+            .unwrap(),
+    );
+    protocol
+        .patch(
+            patch_headers(0),
+            &second_part,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"cde"))),
+        )
+        .await
+        .unwrap();
+
+    let final_response = protocol
+        .post(
+            final_post_headers(&[&first_part, &second_part]),
+            RequestBody::absent(),
+        )
+        .await
+        .unwrap();
+    let final_id = upload_id_from_location(&final_response);
+
+    let response = protocol.head(&final_id).await.unwrap();
+
+    assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
+    assert_eq!(response.headers.get("upload-length").unwrap(), "5");
+    assert_eq!(
+        response.headers.get("upload-concat").unwrap(),
+        format!(
+            "final;/files/{} /files/{}",
+            first_part.as_str(),
+            second_part.as_str()
+        )
+        .as_str()
+    );
 }
 
 #[tokio::test]

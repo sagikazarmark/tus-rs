@@ -66,10 +66,24 @@ impl Headers {
 
         let upload_offset = parse_u64_header(headers, "upload-offset")?;
         let upload_length = parse_u64_header(headers, "upload-length")?;
-        let upload_defer_length = headers
-            .get("upload-defer-length")
-            .and_then(|v| v.to_str().ok())
-            == Some("1");
+        let upload_defer_length = match headers.get("upload-defer-length") {
+            Some(value) => match value.to_str() {
+                Ok("1") => true,
+                Ok(value) => {
+                    return Err(Error::InvalidHeader {
+                        header: "Upload-Defer-Length",
+                        message: format!("expected 1, got {value}"),
+                    });
+                }
+                Err(error) => {
+                    return Err(Error::InvalidHeader {
+                        header: "Upload-Defer-Length",
+                        message: error.to_string(),
+                    });
+                }
+            },
+            None => false,
+        };
         let content_length = parse_u64_header(headers, "content-length")?;
         let content_type = headers
             .get("content-type")

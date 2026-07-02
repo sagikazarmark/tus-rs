@@ -92,7 +92,9 @@ curl -i http://127.0.0.1:8080/files/<id> \
 ## Router Behavior
 
 `create_router` mounts standard tus upload routes at `Config::base_path`, which
-defaults to `/files`. The non-standard GET download endpoint is opt-in through
+defaults to `/files`. The tus core `X-HTTP-Method-Override` fallback is exposed
+as `POST` on an upload resource for clients or proxies that cannot send `PATCH`
+or `DELETE` directly. The non-standard GET download endpoint is opt-in through
 `create_router_with_download` and requires storage that implements
 `tus_protocol::StorageReader`.
 
@@ -147,7 +149,13 @@ Common `tus-protocol` features for axum servers:
 | Expiration | Supported | Expiration timestamps and rejection of expired unfinished/intermediate uploads. |
 | Concatenation | Supported | Server-side final uploads from partial uploads. |
 | Checksum | Supported | Header and trailer checksum validation when `tus-protocol/checksum` is enabled. |
+| Method override | Supported | Standard tus core `X-HTTP-Method-Override` fallback for `PATCH` and `DELETE` through `POST` on upload resources. |
 | Download | Opt-in | Non-standard convenience `GET` endpoint for completed uploads through `create_router_with_download`, configurable through `Config`. |
+
+`Config::allow_empty_creation(false)` is an opt-in non-compliant protocol mode
+inherited from `tus-protocol`. Leave the default enabled for standard Creation
+requests. `Config::with_all_extensions()` also advertises the non-standard
+`concatenation-unfinished` token unless it is removed from the config.
 
 ## Relationship To tus-protocol
 

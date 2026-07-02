@@ -6,7 +6,7 @@
 //!
 //! # Features
 //!
-//! - Full TUS 1.0.0 protocol support
+//! - TUS 1.0.0 core protocol and standard extension support
 //! - Extensible storage backends
 //! - Pluggable state storage
 //! - Distributed locking support
@@ -25,6 +25,10 @@
 //!   unfinished/intermediate uploads
 //! - **Concatenation**: Parallel uploads that merge server-side
 //! - **Checksum**: Verify chunk integrity
+//!
+//! Non-standard conveniences, such as download routes built on [`StorageReader`]
+//! and the `concatenation-unfinished` token, are explicit opt-ins and should not
+//! be treated as part of the stable tus protocol contract.
 //!
 //! # Architecture
 //!
