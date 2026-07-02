@@ -32,6 +32,9 @@
 
 - API documentation: <https://docs.rs/tus-protocol>
 - Protocol reference: <https://tus.io/protocols/resumable-upload>
+- Architecture: [docs/architecture.md](docs/architecture.md)
+- Adapter implementation guide: [docs/adapters.md](docs/adapters.md)
+- Testing guide: [docs/testing.md](docs/testing.md)
 
 ## Standalone Server Storage
 
@@ -70,11 +73,13 @@ Object storage only covers uploaded bytes. Upload state remains file-backed unde
 
 Expired upload reclamation is explicit. `tus-server serve` rejects protocol-expired unfinished or intermediate uploads according to protocol configuration, but it only deletes expired upload data and state when started with `--cleanup`. Completed deliverable uploads do not expire through TUS expiration; deleting them is a separate retention policy. To run one cleanup sweep and exit, use `tus-server cleanup` with the same storage and state configuration. The cleanup command is not safe to run concurrently with a live `serve` process until cross-process locking is available.
 
-This repository currently provides `tus-protocol`, the framework-neutral core
-crate. It exposes typed request headers, response values, upload state, storage,
-state-store, locking, and hook traits. HTTP adapters are expected to parse their
-framework-specific request types, call the matching `Protocol` handler, and map
-the returned `Response` or `Error` back into the framework response type.
+This repository provides `tus-protocol`, the framework-neutral core crate,
+framework adapters such as `tus-axum`, a standalone `tus-server`, the `tus`
+client CLI, and first-party backend/hook adapters. The core crate exposes typed
+request headers, response values, upload state, storage, state-store, locking,
+and hook traits. HTTP adapters parse their framework-specific request types,
+call the matching `Protocol` handler, and map the returned `Response` or `Error`
+back into the framework response type.
 
 Useful entry points:
 
