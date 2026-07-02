@@ -13,7 +13,7 @@ use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
     AppendRequest, ChunkStream, Config, Error, Extension, Headers, HookRequestInfo,
     NoopHookExecutor, NoopLocker, Protocol, RequestBody, Response, StateStore, Storage,
-    UploadConcat, UploadId, UploadState,
+    UploadConcat, UploadId, UploadState, reclaim_expired_uploads,
 };
 
 fn post_headers_with_length(length: u64) -> Headers {
@@ -344,4 +344,213 @@ async fn protocol_head_rejects_expired_unfinished_final_upload() {
 
     assert!(matches!(err, Error::Expired(id) if id == final_id.as_str()));
     assert!(expired.contains(&final_id.as_str().to_string()));
+}
+
+#[tokio::test]
+async fn protocol_head_rejects_planned_final_upload_with_expired_partial() {
+    let config = Config::default()
+        .with_extension(Extension::Concatenation)
+        .with_extension(Extension::ConcatenationUnfinished)
+        .with_extension(Extension::Expiration)
+        .expiration(StdDuration::from_secs(60));
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    let part_response = protocol
+        .post(partial_post_headers(10), RequestBody::absent())
+        .await
+        .unwrap();
+    let part_id = upload_id_from_location(&part_response);
+    protocol
+        .patch(
+            patch_headers(0),
+            &part_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+        )
+        .await
+        .unwrap();
+    let final_response = protocol
+        .post(final_post_headers(&[&part_id]), RequestBody::absent())
+        .await
+        .unwrap();
+    let final_id = upload_id_from_location(&final_response);
+
+    let part_state = state_store
+        .get(part_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .with_expiration(Utc::now() - ChronoDuration::minutes(1));
+    state_store.set(&part_state, false).await.unwrap();
+
+    let err = protocol.head(&final_id).await.unwrap_err();
+
+    assert!(matches!(err, Error::Expired(id) if id == final_id.as_str()));
+}
+
+#[tokio::test]
+async fn protocol_head_rejects_planned_final_upload_with_reclaimed_partial() {
+    let config = Config::default()
+        .with_extension(Extension::Concatenation)
+        .with_extension(Extension::ConcatenationUnfinished)
+        .with_extension(Extension::Expiration)
+        .expiration(StdDuration::from_secs(60));
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    let part_response = protocol
+        .post(partial_post_headers(10), RequestBody::absent())
+        .await
+        .unwrap();
+    let part_id = upload_id_from_location(&part_response);
+    protocol
+        .patch(
+            patch_headers(0),
+            &part_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+        )
+        .await
+        .unwrap();
+    let final_response = protocol
+        .post(final_post_headers(&[&part_id]), RequestBody::absent())
+        .await
+        .unwrap();
+    let final_id = upload_id_from_location(&final_response);
+
+    let part_state = state_store
+        .get(part_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .with_expiration(Utc::now() - ChronoDuration::minutes(1));
+    state_store.set(&part_state, false).await.unwrap();
+    let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(report.removed(), 1);
+
+    let err = protocol.head(&final_id).await.unwrap_err();
+
+    assert!(matches!(err, Error::Expired(id) if id == final_id.as_str()));
+}
+
+#[tokio::test]
+async fn protocol_planned_final_upload_expires_with_earliest_partial() {
+    let config = Config::default()
+        .with_extension(Extension::Concatenation)
+        .with_extension(Extension::ConcatenationUnfinished)
+        .with_extension(Extension::Expiration)
+        .expiration(StdDuration::from_secs(24 * 60 * 60));
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    let part_response = protocol
+        .post(partial_post_headers(10), RequestBody::absent())
+        .await
+        .unwrap();
+    let part_id = upload_id_from_location(&part_response);
+    protocol
+        .patch(
+            patch_headers(0),
+            &part_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+        )
+        .await
+        .unwrap();
+
+    let part_expires = Utc::now() + ChronoDuration::hours(1);
+    let part_state = state_store
+        .get(part_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .with_expiration(part_expires);
+    state_store.set(&part_state, false).await.unwrap();
+
+    let final_response = protocol
+        .post(final_post_headers(&[&part_id]), RequestBody::absent())
+        .await
+        .unwrap();
+    let final_id = upload_id_from_location(&final_response);
+    let expected_expires = part_expires.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+
+    assert_eq!(
+        final_response.headers.get("upload-expires").unwrap(),
+        expected_expires.as_str()
+    );
+
+    let response = protocol.head(&final_id).await.unwrap();
+    assert_eq!(
+        response.headers.get("upload-expires").unwrap(),
+        expected_expires.as_str()
+    );
+
+    let expired = state_store
+        .list_expired(part_expires + ChronoDuration::seconds(1))
+        .await
+        .unwrap();
+    assert!(expired.contains(&final_id.as_str().to_string()));
+}
+
+#[tokio::test]
+async fn protocol_head_accepts_materialized_final_upload_after_partial_reclamation() {
+    let config = Config::default()
+        .with_extension(Extension::Concatenation)
+        .with_extension(Extension::Expiration)
+        .expiration(StdDuration::from_secs(60));
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    let part_response = protocol
+        .post(partial_post_headers(5), RequestBody::absent())
+        .await
+        .unwrap();
+    let part_id = upload_id_from_location(&part_response);
+    protocol
+        .patch(
+            patch_headers(0),
+            &part_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+        )
+        .await
+        .unwrap();
+    let final_response = protocol
+        .post(final_post_headers(&[&part_id]), RequestBody::absent())
+        .await
+        .unwrap();
+    let final_id = upload_id_from_location(&final_response);
+
+    let part_state = state_store
+        .get(part_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .with_expiration(Utc::now() - ChronoDuration::minutes(1));
+    state_store.set(&part_state, false).await.unwrap();
+    let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(report.removed(), 1);
+
+    let response = protocol.head(&final_id).await.unwrap();
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
+    assert_eq!(response.headers.get("upload-length").unwrap(), "5");
+    assert_eq!(
+        response.headers.get("upload-concat").unwrap(),
+        format!("final;/files/{}", part_id.as_str()).as_str()
+    );
 }

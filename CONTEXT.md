@@ -16,11 +16,15 @@ An upload whose content is complete and ready to be exposed as final application
 
 ### Expired upload reclamation
 
-The process of removing upload data and upload state after a protocol-expired upload has expired. This applies to unfinished or intermediate upload resources, not completed deliverable upload content; completed deliverable content requires completed-upload retention.
+The process of removing upload data and upload state after a protocol-expired upload has expired. This applies to unfinished or intermediate upload resources, not completed deliverable upload content; completed deliverable content requires completed-upload retention. It does not retain or cascade through planned final upload dependencies.
 
 ### Final upload materialization
 
-The process of turning a final upload's ordered partial uploads into the upload state and upload data exposed to clients. This includes the distinction between planned final uploads that are not ready yet and final uploads whose data can be materialized from complete parts.
+The process of turning a final upload's ordered partial uploads into deliverable upload content. After materialization, the final upload no longer depends on the continued availability of its referenced partial uploads.
+
+### Planned final upload
+
+A final upload whose ordered partial uploads have been accepted as a dependency list, but whose content is not yet deliverable. It is an intermediate upload resource: it does not retain referenced partial uploads and is no longer available once any referenced partial upload becomes unavailable or protocol-expired. Its availability deadline is capped by the earliest referenced partial upload deadline.
 
 ### Protocol expiration
 
