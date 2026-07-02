@@ -1,5 +1,7 @@
 //! Core POST handler (TUS Creation + related extensions).
 
+use std::collections::HashMap;
+
 use http::StatusCode;
 
 use crate::config::{Config, Extension};
@@ -69,6 +71,8 @@ where
             });
         }
 
+        let mut response_headers = pre_result.response_headers;
+
         if let Some(metadata) = pre_result.metadata {
             state.set_metadata(metadata);
         }
@@ -82,10 +86,11 @@ where
                 .map(|ct| ct.starts_with("application/offset+octet-stream"))
                 .unwrap_or(false);
         let creation_body = if is_creation_with_upload {
-            Some(
-                self.prepare_creation_body(&headers, &hook_contexts, &state, body)
-                    .await?,
-            )
+            let prepared = self
+                .prepare_creation_body(&headers, &hook_contexts, &mut state, body)
+                .await?;
+            response_headers.extend(prepared.response_headers);
+            Some(prepared.bytes)
         } else {
             None
         };
@@ -94,23 +99,32 @@ where
         state.set_storage_handle(handle);
         self.state_store.set(&state, true).await?;
 
-        let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
-        execute_post_best_effort(self.hooks, &post_ctx).await;
-
-        if let Some(data) = creation_body
-            && let Err(e) = self
-                .commit_creation_body(&hook_contexts, &mut state, data)
-                .await
-        {
-            // Something in the body-write phase (storage append or state
-            // persistence) failed. Roll back the just-created state record and
-            // storage object so the upload ID does not survive as a zombie
-            // record.
-            if let Some(handle) = state.storage_handle() {
-                let _ = self.storage.delete(&handle).await;
+        if let Some(data) = creation_body {
+            if let Err(e) = self.commit_creation_body(&mut state, data).await {
+                // Something in the body-write phase (storage append or state
+                // persistence) failed. Roll back the just-created state record and
+                // storage object so the upload ID does not survive as a zombie
+                // record.
+                if let Some(handle) = state.storage_handle() {
+                    let _ = self.storage.delete(&handle).await;
+                }
+                let _ = self.state_store.delete(state.id()).await;
+                return Err(e);
             }
-            let _ = self.state_store.delete(state.id()).await;
-            return Err(e);
+
+            let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
+            execute_post_best_effort(self.hooks, &post_ctx).await;
+
+            let post_receive_ctx = hook_contexts.context(HookEvent::PostReceive, state.clone());
+            execute_post_best_effort(self.hooks, &post_receive_ctx).await;
+
+            if state.is_complete() {
+                let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
+                execute_post_best_effort(self.hooks, &post_finish_ctx).await;
+            }
+        } else {
+            let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
+            execute_post_best_effort(self.hooks, &post_ctx).await;
         }
 
         let location = self
@@ -128,7 +142,7 @@ where
             response = response.with_header("upload-expires", &expires);
         }
 
-        for (name, value) in pre_result.response_headers {
+        for (name, value) in response_headers {
             response = response.with_header_owned(name, value);
         }
 
@@ -149,9 +163,25 @@ where
         &self,
         headers: &Headers,
         hook_contexts: &HookContextBuilder,
-        state: &UploadState,
+        state: &mut UploadState,
         body: RequestBody,
-    ) -> Result<bytes::Bytes, Error> {
+    ) -> Result<PreparedCreationBody, Error> {
+        let pre_receive_ctx = hook_contexts.context(HookEvent::PreReceive, state.clone());
+        let pre_receive_result = self.hooks.execute_pre(&pre_receive_ctx).await?;
+
+        if !pre_receive_result.proceed {
+            return Err(Error::HookRejected {
+                status_code: pre_receive_result.reject_status.unwrap_or(400),
+                message: pre_receive_result.reject_message.unwrap_or_default(),
+            });
+        }
+
+        let response_headers = pre_receive_result.response_headers;
+
+        if let Some(metadata) = pre_receive_result.metadata {
+            state.set_metadata(metadata);
+        }
+
         let data = super::body::collect(
             self.config,
             headers,
@@ -177,12 +207,14 @@ where
                 .await?;
         }
 
-        Ok(data.bytes)
+        Ok(PreparedCreationBody {
+            bytes: data.bytes,
+            response_headers,
+        })
     }
 
     async fn commit_creation_body(
         &self,
-        hook_contexts: &HookContextBuilder,
         state: &mut UploadState,
         data: bytes::Bytes,
     ) -> Result<(), Error> {
@@ -208,11 +240,6 @@ where
             handle,
         );
         self.state_store.set(state, false).await?;
-
-        if state.is_complete() {
-            let post_finish_ctx = hook_contexts.context(HookEvent::PostFinish, state.clone());
-            execute_post_best_effort(self.hooks, &post_finish_ctx).await;
-        }
 
         Ok(())
     }
@@ -269,6 +296,11 @@ where
     ) -> Result<(), Error> {
         run_pre_finish(self.hooks, hook_contexts.request_info(), state).await
     }
+}
+
+struct PreparedCreationBody {
+    bytes: bytes::Bytes,
+    response_headers: HashMap<String, String>,
 }
 
 fn creation_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
@@ -329,10 +361,104 @@ mod tests {
     use crate::state::memory::MemoryStateStore;
     use crate::storage::memory::MemoryStorage;
     use bytes::Bytes;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     struct FailingPostHookExecutor;
+
+    #[derive(Clone, Default)]
+    struct RecordingHookExecutor {
+        events: Arc<Mutex<Vec<HookEvent>>>,
+        offsets: Arc<Mutex<Vec<(HookEvent, u64)>>>,
+    }
+
+    impl RecordingHookExecutor {
+        fn events(&self) -> Vec<HookEvent> {
+            self.events.lock().unwrap().clone()
+        }
+
+        fn offsets(&self) -> Vec<(HookEvent, u64)> {
+            self.offsets.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HookExecutor for RecordingHookExecutor {
+        async fn execute_pre(&self, ctx: &HookContext) -> crate::Result<PreHookResult> {
+            self.events.lock().unwrap().push(ctx.event);
+            self.offsets
+                .lock()
+                .unwrap()
+                .push((ctx.event, ctx.upload.offset()));
+            Ok(PreHookResult::proceed())
+        }
+
+        async fn execute_post(&self, ctx: &HookContext) -> crate::Result<()> {
+            self.events.lock().unwrap().push(ctx.event);
+            self.offsets
+                .lock()
+                .unwrap()
+                .push((ctx.event, ctx.upload.offset()));
+            Ok(())
+        }
+    }
+
+    struct FailingAppendStorage {
+        deleted: Arc<AtomicBool>,
+    }
+
+    impl FailingAppendStorage {
+        fn new() -> Self {
+            Self {
+                deleted: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn deleted(&self) -> bool {
+            self.deleted.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for FailingAppendStorage {
+        fn name(&self) -> &'static str {
+            "failing-append"
+        }
+
+        async fn create(&self, upload_id: &str) -> crate::Result<crate::storage::StorageHandle> {
+            Ok(crate::storage::StorageHandle::new(upload_id))
+        }
+
+        async fn append(
+            &self,
+            _request: AppendRequest,
+        ) -> crate::Result<crate::storage::StorageHandle> {
+            Err(Error::Storage(Box::new(std::io::Error::other(
+                "append failed",
+            ))))
+        }
+
+        async fn concat(
+            &self,
+            _request: crate::storage::ConcatRequest,
+        ) -> crate::Result<crate::storage::StorageHandle> {
+            Err(Error::Storage(Box::new(std::io::Error::other(
+                "concat failed",
+            ))))
+        }
+
+        async fn delete(&self, _handle: &crate::storage::StorageHandle) -> crate::Result<()> {
+            self.deleted.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn size(
+            &self,
+            _handle: &crate::storage::StorageHandle,
+        ) -> crate::Result<Option<u64>> {
+            Ok(None)
+        }
+    }
 
     #[async_trait::async_trait]
     impl HookExecutor for FailingPostHookExecutor {
@@ -960,6 +1086,258 @@ mod tests {
         let id = location.rsplit('/').next().unwrap();
         let stored = store.get(id).await.unwrap().unwrap();
         assert!(!stored.is_complete());
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_fires_receive_hooks_for_initial_body() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = RecordingHookExecutor::default();
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let response = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::CREATED);
+        assert_eq!(
+            hooks.events(),
+            vec![
+                HookEvent::PreCreate,
+                HookEvent::PreReceive,
+                HookEvent::PostCreate,
+                HookEvent::PostReceive,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_post_create_observes_committed_initial_body() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = RecordingHookExecutor::default();
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            hooks.offsets().contains(&(HookEvent::PostCreate, 5)),
+            "PostCreate should observe the committed initial body offset"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_pre_receive_metadata_wins_after_pre_create() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new()
+            .on_pre_create(|_| async {
+                let mut metadata = UploadMetadata::new();
+                metadata.insert("stage", "created");
+                Ok(PreHookResult::proceed_with_metadata(metadata))
+            })
+            .on_pre_receive(|ctx| async move {
+                if ctx.upload.metadata().get("stage").and_then(|v| v.as_str()) != Some("created") {
+                    return Ok(PreHookResult::reject(409, "pre-create metadata missing"));
+                }
+
+                let mut metadata = UploadMetadata::new();
+                metadata.insert("stage", "received");
+                Ok(PreHookResult::proceed_with_metadata(metadata))
+            });
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let response = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap();
+
+        let location = response.headers.get("location").unwrap().to_str().unwrap();
+        let id = location.rsplit('/').next().unwrap();
+        let stored = store.get(id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.metadata().get("stage").and_then(|v| v.as_str()),
+            Some("received")
+        );
+    }
+
+    #[tokio::test]
+    async fn completing_creation_with_upload_fires_finish_hooks_around_commit() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = RecordingHookExecutor::default();
+        let headers = Headers {
+            upload_length: Some(5),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            hooks.events(),
+            vec![
+                HookEvent::PreCreate,
+                HookEvent::PreReceive,
+                HookEvent::PreFinish,
+                HookEvent::PostCreate,
+                HookEvent::PostReceive,
+                HookEvent::PostFinish,
+            ]
+        );
+        assert!(
+            hooks.offsets().contains(&(HookEvent::PostFinish, 5)),
+            "PostFinish should observe the completed offset"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_pre_receive_rejection_does_not_poll_body() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new()
+            .on_pre_receive(|_| async { Ok(PreHookResult::reject(403, "receive blocked")) });
+        let polled = Arc::new(AtomicBool::new(false));
+        let polled_for_stream = Arc::clone(&polled);
+        let stream: crate::BodyStream = Box::pin(futures::stream::once(async move {
+            polled_for_stream.store(true, Ordering::SeqCst);
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"Hello")))
+        }));
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::HookRejected {
+                status_code: 403,
+                ..
+            }
+        ));
+        assert!(!polled.load(Ordering::SeqCst));
+        assert!(store.is_empty());
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_pre_receive_response_headers_are_returned() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new().on_pre_receive(|_| async {
+            Ok(PreHookResult::proceed().with_header("x-receive", "accepted"))
+        });
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let response = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers.get("x-receive").unwrap(), "accepted");
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_rolls_back_append_failure_without_post_hooks() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = FailingAppendStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = RecordingHookExecutor::default();
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Storage(_)));
+        assert_eq!(
+            hooks.events(),
+            vec![HookEvent::PreCreate, HookEvent::PreReceive]
+        );
+        assert!(storage.deleted());
+        assert!(store.is_empty());
     }
 
     #[tokio::test]
