@@ -59,7 +59,61 @@ where
     Ok(())
 }
 
-pub(crate) async fn prepare_upload_access<S, I, H>(
+pub(crate) async fn prepare_upload_observation_access<S, I, H>(
+    storage: &S,
+    state_store: &I,
+    hooks: &H,
+    config: &Config,
+    request_info: &HookRequestInfo,
+    state: &mut UploadState,
+) -> Result<PreparedUploadAccess>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    prepare_upload_read_access(storage, state_store, hooks, config, request_info, state).await
+}
+
+pub(crate) async fn prepare_upload_download_access<S, I, H>(
+    storage: &S,
+    state_store: &I,
+    hooks: &H,
+    config: &Config,
+    request_info: &HookRequestInfo,
+    state: &mut UploadState,
+) -> Result<PreparedUploadAccess>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    let prepared =
+        prepare_upload_read_access(storage, state_store, hooks, config, request_info, state)
+            .await?;
+
+    if !state.is_complete() {
+        return Err(Error::IncompleteUpload(state.id().to_string()));
+    }
+
+    Ok(prepared)
+}
+
+pub(crate) async fn prepare_upload_reclamation_access<S, I>(
+    storage: &S,
+    state_store: &I,
+    state: &mut UploadState,
+) -> Result<bool>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+{
+    reconcile_stored_completion(storage, state_store, state).await?;
+
+    Ok(state.is_expired())
+}
+
+async fn prepare_upload_read_access<S, I, H>(
     storage: &S,
     state_store: &I,
     hooks: &H,

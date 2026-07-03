@@ -5,7 +5,7 @@ use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::Storage;
 
-use super::reconcile_stored_completion;
+use super::prepare_upload_reclamation_access;
 
 /// Outcomes produced by an expired upload reclamation scan.
 #[derive(Debug, Default)]
@@ -157,9 +157,7 @@ where
         return Ok(ExpiredUploadReclamationOutcome::MissingState { upload_id });
     };
 
-    reconcile_stored_completion(storage, state_store, &mut state).await?;
-
-    if !state.is_expired() {
+    if !prepare_upload_reclamation_access(storage, state_store, &mut state).await? {
         return Ok(ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id });
     }
 

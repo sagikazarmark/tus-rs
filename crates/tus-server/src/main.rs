@@ -143,10 +143,6 @@ async fn run_cleanup(command: config::CleanupCli) -> anyhow::Result<()> {
         tracing::info!(path = %path.display(), "loaded config file");
     }
 
-    tracing::warn!(
-        "cleanup is not online-safe with a live serve process when using the process-local memory locker"
-    );
-
     let metadata = tokio::fs::metadata(&settings.state_dir)
         .await
         .with_context(|| {
@@ -169,15 +165,7 @@ async fn run_cleanup(command: config::CleanupCli) -> anyhow::Result<()> {
         backends.state_store.clone(),
         backends.locker.clone(),
     );
-    let report = expiration::sweep_expired_uploads(&target).await?;
-    expiration::log_reclamation_outcomes(target.scope(), &report);
-
-    if report.has_failures() {
-        anyhow::bail!("failed to clean up one or more expired uploads");
-    }
-
-    let removed = report.removed();
-    tracing::info!(removed, "cleaned up expired uploads");
+    expiration::run_cleanup_once(&target).await?;
     Ok(())
 }
 

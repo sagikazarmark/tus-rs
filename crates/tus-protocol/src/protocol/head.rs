@@ -8,7 +8,7 @@ use http::StatusCode;
 use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
-use crate::lifecycle::prepare_upload_access;
+use crate::lifecycle::prepare_upload_observation_access;
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadMetadata};
 use crate::storage::Storage;
@@ -52,7 +52,7 @@ where
             .map_err(|e| Error::Internal(e.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        let prepared = prepare_upload_access(
+        let prepared = prepare_upload_observation_access(
             self.storage,
             self.state_store,
             self.hooks,

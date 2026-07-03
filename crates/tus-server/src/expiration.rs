@@ -56,7 +56,42 @@ where
     .with_context(|| format!("failed to sweep expired uploads for scope {}", target.scope))
 }
 
-pub(crate) fn log_reclamation_outcomes(scope: &str, report: &ExpiredUploadReclamationReport) {
+pub(crate) async fn run_cleanup_once<S, I, L>(
+    target: &ExpirationTarget<S, I, L>,
+) -> anyhow::Result<ExpiredUploadReclamationReport>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+{
+    tracing::warn!(
+        "cleanup is not online-safe with a live serve process when using the process-local memory locker"
+    );
+
+    let report = sweep_expired_uploads(target).await?;
+    report_reclamation_outcomes(target.scope(), &report);
+    ensure_cleanup_succeeded(&report)?;
+
+    Ok(report)
+}
+
+fn ensure_cleanup_succeeded(report: &ExpiredUploadReclamationReport) -> anyhow::Result<()> {
+    if report.has_failures() {
+        anyhow::bail!("failed to clean up one or more expired uploads");
+    }
+
+    Ok(())
+}
+
+pub(crate) fn report_reclamation_outcomes(scope: &str, report: &ExpiredUploadReclamationReport) {
+    log_reclamation_outcomes(scope, report);
+    let removed = report.removed();
+    if removed > 0 {
+        tracing::info!(scope = %scope, removed, "cleaned up expired uploads");
+    }
+}
+
+fn log_reclamation_outcomes(scope: &str, report: &ExpiredUploadReclamationReport) {
     for outcome in report.outcomes() {
         match outcome {
             ExpiredUploadReclamationOutcome::Removed { .. } => {}
@@ -100,11 +135,7 @@ pub(crate) fn spawn_expiration_sweeper<S, I, L>(
                     for target in &targets {
                         match sweep_expired_uploads(target).await {
                             Ok(report) => {
-                                log_reclamation_outcomes(target.scope(), &report);
-                                let removed = report.removed();
-                                if removed > 0 {
-                                    tracing::info!(scope = %target.scope(), removed, "cleaned up expired uploads");
-                                }
+                                report_reclamation_outcomes(target.scope(), &report);
                             }
                             Err(error) => {
                                 tracing::warn!(scope = %target.scope(), error = %error, "failed to sweep expired uploads");

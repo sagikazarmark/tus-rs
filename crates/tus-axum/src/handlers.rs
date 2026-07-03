@@ -4,18 +4,96 @@
 //! The adapter extracts axum-typed inputs (state, path, headers, body) and converts
 //! protocol [`tus_protocol::Response`] values back into axum responses.
 
-mod delete;
 mod get;
-mod head;
 mod method_override;
-mod options;
-mod patch;
-mod post;
 
-pub use delete::handle_delete;
+use axum::extract::State;
+
+use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
+
+use crate::error::Error;
+use crate::extractors::{Headers, TusBody, UploadId};
+use crate::response::TusResponse;
+use crate::state::TusProtocol;
+
 pub use get::handle_get;
-pub use head::handle_head;
 pub use method_override::handle_post_with_override;
-pub use options::handle_options;
-pub use patch::handle_patch;
-pub use post::handle_post;
+
+/// Handles OPTIONS requests.
+pub async fn handle_options<S, I, L, H>(
+    State(protocol): State<TusProtocol<S, I, L, H>>,
+) -> TusResponse
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    TusResponse(protocol.options())
+}
+
+/// Handles POST requests to create new uploads.
+pub async fn handle_post<S, I, L, H>(
+    State(protocol): State<TusProtocol<S, I, L, H>>,
+    Headers(headers): Headers,
+    body: TusBody,
+) -> Result<TusResponse, Error>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    Ok(protocol.post(headers, body.into_body()).await?.into())
+}
+
+/// Handles HEAD requests. The `Headers` extractor validates the
+/// `Tus-Resumable` header; its value is otherwise unused here.
+pub async fn handle_head<S, I, L, H>(
+    State(protocol): State<TusProtocol<S, I, L, H>>,
+    Headers(_): Headers,
+    UploadId(upload_id): UploadId,
+) -> Result<TusResponse, Error>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    Ok(protocol.head(&upload_id).await?.into())
+}
+
+/// Handles PATCH requests to upload data.
+pub async fn handle_patch<S, I, L, H>(
+    State(protocol): State<TusProtocol<S, I, L, H>>,
+    Headers(headers): Headers,
+    UploadId(upload_id): UploadId,
+    body: TusBody,
+) -> Result<TusResponse, Error>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    let response = protocol
+        .patch(headers, &upload_id, body.into_body())
+        .await?;
+
+    Ok(response.into())
+}
+
+/// Handles DELETE requests to terminate uploads.
+pub async fn handle_delete<S, I, L, H>(
+    State(protocol): State<TusProtocol<S, I, L, H>>,
+    Headers(headers): Headers,
+    UploadId(upload_id): UploadId,
+) -> Result<TusResponse, Error>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    Ok(protocol.delete(&headers, &upload_id).await?.into())
+}

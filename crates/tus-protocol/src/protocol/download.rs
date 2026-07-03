@@ -9,7 +9,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use crate::config::TUS_RESUMABLE;
 use crate::error::Error;
 use crate::hooks::HookExecutor;
-use crate::lifecycle::prepare_upload_access;
+use crate::lifecycle::prepare_upload_download_access;
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ByteStream, Storage, StorageReader};
@@ -73,7 +73,7 @@ where
             .map_err(|err| Error::Internal(err.to_string()))?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        let _prepared = prepare_upload_access(
+        prepare_upload_download_access(
             self.storage,
             self.state_store,
             self.hooks,
@@ -82,10 +82,6 @@ where
             &mut state,
         )
         .await?;
-
-        if !state.is_complete() {
-            return Err(Error::IncompleteUpload(state.id().to_string()));
-        }
 
         let size = state.offset();
         let range = parse_range(request.range, size)?;
