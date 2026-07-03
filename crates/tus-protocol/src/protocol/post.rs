@@ -242,6 +242,24 @@ mod tests {
         deleted: Arc<AtomicBool>,
     }
 
+    struct RecordingStorage {
+        inner: MemoryStorage,
+        append_received_stream: AtomicBool,
+    }
+
+    impl RecordingStorage {
+        fn new() -> Self {
+            Self {
+                inner: MemoryStorage::new(),
+                append_received_stream: AtomicBool::new(false),
+            }
+        }
+
+        fn append_received_stream(&self) -> bool {
+            self.append_received_stream.load(Ordering::SeqCst)
+        }
+    }
+
     impl FailingAppendStorage {
         fn new() -> Self {
             Self {
@@ -251,6 +269,40 @@ mod tests {
 
         fn deleted(&self) -> bool {
             self.deleted.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for RecordingStorage {
+        fn name(&self) -> &'static str {
+            "recording-memory"
+        }
+
+        async fn create(&self, upload_id: &str) -> crate::Result<StorageHandle> {
+            self.inner.create(upload_id).await
+        }
+
+        async fn append(&self, request: AppendRequest) -> crate::Result<StorageHandle> {
+            if matches!(&request.data, ChunkStream::Stream(_)) {
+                self.append_received_stream.store(true, Ordering::SeqCst);
+            }
+
+            self.inner.append(request).await
+        }
+
+        async fn concat(
+            &self,
+            request: crate::storage::ConcatRequest,
+        ) -> crate::Result<StorageHandle> {
+            self.inner.concat(request).await
+        }
+
+        async fn delete(&self, handle: &StorageHandle) -> crate::Result<()> {
+            self.inner.delete(handle).await
+        }
+
+        async fn size(&self, handle: &StorageHandle) -> crate::Result<Option<u64>> {
+            self.inner.size(handle).await
         }
     }
 
@@ -856,6 +908,185 @@ mod tests {
         let id = location.rsplit('/').next().unwrap();
         let stored = store.get(id).await.unwrap().unwrap();
         assert!(stored.is_complete());
+    }
+
+    #[tokio::test]
+    async fn streamed_creation_with_upload_reaches_storage_append_as_stream() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = RecordingStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let stream: crate::BodyStream = Box::pin(futures::stream::iter([
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"he"))),
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"llo"))),
+        ]));
+        let headers = Headers {
+            upload_length: Some(10),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let response = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::CREATED);
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
+        assert!(storage.append_received_stream());
+        let location = response.headers.get("location").unwrap().to_str().unwrap();
+        let id = location.rsplit('/').next().unwrap();
+        let stored = store.get(id).await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 5);
+        assert!(!stored.is_complete());
+    }
+
+    #[tokio::test]
+    async fn streamed_creation_with_upload_failure_does_not_accept_partial_bytes() {
+        use std::io;
+
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let stream: crate::BodyStream = Box::pin(futures::stream::iter(vec![
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"part"))),
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "client gone",
+            )),
+        ]));
+        let headers = Headers {
+            upload_length: Some(10),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(8),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::Internal(_)));
+        assert!(store.is_empty());
+        assert!(storage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn streamed_creation_with_upload_content_length_mismatch_does_not_accept_bytes() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let stream: crate::BodyStream = Box::pin(futures::stream::iter([Ok(
+            crate::BodyFrame::Data(Bytes::from_static(b"part")),
+        )]));
+        let headers = Headers {
+            upload_length: Some(10),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidHeader {
+                header: "Content-Length",
+                ..
+            }
+        ));
+        assert!(store.is_empty());
+        assert!(storage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_streamed_completing_creation_with_upload_does_not_run_pre_finish() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let pre_finish_calls = Arc::new(AtomicUsize::new(0));
+        let hooks = HookChain::new().on_pre_finish({
+            let pre_finish_calls = Arc::clone(&pre_finish_calls);
+            move |_| {
+                let pre_finish_calls = Arc::clone(&pre_finish_calls);
+                async move {
+                    pre_finish_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(PreHookResult::proceed())
+                }
+            }
+        });
+        let stream: crate::BodyStream = Box::pin(futures::stream::iter([Ok(
+            crate::BodyFrame::Data(Bytes::from_static(b"part")),
+        )]));
+        let headers = Headers {
+            upload_length: Some(5),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::InvalidHeader {
+                header: "Content-Length",
+                ..
+            }
+        ));
+        assert_eq!(pre_finish_calls.load(Ordering::SeqCst), 0);
+        assert!(store.is_empty());
+        assert!(storage.is_empty());
+    }
+
+    #[cfg(feature = "checksum")]
+    #[tokio::test]
+    async fn streamed_creation_with_upload_checksum_trailer_mismatch_does_not_accept_bytes() {
+        let config = Config::default()
+            .with_extension(Extension::CreationWithUpload)
+            .with_extension(Extension::ChecksumTrailer);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert(
+            "upload-checksum",
+            "sha1 AAAAAAAAAAAAAAAAAAAAAAAAAAA=".parse().unwrap(),
+        );
+        let stream: crate::BodyStream = Box::pin(futures::stream::iter([
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"hello"))),
+            Ok(crate::BodyFrame::Trailers(trailers)),
+        ]));
+        let headers = Headers {
+            upload_length: Some(10),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::ChecksumMismatch { .. }));
+        assert!(store.is_empty());
+        assert!(storage.is_empty());
     }
 
     #[tokio::test]

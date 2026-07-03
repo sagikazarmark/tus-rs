@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
-use bytes::Bytes;
+use bytes::BytesMut;
+use futures::StreamExt;
+
+mod body;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
-use crate::protocol::body;
 use crate::protocol::{Headers, RequestBody};
 use crate::state::StateStore;
 use crate::state::UploadState;
@@ -45,9 +47,10 @@ enum ReceiveBodyKind {
 /// Body bytes and lifecycle projection that have passed receive gates.
 #[derive(Debug)]
 struct PreparedReceiveBody {
-    pub(crate) bytes: Bytes,
+    pub(crate) data: ChunkStream,
     pub(crate) projection: ReceiveProjection,
     pub(crate) response_headers: HashMap<String, String>,
+    pub(crate) deferred_error: body::DeferredBodyError,
 }
 
 /// Result of accepting bytes for an existing upload.
@@ -365,7 +368,10 @@ where
     }
 
     let projection = validate_body_for_receive(config, state, collected.size, kind)?;
+    let mut data = collected.data;
+    let deferred_error = collected.deferred_error;
     if projection.completes_upload {
+        data = validate_completion_body(data, &deferred_error).await?;
         let mut completed_state = state.clone();
         completed_state.set_offset(projection.projected_offset);
         UploadCompletion::new(hooks, request_info)
@@ -374,10 +380,34 @@ where
     }
 
     Ok(PreparedReceiveBody {
-        bytes: collected.bytes,
+        data,
         projection,
         response_headers,
+        deferred_error,
     })
+}
+
+async fn validate_completion_body(
+    data: ChunkStream,
+    deferred_error: &body::DeferredBodyError,
+) -> Result<ChunkStream> {
+    let ChunkStream::Stream(mut stream) = data else {
+        return Ok(data);
+    };
+
+    let mut buffer = BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => buffer.extend_from_slice(&bytes),
+            Err(error) => return Err(deferred_error.take().unwrap_or(Error::Io(error))),
+        }
+    }
+
+    if let Some(error) = deferred_error.take() {
+        return Err(error);
+    }
+
+    Ok(ChunkStream::Buffered(buffer.freeze()))
 }
 
 /// Commits accepted receive bytes to storage and persists the resulting upload state.
@@ -391,14 +421,23 @@ where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
 {
-    let handle = storage
+    let deferred_error = prepared.deferred_error.clone();
+    let handle = match storage
         .append(AppendRequest {
             handle: state.require_storage_handle()?,
             expected_offset: state.offset(),
-            data: ChunkStream::Buffered(prepared.bytes),
+            data: prepared.data,
             completes_upload: prepared.projection.completes_upload,
         })
-        .await?;
+        .await
+    {
+        Ok(handle) => handle,
+        Err(error) => return Err(deferred_error.take().unwrap_or(error)),
+    };
+    if let Some(error) = deferred_error.take() {
+        return Err(error);
+    }
+
     apply_receive_commit(state, prepared.projection, handle);
     state_store.set(state, false).await?;
 
@@ -427,8 +466,8 @@ async fn collect_receive_body(
     state: &UploadState,
     request_body: RequestBody,
     kind: ReceiveBodyKind,
-) -> Result<body::CollectedBody> {
-    body::collect(
+) -> Result<body::IntakeBody> {
+    body::prepare(
         config,
         headers,
         receive_body_limit(config, state, kind),
