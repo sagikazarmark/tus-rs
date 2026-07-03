@@ -240,7 +240,7 @@ fn is_valid_metadata_key(key: &str) -> bool {
         })
 }
 
-pub(super) fn parse_upload_checksum(
+pub(crate) fn parse_upload_checksum(
     headers: &HeaderMap,
 ) -> Result<Option<(ChecksumAlgorithm, Vec<u8>)>, Error> {
     let value = match headers.get("upload-checksum").and_then(|v| v.to_str().ok()) {
@@ -251,7 +251,7 @@ pub(super) fn parse_upload_checksum(
     parse_upload_checksum_value(value).map(Some)
 }
 
-pub(super) fn parse_upload_checksum_value(
+pub(crate) fn parse_upload_checksum_value(
     value: &str,
 ) -> Result<(ChecksumAlgorithm, Vec<u8>), Error> {
     let parts: Vec<&str> = value.splitn(2, ' ').collect();

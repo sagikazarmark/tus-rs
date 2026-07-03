@@ -49,7 +49,7 @@ pub(crate) mod body;
 mod delete;
 mod download;
 mod head;
-mod headers;
+pub(crate) mod headers;
 mod hook_context;
 mod options;
 mod patch;
