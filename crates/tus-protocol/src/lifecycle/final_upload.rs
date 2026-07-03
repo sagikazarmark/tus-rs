@@ -183,13 +183,7 @@ where
     state.set_storage_handle(handle);
 
     if status.ready_to_materialize() {
-        let handle = storage
-            .concat(ConcatRequest {
-                target: state.require_storage_handle()?,
-                parts: storage_handles(&parts)?,
-            })
-            .await?;
-        state.set_storage_handle(handle);
+        materialize_final_upload(storage, &mut state, &parts).await?;
     }
 
     state_store.set(&state, true).await?;
@@ -224,56 +218,23 @@ where
     else {
         return Ok(false);
     };
+    let refresh = PlannedFinalUploadRefresh::inspect(storage, state, parts, status).await?;
 
-    let mut changed = false;
-
-    if state.length() != status.total_length
-        && let Some(total_length) = status.total_length
-    {
-        state.set_length(total_length);
-        changed = true;
-    }
-
-    let actual_size = if status.ready_to_materialize() {
-        Some(storage_size(storage, state).await?)
-    } else {
-        None
-    };
-    let needs_materialization = actual_size
-        .zip(status.total_length)
-        .is_some_and(|(actual_size, total_length)| actual_size != total_length);
-
-    let will_complete =
-        status.ready_to_materialize() && (!state.is_complete() || needs_materialization);
+    let mut changed = refresh.refresh_length(state);
+    let will_complete = refresh.will_complete(state);
 
     if will_complete {
-        let mut completed_state = state.clone();
-        let total_length = status
-            .total_length
-            .expect("ready final upload has total length");
-        completed_state.set_length(total_length);
-        completed_state.set_offset(total_length);
         UploadCompletion::new(hooks, request_info)
-            .before_commit(completed_state)
+            .before_commit(refresh.completed_state(state))
             .await?;
     }
 
-    if needs_materialization {
-        let handle = storage
-            .concat(ConcatRequest {
-                target: state.require_storage_handle()?,
-                parts: storage_handles(&parts)?,
-            })
-            .await?;
-        state.set_storage_handle(handle);
+    if refresh.needs_materialization() {
+        materialize_final_upload(storage, state, refresh.parts()).await?;
         changed = true;
     }
 
-    let expected_offset = status.expected_offset();
-    if state.offset() != expected_offset {
-        state.set_offset(expected_offset);
-        changed = true;
-    }
+    changed |= refresh.refresh_offset(state);
 
     if changed {
         state_store
@@ -332,6 +293,84 @@ where
     }
 
     Ok(true)
+}
+
+struct PlannedFinalUploadRefresh {
+    parts: Vec<UploadState>,
+    status: FinalUploadStatus,
+    actual_size: Option<u64>,
+}
+
+impl PlannedFinalUploadRefresh {
+    async fn inspect<S>(
+        storage: &S,
+        state: &UploadState,
+        parts: Vec<UploadState>,
+        status: FinalUploadStatus,
+    ) -> Result<Self>
+    where
+        S: Storage + ?Sized,
+    {
+        let actual_size = if status.ready_to_materialize() {
+            Some(storage_size(storage, state).await?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            parts,
+            status,
+            actual_size,
+        })
+    }
+
+    fn parts(&self) -> &[UploadState] {
+        &self.parts
+    }
+
+    fn needs_materialization(&self) -> bool {
+        self.actual_size
+            .zip(self.status.total_length)
+            .is_some_and(|(actual_size, total_length)| actual_size != total_length)
+    }
+
+    fn will_complete(&self, state: &UploadState) -> bool {
+        self.status.ready_to_materialize() && (!state.is_complete() || self.needs_materialization())
+    }
+
+    fn completed_state(&self, state: &UploadState) -> UploadState {
+        let total_length = self
+            .status
+            .total_length
+            .expect("ready final upload has total length");
+        let mut completed_state = state.clone();
+        completed_state.set_length(total_length);
+        completed_state.set_offset(total_length);
+        completed_state
+    }
+
+    fn refresh_length(&self, state: &mut UploadState) -> bool {
+        let Some(total_length) = self.status.total_length else {
+            return false;
+        };
+
+        if state.length() == Some(total_length) {
+            return false;
+        }
+
+        state.set_length(total_length);
+        true
+    }
+
+    fn refresh_offset(&self, state: &mut UploadState) -> bool {
+        let expected_offset = self.status.expected_offset();
+        if state.offset() == expected_offset {
+            return false;
+        }
+
+        state.set_offset(expected_offset);
+        true
+    }
 }
 
 /// Loads and validates parts referenced by a final Upload-Concat header.
@@ -559,6 +598,25 @@ where
         .await
         .map_err(|err| Error::Internal(err.to_string()))?
         .unwrap_or(0))
+}
+
+async fn materialize_final_upload<S>(
+    storage: &S,
+    state: &mut UploadState,
+    parts: &[UploadState],
+) -> Result<()>
+where
+    S: Storage + ?Sized,
+{
+    let handle = storage
+        .concat(ConcatRequest {
+            target: state.require_storage_handle()?,
+            parts: storage_handles(parts)?,
+        })
+        .await?;
+    state.set_storage_handle(handle);
+
+    Ok(())
 }
 
 fn storage_handles(parts: &[UploadState]) -> Result<Vec<crate::storage::StorageHandle>> {

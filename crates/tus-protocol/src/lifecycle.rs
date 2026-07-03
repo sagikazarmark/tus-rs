@@ -13,8 +13,12 @@ mod finish;
 mod receive;
 mod reclamation;
 mod recovery;
+mod termination;
 
-pub(crate) use access::{prepare_upload_access, prepare_upload_mutation_access};
+pub(crate) use access::{
+    prepare_upload_download_access, prepare_upload_mutation_access,
+    prepare_upload_observation_access, prepare_upload_reclamation_access,
+};
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub(crate) use final_upload::FinalUploadMaterializer;
 pub(crate) use finish::UploadCompletion;
@@ -24,6 +28,7 @@ pub use reclamation::{
     ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };
 pub(crate) use recovery::{reconcile_state_offset, reconcile_stored_completion};
+pub(crate) use termination::UploadTerminator;
 
 use crate::error::{Error, Result};
 use crate::state::UploadState;

@@ -49,7 +49,7 @@ where
             CreationRequest::from_headers(&headers, has_body),
         )?;
 
-        let mut state = match transition {
+        let state = match transition {
             CreationTransition::Upload(state) => state,
             CreationTransition::Final { state, part_urls } => {
                 return self
@@ -58,23 +58,6 @@ where
             }
         };
 
-        let hook_ctx = hook_contexts.context(HookEvent::PreCreate, state.clone());
-        let pre_result = self.hooks.execute_pre(&hook_ctx).await?;
-
-        if !pre_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_result.reject_status.unwrap_or(400),
-                message: pre_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        let mut response_headers = pre_result.response_headers;
-
-        if let Some(metadata) = pre_result.metadata {
-            state.set_metadata(metadata);
-        }
-
-        // Creation-With-Upload path
         let is_creation_with_upload = has_body
             && self.config.has_extension(Extension::CreationWithUpload)
             && headers
@@ -82,7 +65,8 @@ where
                 .as_deref()
                 .map(|ct| ct.starts_with("application/offset+octet-stream"))
                 .unwrap_or(false);
-        if is_creation_with_upload {
+
+        let (state, response_headers) = if is_creation_with_upload {
             let receiver = ByteReceiver::new(
                 self.storage,
                 self.state_store,
@@ -91,18 +75,35 @@ where
                 hook_contexts.request_info(),
             );
             let received = receiver
-                .receive_creation_with_upload(&headers, state, body, response_headers)
+                .receive_creation_with_upload(&headers, state, body)
                 .await?;
-            state = received.state;
-            response_headers = received.response_headers;
+            (received.state, received.response_headers)
         } else {
+            let mut state = state;
+            let hook_ctx = hook_contexts.context(HookEvent::PreCreate, state.clone());
+            let pre_result = self.hooks.execute_pre(&hook_ctx).await?;
+
+            if !pre_result.proceed {
+                return Err(Error::HookRejected {
+                    status_code: pre_result.reject_status.unwrap_or(400),
+                    message: pre_result.reject_message.unwrap_or_default(),
+                });
+            }
+
+            let response_headers = pre_result.response_headers;
+
+            if let Some(metadata) = pre_result.metadata {
+                state.set_metadata(metadata);
+            }
+
             let handle = self.storage.create(state.id()).await?;
             state.set_storage_handle(handle);
             self.state_store.set(&state, true).await?;
 
             let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
             execute_post_best_effort(self.hooks, &post_ctx).await;
-        }
+            (state, response_headers)
+        };
 
         let location = self
             .config
@@ -1085,6 +1086,42 @@ mod tests {
         let locker = NoopLocker::new();
         let hooks = HookChain::new()
             .on_pre_receive(|_| async { Ok(PreHookResult::reject(403, "receive blocked")) });
+        let polled = Arc::new(AtomicBool::new(false));
+        let polled_for_stream = Arc::clone(&polled);
+        let stream: crate::BodyStream = Box::pin(futures::stream::once(async move {
+            polled_for_stream.store(true, Ordering::SeqCst);
+            Ok(crate::BodyFrame::Data(Bytes::from_static(b"Hello")))
+        }));
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::HookRejected {
+                status_code: 403,
+                ..
+            }
+        ));
+        assert!(!polled.load(Ordering::SeqCst));
+        assert!(store.is_empty());
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_pre_create_rejection_does_not_poll_body() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = HookChain::new()
+            .on_pre_create(|_| async { Ok(PreHookResult::reject(403, "create blocked")) });
         let polled = Arc::new(AtomicBool::new(false));
         let polled_for_stream = Arc::clone(&polled);
         let stream: crate::BodyStream = Box::pin(futures::stream::once(async move {

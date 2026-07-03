@@ -4,7 +4,8 @@ use http::StatusCode;
 
 use crate::config::Extension;
 use crate::error::Error;
-use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
+use crate::hooks::HookExecutor;
+use crate::lifecycle::UploadTerminator;
 use crate::locking::Locker;
 use crate::state::StateStore;
 use crate::storage::Storage;
@@ -59,33 +60,17 @@ where
             .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        let pre_ctx = hook_contexts.context(HookEvent::PreTerminate, state.clone());
-        let pre_result = self.hooks.execute_pre(&pre_ctx).await?;
-
-        if !pre_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_result.reject_status.unwrap_or(400),
-                message: pre_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        if let Some(handle) = state.storage_handle()
-            && let Err(e) = self.storage.delete(&handle).await
-        {
-            tracing::warn!(
-                upload_id = %upload_id,
-                error = %e,
-                "failed to delete upload data from storage"
-            );
-        }
-
-        self.state_store.delete(upload_id).await?;
-
-        let post_ctx = hook_contexts.context(HookEvent::PostTerminate, state);
-        execute_post_best_effort(self.hooks, &post_ctx).await;
+        let terminated = UploadTerminator::new(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            hook_contexts.request_info(),
+        )
+        .terminate(state)
+        .await?;
 
         let mut response = Response::new(StatusCode::NO_CONTENT);
-        for (name, value) in pre_result.response_headers {
+        for (name, value) in terminated.response_headers {
             response = response.with_header_owned(name, value);
         }
         Ok(response)
@@ -101,10 +86,11 @@ where
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::hooks::NoopHookExecutor;
+    use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
     use crate::state::{UploadState, memory::MemoryStateStore};
     use crate::storage::{StorageHandle, memory::MemoryStorage};
+    use std::sync::{Arc, Mutex};
 
     fn config() -> Config {
         Config::default().with_extension(Extension::Termination)
@@ -174,5 +160,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status, StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn termination_runs_hooks_around_state_delete() {
+        let mut state = UploadState::new("test-id").with_length(1000);
+        state.set_storage_handle(StorageHandle::new("uploads/test-id"));
+        let (storage, store) = setup(state).await;
+        let locker = NoopLocker::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new()
+            .on_pre_terminate({
+                let events = Arc::clone(&events);
+                move |_| {
+                    let events = Arc::clone(&events);
+                    async move {
+                        events.lock().unwrap().push(HookEvent::PreTerminate);
+                        Ok(PreHookResult::proceed().with_header("x-terminate", "accepted"))
+                    }
+                }
+            })
+            .on_post_terminate({
+                let events = Arc::clone(&events);
+                move |_| {
+                    let events = Arc::clone(&events);
+                    async move {
+                        events.lock().unwrap().push(HookEvent::PostTerminate);
+                        Ok(())
+                    }
+                }
+            });
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let response = Protocol::new(&config(), &storage, &store, &locker, &hooks)
+            .delete(&Headers::default(), &upload_id)
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, StatusCode::NO_CONTENT);
+        assert_eq!(response.headers.get("x-terminate").unwrap(), "accepted");
+        assert!(store.get("test-id").await.unwrap().is_none());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![HookEvent::PreTerminate, HookEvent::PostTerminate]
+        );
     }
 }
