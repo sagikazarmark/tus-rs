@@ -12,6 +12,19 @@ pub(super) async fn run(command: CleanupCli) -> anyhow::Result<()> {
     super::init_tracing(settings.log_format)?;
     super::log_config_file(config_path.as_deref());
 
+    // Cleanup builds its own process-local memory locker, so its
+    // try_lock always succeeds: it cannot see locks held by a running
+    // serve process and could delete data mid-upload. Require an
+    // explicit acknowledgement before touching anything.
+    if !settings.force {
+        anyhow::bail!(
+            "refusing to run cleanup without --force: cleanup uses a process-local memory \
+             locker and cannot see locks held by a running serve process, so running it \
+             against a live server can delete upload data mid-transfer. Stop the server \
+             first, then re-run with --force (or TUS_CLEANUP_FORCE=true)."
+        );
+    }
+
     run_with_settings(&settings).await?;
     Ok(())
 }
@@ -199,14 +212,6 @@ mod tests {
 
         async fn try_lock(&self, upload_id: &str) -> tus_protocol::Result<Option<LockGuard>> {
             Ok(Some(LockGuard::new(upload_id)))
-        }
-
-        async fn unlock(&self, _upload_id: &str) -> tus_protocol::Result<()> {
-            Ok(())
-        }
-
-        async fn is_locked(&self, _upload_id: &str) -> tus_protocol::Result<bool> {
-            Ok(false)
         }
     }
 }

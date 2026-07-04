@@ -4,27 +4,29 @@ use std::time::Duration;
 
 use axum::{
     Router,
+    body::{Body, HttpBody as _},
     extract::{Request, State},
-    http::{Method, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::get,
 };
 use tus_axum::TusState;
 use tus_protocol::{HookExecutor, Locker, ProtocolHandle, StateStore, Storage, StorageReader};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct AppSettings {
     pub(crate) auth_token: Vec<String>,
     pub(crate) max_request_body_bytes: usize,
     pub(crate) request_body_read_timeout: u64,
+    pub(crate) cors_origins: Vec<String>,
 }
 
 pub(crate) fn build_app<S, I, L, H>(
     protocol: ProtocolHandle<S, I, L, H>,
     settings: &AppSettings,
     draining: Arc<AtomicBool>,
-) -> Router
+) -> anyhow::Result<Router>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
@@ -32,7 +34,9 @@ where
     H: HookExecutor + Send + Sync + 'static,
 {
     let state = TusState::new(protocol);
-    let mut tus_router = tus_axum::create_router_with_download(state);
+    let options = tus_axum::RouterOptions::new()
+        .with_cors_allowed_origins(settings.cors_origins.iter().cloned());
+    let mut tus_router = tus_axum::create_router_with_download_and_options(state, &options)?;
     if !settings.auth_token.is_empty() {
         tracing::info!(
             tokens = settings.auth_token.len(),
@@ -62,10 +66,32 @@ where
             idle_timeout_secs = timeout.as_secs(),
             "enforcing request body idle timeout"
         );
-        app = app.layer(tower_http::timeout::RequestBodyTimeoutLayer::new(timeout));
+        app = app.layer(axum::middleware::from_fn_with_state(
+            timeout,
+            body_read_timeout,
+        ));
     }
 
-    app
+    Ok(app)
+}
+
+// Applies an idle timeout between successive request-body frames.
+//
+// tower_http's RequestBodyTimeoutLayer wraps every body in TimeoutBody,
+// which does not forward `is_end_stream`. That makes already-finished
+// (empty) bodies look supplied to the TUS body extractor, turning
+// bodiless POST creations into 415s for clients that omit
+// Content-Length. Wrapping only bodies that still have frames to read
+// preserves end-of-stream detection while keeping the slowloris
+// protection for real payloads.
+async fn body_read_timeout(State(timeout): State<Duration>, req: Request, next: Next) -> Response {
+    let (parts, body) = req.into_parts();
+    let body = if body.is_end_stream() {
+        body
+    } else {
+        Body::new(tower_http::timeout::TimeoutBody::new(timeout, body))
+    };
+    next.run(Request::from_parts(parts, body)).await
 }
 
 // Constant-time byte-slice equality. Prevents the tiny amount of
@@ -82,11 +108,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-async fn bearer_auth(
-    State(tokens): State<Arc<Vec<String>>>,
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+async fn bearer_auth(State(tokens): State<Arc<Vec<String>>>, req: Request, next: Next) -> Response {
     let is_cors_preflight = req.method() == Method::OPTIONS
         && req.headers().contains_key(header::ORIGIN)
         && req
@@ -96,7 +118,7 @@ async fn bearer_auth(
     // Browser CORS preflights are sent without credentials, but plain
     // OPTIONS requests should still authenticate like other TUS routes.
     if is_cors_preflight {
-        return Ok(next.run(req).await);
+        return next.run(req).await;
     }
 
     let presented = req
@@ -111,10 +133,20 @@ async fn bearer_auth(
             .iter()
             .any(|t| ct_eq(t.as_bytes(), presented.as_bytes()))
     {
-        Ok(next.run(req).await)
+        next.run(req).await
     } else {
-        Err(StatusCode::UNAUTHORIZED)
+        unauthorized_response()
     }
+}
+
+// RFC 6750: a 401 to a bearer-protected resource must advertise the
+// expected authentication scheme via WWW-Authenticate.
+fn unauthorized_response() -> Response {
+    let mut response = StatusCode::UNAUTHORIZED.into_response();
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    response
 }
 
 fn build_health_router(draining: Arc<AtomicBool>) -> Router {
@@ -182,6 +214,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_advertises_bearer_scheme() {
+        let response = authenticated_test_router()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer")
+        );
     }
 
     #[tokio::test]

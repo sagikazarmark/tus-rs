@@ -127,7 +127,143 @@ mod tcp_tests {
     use std::time::{Duration, Instant};
 
     use reqwest::Client;
-    use tus_client::{ClientError, ParallelUpload, TusClient};
+    use reqwest::header::AUTHORIZATION;
+    use tus_client::{Error as ClientError, NewUpload, ParallelUpload};
+
+    /// Test-local facade over `tus_client::Client` that keeps the call shapes
+    /// in these tests compact.
+    #[derive(Debug, Clone)]
+    struct TusClient {
+        inner: tus_client::Client<tus_client::ReqwestTransport>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct TusUpload {
+        url: String,
+        offset: u64,
+        length: Option<u64>,
+        metadata: tus_client::UploadMetadata,
+    }
+
+    impl From<tus_client::UploadInfo> for TusUpload {
+        fn from(info: tus_client::UploadInfo) -> Self {
+            Self {
+                url: info.url.to_string(),
+                offset: info.offset,
+                length: info.length,
+                metadata: info.metadata,
+            }
+        }
+    }
+
+    impl TusClient {
+        fn new(endpoint: impl AsRef<str>) -> Result<Self, ClientError> {
+            Ok(Self {
+                inner: tus_client::Client::new(url::Url::parse(endpoint.as_ref())?),
+            })
+        }
+
+        fn with_bearer_token(mut self, token: &str) -> Result<Self, ClientError> {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                AUTHORIZATION,
+                format!("Bearer {token}")
+                    .parse()
+                    .expect("bearer token must form a valid header value"),
+            );
+            self.inner = self.inner.with_headers(headers);
+            Ok(self)
+        }
+
+        fn with_creation_with_upload_threshold(mut self, threshold: usize) -> Self {
+            self.inner = self.inner.with_max_initial_upload_size(threshold);
+            self
+        }
+
+        fn with_patch_chunk_size(mut self, chunk_size: usize) -> Self {
+            self.inner = self.inner.with_max_chunk_size(chunk_size);
+            self
+        }
+
+        fn with_max_retries(mut self, max_retries: usize) -> Self {
+            self.inner = self.inner.with_max_retries(max_retries);
+            self
+        }
+
+        fn with_checksum(mut self, algorithm: tus_protocol::ChecksumAlgorithm) -> Self {
+            self.inner = self.inner.with_checksum(algorithm);
+            self
+        }
+
+        fn with_checksum_trailer(mut self, algorithm: tus_protocol::ChecksumAlgorithm) -> Self {
+            self.inner = self
+                .inner
+                .with_checksum(tus_client::ChecksumMode::Trailer(algorithm));
+            self
+        }
+
+        async fn create_upload(
+            &self,
+            length: u64,
+            metadata: &HashMap<String, String>,
+        ) -> Result<TusUpload, ClientError> {
+            let (_upload, info) = self
+                .inner
+                .create_upload(NewUpload::new(length, metadata))
+                .await?;
+            Ok(info.into())
+        }
+
+        async fn upload_file(
+            &self,
+            path: impl AsRef<std::path::Path>,
+            metadata: &HashMap<String, String>,
+        ) -> Result<TusUpload, ClientError> {
+            let bytes = tokio::fs::read(path).await?;
+            self.inner
+                .upload_from(bytes, metadata)
+                .await
+                .map(Into::into)
+        }
+
+        async fn upload_file_parallel(
+            &self,
+            path: impl AsRef<std::path::Path>,
+            metadata: &HashMap<String, String>,
+            options: ParallelUpload,
+        ) -> Result<TusUpload, ClientError> {
+            let bytes = tokio::fs::read(path).await?;
+            self.inner
+                .upload_parallel(bytes, metadata, options)
+                .await
+                .map(Into::into)
+        }
+
+        async fn head(&self, upload_url: impl AsRef<str>) -> Result<TusUpload, ClientError> {
+            self.inner
+                .upload_at(upload_url.as_ref())?
+                .info()
+                .await
+                .map(Into::into)
+        }
+
+        async fn resume_file(
+            &self,
+            upload_url: impl AsRef<str>,
+            path: impl AsRef<std::path::Path>,
+        ) -> Result<TusUpload, ClientError> {
+            let bytes = tokio::fs::read(path).await?;
+            self.inner
+                .upload_at(upload_url.as_ref())?
+                .upload(bytes)
+                .await
+                .map(Into::into)
+        }
+
+        async fn delete_upload(&self, upload_url: impl AsRef<str>) -> Result<(), ClientError> {
+            self.inner.upload_at(upload_url.as_ref())?.terminate().await
+        }
+    }
 
     struct ServerProcess {
         child: Child,
@@ -891,12 +1027,16 @@ mod tcp_tests {
         server.child.kill().unwrap();
         server.child.wait().unwrap();
 
+        // The server was killed above, which is exactly the safe usage
+        // --force acknowledges: cleanup's memory locker cannot see a
+        // live server's locks.
         let output = Command::new(server_bin())
             .arg("cleanup")
             .arg("--storage-uri")
             .arg("fs://")
             .arg("--state-dir")
             .arg(&server.state_dir)
+            .arg("--force")
             .current_dir(root.path())
             .env_clear()
             .env("TUS_STORAGE_ROOT", "uploads")
@@ -912,6 +1052,35 @@ mod tcp_tests {
         assert!(!server.state_dir.join(format!("{upload_id}.json")).exists());
         assert!(!upload_path.exists());
         assert!(!staged_part_path.exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_command_refuses_to_run_without_force() {
+        let root = tempfile::tempdir().unwrap();
+        let state_dir = root.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        let output = Command::new(server_bin())
+            .arg("cleanup")
+            .arg("--storage-uri")
+            .arg("fs://")
+            .arg("--state-dir")
+            .arg(&state_dir)
+            .current_dir(root.path())
+            .env_clear()
+            .env("TUS_STORAGE_ROOT", "uploads")
+            .output()
+            .expect("tus-server cleanup must run");
+
+        assert!(
+            !output.status.success(),
+            "cleanup must refuse to run without --force"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--force"),
+            "error must point at the --force flag, got: {stderr}"
+        );
     }
 
     #[tokio::test]

@@ -8,7 +8,7 @@ use tus_protocol::{
     HookContext, HookExecutor, Locker, NoopHookExecutor, PreHookResult, StateStore, Storage,
     locking::memory::MemoryLocker, state::file::FileStateStore,
 };
-use tus_storage_opendal::Storage as ServerStorage;
+use tus_storage_opendal::OpendalStorage;
 
 use crate::config::{HookConfig, StorageConfig, build_storage_operator};
 use crate::expiration::ExpirationTarget;
@@ -16,7 +16,7 @@ use crate::expiration::ExpirationTarget;
 pub(in crate::command) struct CommandRuntime {
     pub(in crate::command) backends: CommandBackends,
     pub(in crate::command) cleanup_target:
-        ExpirationTarget<ServerStorage, FileStateStore, MemoryLocker>,
+        ExpirationTarget<OpendalStorage, FileStateStore, MemoryLocker>,
 }
 
 // Wraps the two hook executors so TusState's concrete type stays
@@ -44,7 +44,7 @@ impl HookExecutor for ServerHooks {
 }
 
 pub(in crate::command) struct CommandBackends {
-    pub(in crate::command) storage: Arc<ServerStorage>,
+    pub(in crate::command) storage: Arc<OpendalStorage>,
     pub(in crate::command) state_store: Arc<FileStateStore>,
     pub(in crate::command) locker: Arc<MemoryLocker>,
 }
@@ -97,7 +97,10 @@ pub(in crate::command) fn build_hooks(config: &HookConfig) -> anyhow::Result<Ser
         "Hooks: http webhook"
     );
 
-    Ok(ServerHooks::Http(HttpHookExecutor::new(cfg)))
+    let executor =
+        HttpHookExecutor::new(cfg).context("failed to build HTTP client for hook webhooks")?;
+
+    Ok(ServerHooks::Http(executor))
 }
 
 async fn build_backends(
@@ -109,7 +112,7 @@ async fn build_backends(
         .with_context(|| format!("failed to create state directory {}", state_dir.display()))?;
 
     let (storage_operator, storage_scheme) = build_storage_operator(storage_config)?;
-    let storage = Arc::new(ServerStorage::new(storage_operator, ""));
+    let storage = Arc::new(OpendalStorage::new(storage_operator));
     let state_store = Arc::new(FileStateStore::new(state_dir).await.with_context(|| {
         format!(
             "failed to initialize file state store at {}",

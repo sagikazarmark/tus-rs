@@ -8,14 +8,16 @@
 //! bandwidth.
 //!
 //! The server exposes `--request-body-read-timeout <SECS>` which
-//! wires `tower_http::timeout::RequestBodyTimeoutLayer`. This test
-//! pins down two properties:
+//! wires `tower_http::timeout::RequestBodyTimeoutLayer`. The default
+//! is 60 seconds, so a stock server tears down stalled bodies on its
+//! own; `0` is the explicit opt-out that disables the timeout. This
+//! test pins down two properties:
 //!
-//!   1. With the flag set, a stalled body causes the server to
+//!   1. With the timeout set, a stalled body causes the server to
 //!      tear the connection within bounded time.
-//!   2. Without the flag (the default 0 = disabled), a stalled
-//!      body holds the connection open. This documents the
-//!      default — operators MUST set the flag in production.
+//!   2. With the explicit `0` opt-out, a stalled body holds the
+//!      connection open. Operators who disable the timeout take on
+//!      the slowloris exposure themselves.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -103,6 +105,9 @@ impl Drop for ServerProcess {
     }
 }
 
+/// `timeout_secs` is passed through as an explicit
+/// `--request-body-read-timeout` value; `0` is the documented
+/// opt-out that disables the timeout entirely.
 fn spawn_server(timeout_secs: u64) -> ServerProcess {
     let root = tempfile::tempdir().unwrap();
     let state_dir: PathBuf = root.path().join("state");
@@ -110,7 +115,7 @@ fn spawn_server(timeout_secs: u64) -> ServerProcess {
     for _ in 0..10 {
         let reserved_port = reserve_port();
         let addr = format!("127.0.0.1:{reserved_port}");
-        let mut args = vec![
+        let args = vec![
             "serve".to_string(),
             "--addr".to_string(),
             addr.clone(),
@@ -120,11 +125,9 @@ fn spawn_server(timeout_secs: u64) -> ServerProcess {
             state_dir.display().to_string(),
             "--max-size".into(),
             "104857600".into(),
+            "--request-body-read-timeout".into(),
+            timeout_secs.to_string(),
         ];
-        if timeout_secs > 0 {
-            args.push("--request-body-read-timeout".into());
-            args.push(timeout_secs.to_string());
-        }
 
         let port_token = reserved_port.into_token();
         let mut child = Command::new(server_bin())
@@ -332,12 +335,12 @@ async fn slow_body_times_out_when_request_body_read_timeout_is_set() {
 }
 
 #[tokio::test]
-async fn slow_body_is_not_timed_out_when_flag_is_default() {
-    // Documents the current default behaviour: with no
-    // --request-body-read-timeout flag, a slow body holds the
-    // connection. Wall budget kept small to keep CI fast — if
-    // behaviour ever changes (a default timeout is added), flip
-    // the assertion.
+async fn slow_body_is_not_timed_out_when_timeout_is_disabled_explicitly() {
+    // Documents the explicit opt-out: --request-body-read-timeout=0
+    // disables the timeout, so a slow body holds the connection.
+    // The DEFAULT (no flag) is 60 s, which is too slow to exercise
+    // in CI; the opt-out path is what remains observable here.
+    // Wall budget kept small to keep CI fast.
     let server = spawn_server(0);
     wait_for_ready(&server).await;
 
@@ -353,7 +356,7 @@ async fn slow_body_is_not_timed_out_when_flag_is_default() {
 
     assert!(
         !closed,
-        "server closed a slow connection with no body-read timeout configured — \
-         the default may have changed; tighten the assertion or update operator docs"
+        "server closed a slow connection despite --request-body-read-timeout=0 — \
+         the explicit opt-out no longer disables the timeout; update operator docs"
     );
 }

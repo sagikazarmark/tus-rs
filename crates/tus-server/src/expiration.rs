@@ -156,7 +156,7 @@ mod tests {
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::file::FileStateStore;
     use tus_protocol::{AppendRequest, ChunkStream, StateStore, Storage, UploadState};
-    use tus_storage_opendal::Storage as ServerStorage;
+    use tus_storage_opendal::OpendalStorage;
 
     use super::*;
     use crate::config::{StorageConfig, build_storage_operator};
@@ -171,7 +171,7 @@ mod tests {
             root.path().join("uploads").display().to_string(),
         );
         let (operator, _) = build_storage_operator(&config).unwrap();
-        let storage = Arc::new(ServerStorage::new(operator, ""));
+        let storage = Arc::new(OpendalStorage::new(operator));
         let state_store = Arc::new(FileStateStore::new(&state_dir).await.unwrap());
 
         let mut state = UploadState::new("expired-test")
