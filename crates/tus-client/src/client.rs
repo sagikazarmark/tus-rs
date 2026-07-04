@@ -223,9 +223,10 @@ where
             // `insert` (not `append`): provider headers replace all
             // configured values of the same name, so refreshed credentials
             // never travel next to stale configured ones. Documented on
-            // `with_header_provider`.
-            for (name, value) in provider.headers().await? {
-                insert_request_header(&mut request, name, value)?;
+            // `with_header_provider`. The provider returns a `HeaderMap`, so
+            // names and values are already validated — no re-parsing here.
+            for (name, value) in provider.headers().await?.iter() {
+                request.headers_mut().insert(name.clone(), value.clone());
             }
         }
         request.headers_mut().insert(
@@ -341,8 +342,11 @@ where
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait HeaderProvider: MaybeSendSync {
-    /// Produces headers to append to the next request.
-    async fn headers(&self) -> Result<Vec<(String, String)>>;
+    /// Produces headers to apply to the next request.
+    ///
+    /// Returning an [`http::HeaderMap`] keeps names and values validated at
+    /// construction time rather than re-parsed per request.
+    async fn headers(&self) -> Result<HeaderMap>;
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -350,9 +354,9 @@ pub trait HeaderProvider: MaybeSendSync {
 impl<F, Fut> HeaderProvider for F
 where
     F: Fn() -> Fut + MaybeSendSync,
-    Fut: std::future::Future<Output = Result<Vec<(String, String)>>> + MaybeSend,
+    Fut: std::future::Future<Output = Result<HeaderMap>> + MaybeSend,
 {
-    async fn headers(&self) -> Result<Vec<(String, String)>> {
+    async fn headers(&self) -> Result<HeaderMap> {
         self().await
     }
 }
@@ -377,6 +381,12 @@ where
     }
 }
 
+/// Builds and inserts a protocol header from an internal name/value pair.
+///
+/// Used for headers the client controls (`Upload-Offset`, `Upload-Length`,
+/// `Upload-Metadata`, `Upload-Concat`); a construction failure surfaces as
+/// [`Error::InvalidDefaultHeader`]. Dynamic caller headers arrive pre-validated
+/// through [`HeaderProvider`] and do not pass through here.
 fn insert_request_header(
     request: &mut TransportRequest,
     name: impl AsRef<str>,
@@ -520,7 +530,12 @@ mod tests {
         let client = Client::with_transport(endpoint_url(), transport.clone())
             .with_header_provider(|| {
                 // Async providers can refresh tokens before answering.
-                std::future::ready(Ok(vec![("x-tenant-id".to_string(), "team-a".to_string())]))
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    HeaderName::from_static("x-tenant-id"),
+                    HeaderValue::from_static("team-a"),
+                );
+                std::future::ready(Ok(headers))
             });
 
         let (upload, _info) = client
@@ -576,7 +591,12 @@ mod tests {
         let client = Client::with_transport(endpoint_url(), transport.clone())
             .with_headers(headers)
             .with_header_provider(|| {
-                std::future::ready(Ok(vec![("x-trace-tag".to_string(), "fresh".to_string())]))
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    HeaderName::from_static("x-trace-tag"),
+                    HeaderValue::from_static("fresh"),
+                );
+                std::future::ready(Ok(headers))
             });
 
         client

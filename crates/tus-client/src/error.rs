@@ -45,13 +45,13 @@ pub enum Error {
         value: String,
     },
 
-    /// The configured default header is invalid.
-    #[error("invalid default header `{name}`: {value}")]
+    /// A protocol header could not be built from an internal name/value.
+    #[error("invalid `{name}` header: {value}")]
     #[non_exhaustive]
     InvalidDefaultHeader {
-        /// Name of the configured header.
+        /// Name of the header.
         name: String,
-        /// The invalid configured value.
+        /// The invalid value.
         value: String,
     },
 
