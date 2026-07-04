@@ -15,7 +15,7 @@ tus-protocol = { workspace = true }
 
 async-trait = { workspace = true }
 fastrand = { workspace = true }
-hmac = "0.13"
+hmac = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
