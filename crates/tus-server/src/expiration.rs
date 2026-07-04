@@ -114,6 +114,11 @@ fn log_reclamation_outcomes(scope: &str, report: &ExpiredUploadReclamationReport
             } => {
                 tracing::warn!(scope = %scope, upload_id = %upload_id, error = %error, "failed to delete expired upload state");
             }
+            ExpiredUploadReclamationOutcome::Failed {
+                upload_id, error, ..
+            } => {
+                tracing::warn!(scope = %scope, upload_id = %upload_id, error = %error, "failed to reclaim expired upload");
+            }
             // ExpiredUploadReclamationOutcome is #[non_exhaustive]:
             // future outcome kinds are surfaced generically until a
             // dedicated log line exists for them.
