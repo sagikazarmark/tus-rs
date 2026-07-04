@@ -86,7 +86,11 @@ mod checksum;
 // Re-exported dependency crates whose types appear in this crate's public
 // API. Depend on these through the re-export so your version can never skew
 // from the one `tus-protocol` was built against.
-pub use {async_trait, bytes, chrono, futures, http, serde};
+//
+// Only `futures_core::Stream` appears in this crate's public signatures
+// (`ByteStream`, `BodyStream`), so `futures_core` — not the full `futures`
+// umbrella — is the re-exported streaming surface.
+pub use {async_trait, bytes, chrono, futures_core, http, serde};
 
 // Re-export main types at crate root
 #[cfg(feature = "checksum")]
