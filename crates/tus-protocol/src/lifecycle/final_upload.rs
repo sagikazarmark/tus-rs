@@ -9,7 +9,7 @@ use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ConcatRequest, Storage};
 
-use super::{UploadCompletion, ensure_active};
+use super::{PreHookGate, UploadCompletion, ensure_active};
 
 /// Loaded and validated final-upload parts.
 #[derive(Debug, Clone)]
@@ -171,7 +171,7 @@ where
 
     apply_final_upload_plan(&mut state, part_ids, &status);
     cap_planned_final_upload_expiration(&mut state, &parts);
-    let pre_create = run_pre_create(hooks, request_info, state).await?;
+    let pre_create = PreHookGate::Create.run(hooks, request_info, state).await?;
     state = pre_create.state;
 
     let completion = UploadCompletion::new(hooks, request_info);
@@ -536,41 +536,6 @@ fn cap_planned_final_upload_expiration(state: &mut UploadState, parts: &[UploadS
     if should_cap {
         state.set_expiration(earliest_part_expiration);
     }
-}
-
-struct PreCreateDecision {
-    state: UploadState,
-    response_headers: HashMap<String, String>,
-}
-
-async fn run_pre_create<H>(
-    hooks: &H,
-    request_info: &HookRequestInfo,
-    state: UploadState,
-) -> Result<PreCreateDecision>
-where
-    H: HookExecutor + ?Sized,
-{
-    let hook_ctx = HookContext::new(HookEvent::PreCreate, state.clone(), request_info.clone());
-    let pre_result = hooks.execute_pre(&hook_ctx).await?;
-
-    if !pre_result.proceed {
-        return Err(Error::HookRejected {
-            status_code: pre_result.reject_status.unwrap_or(400),
-            message: pre_result.reject_message.unwrap_or_default(),
-        });
-    }
-
-    Ok(PreCreateDecision {
-        state: {
-            let mut state = state;
-            if let Some(metadata) = pre_result.metadata {
-                state.set_metadata(metadata);
-            }
-            state
-        },
-        response_headers: pre_result.response_headers,
-    })
 }
 
 async fn run_post_event<H>(

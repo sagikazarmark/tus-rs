@@ -11,9 +11,10 @@ use std::time::Duration as StdDuration;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
-    AppendRequest, ChunkStream, Config, Error, Extension, Headers, HookRequestInfo,
-    NoopHookExecutor, NoopLocker, Protocol, RequestBody, Response, StateStore, Storage,
-    UploadConcat, UploadId, UploadState, reclaim_expired_uploads,
+    AppendRequest, ChunkStream, Config, Error, Extension, Headers, HookChain, HookContext,
+    HookEvent, HookExecutor, HookRequestInfo, NoopHookExecutor, NoopLocker, PreHookResult,
+    Protocol, RequestBody, Response, StateStore, Storage, UploadConcat, UploadId, UploadMetadata,
+    UploadState, reclaim_expired_uploads,
 };
 
 fn post_headers_with_length(length: u64) -> Headers {
@@ -58,6 +59,36 @@ fn upload_id_from_location(response: &Response) -> UploadId {
         .unwrap()
         .parse()
         .unwrap()
+}
+
+fn assert_default_hook_rejection(err: Error) {
+    match err {
+        Error::HookRejected {
+            status_code: 400,
+            message,
+        } if message.is_empty() => {}
+        err => panic!("expected default hook rejection, got {err:?}"),
+    }
+}
+
+struct FinishSideEffectHook;
+
+#[async_trait::async_trait]
+impl HookExecutor for FinishSideEffectHook {
+    async fn execute_pre(&self, ctx: &HookContext) -> tus_protocol::Result<PreHookResult> {
+        if ctx.event != HookEvent::PreFinish {
+            return Ok(PreHookResult::proceed());
+        }
+
+        let mut metadata = UploadMetadata::new();
+        metadata.insert("finish", "ignored");
+
+        Ok(PreHookResult::proceed_with_metadata(metadata).with_header("x-finish", "ignored"))
+    }
+
+    async fn execute_post(&self, _ctx: &HookContext) -> tus_protocol::Result<()> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -139,6 +170,145 @@ async fn protocol_can_opt_into_rejecting_standard_empty_creation_requests() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn protocol_pre_hook_rejections_use_default_status_and_message() {
+    let create_config = Config::default();
+    let create_storage = MemoryStorage::new();
+    let create_state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let create_hooks = HookChain::new().on_pre_create(|_| async { Ok(PreHookResult::default()) });
+    let protocol = Protocol::new(
+        &create_config,
+        &create_storage,
+        &create_state_store,
+        &locker,
+        &create_hooks,
+    );
+
+    let err = protocol
+        .post(post_headers_with_length(5), RequestBody::absent())
+        .await
+        .unwrap_err();
+
+    assert_default_hook_rejection(err);
+
+    let config = Config::default();
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let noop_hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &noop_hooks);
+    let post_response = protocol
+        .post(post_headers_with_length(5), RequestBody::absent())
+        .await
+        .unwrap();
+    let upload_id = upload_id_from_location(&post_response);
+
+    let receive_hooks = HookChain::new().on_pre_receive(|_| async { Ok(PreHookResult::default()) });
+    let err = Protocol::new(&config, &storage, &state_store, &locker, &receive_hooks)
+        .patch(
+            patch_headers(0),
+            &upload_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"h"))),
+        )
+        .await
+        .unwrap_err();
+
+    assert_default_hook_rejection(err);
+
+    let finish_hooks = HookChain::new().on_pre_finish(|_| async { Ok(PreHookResult::default()) });
+    let err = Protocol::new(&config, &storage, &state_store, &locker, &finish_hooks)
+        .patch(
+            patch_headers(0),
+            &upload_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+        )
+        .await
+        .unwrap_err();
+
+    assert_default_hook_rejection(err);
+    let stored = state_store.get(upload_id.as_str()).await.unwrap().unwrap();
+    assert_eq!(stored.offset(), 0);
+
+    let terminate_config = Config::default().with_extension(Extension::Termination);
+    let terminate_hooks =
+        HookChain::new().on_pre_terminate(|_| async { Ok(PreHookResult::default()) });
+    let err = Protocol::new(
+        &terminate_config,
+        &storage,
+        &state_store,
+        &locker,
+        &terminate_hooks,
+    )
+    .delete(&Headers::default(), &upload_id)
+    .await
+    .unwrap_err();
+
+    assert_default_hook_rejection(err);
+    assert!(state_store.get(upload_id.as_str()).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn protocol_pre_finish_does_not_apply_metadata_or_response_headers() {
+    let config = Config::default();
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let noop_hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &noop_hooks);
+    let post_response = protocol
+        .post(post_headers_with_length(5), RequestBody::absent())
+        .await
+        .unwrap();
+    let upload_id = upload_id_from_location(&post_response);
+
+    let response = Protocol::new(
+        &config,
+        &storage,
+        &state_store,
+        &locker,
+        &FinishSideEffectHook,
+    )
+    .patch(
+        patch_headers(0),
+        &upload_id,
+        RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status, StatusCode::NO_CONTENT);
+    assert!(response.headers.get("x-finish").is_none());
+    let stored = state_store.get(upload_id.as_str()).await.unwrap().unwrap();
+    assert!(stored.is_complete());
+    assert!(stored.metadata().get("finish").is_none());
+}
+
+#[tokio::test]
+async fn protocol_pre_terminate_response_headers_are_returned() {
+    let config = Config::default().with_extension(Extension::Termination);
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let noop_hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &noop_hooks);
+    let post_response = protocol
+        .post(post_headers_with_length(5), RequestBody::absent())
+        .await
+        .unwrap();
+    let upload_id = upload_id_from_location(&post_response);
+    let hooks = HookChain::new()
+        .on_pre_terminate(|_| async { Ok(PreHookResult::proceed().with_header("x-delete", "ok")) });
+
+    let response = Protocol::new(&config, &storage, &state_store, &locker, &hooks)
+        .delete(&Headers::default(), &upload_id)
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, StatusCode::NO_CONTENT);
+    assert_eq!(response.headers.get("x-delete").unwrap(), "ok");
+    assert!(state_store.get(upload_id.as_str()).await.unwrap().is_none());
 }
 
 #[tokio::test]

@@ -117,18 +117,19 @@ databases, distributed locks, or platform-specific runtimes.
 
 Hook contexts expose `HookUpload`, a protocol-level upload snapshot that omits
 storage keys and backend-internal storage metadata. Pre-hooks can reject
-requests, add response headers, and, for `PreCreate`/`PreReceive`, replace user
-metadata before an operation is committed. Post-hooks are best-effort
+requests. `PreCreate`, `PreReceive`, and `PreTerminate` may add response
+headers. `PreCreate` and `PreReceive` may replace user metadata before an
+operation is committed. `PreFinish` is gate-only. Post-hooks are best-effort
 notifications; failures are logged and do not fail already-committed requests.
 
 | Request path | Hook events | Notes |
 |--------------|-------------|-------|
-| `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may replace user metadata before storage/state creation. |
-| `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` if the body completes the upload | `PreReceive` gates the initial body before it is collected and may replace metadata after `PreCreate`. `PreFinish` gates a completing body after validation. Post-hooks run only after storage and state commit; commit failure rolls back without post-hooks. |
-| `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete | Final upload facts are derived from referenced partials before `PreCreate`. |
-| `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload | `PreReceive` may replace user metadata before bytes are committed. |
-| `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. |
-| `HEAD` or optional `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths can materialize or repair final concatenation uploads from complete parts. |
+| `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may add response headers or replace user metadata before storage/state creation. |
+| `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` if the body completes the upload | `PreReceive` gates the initial body before it is collected and may add response headers or replace metadata after `PreCreate`. `PreFinish` gates a completing body after validation. Post-hooks run only after storage and state commit; commit failure rolls back without post-hooks. |
+| `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete | Final upload facts are derived from referenced partials before `PreCreate`; `PreCreate` may add response headers or replace user metadata. `PreFinish` is gate-only. |
+| `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload | `PreReceive` may add response headers or replace user metadata before bytes are committed. `PreFinish` is gate-only. |
+| `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PreTerminate` may add response headers. |
+| `HEAD` or optional `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths can materialize or repair final concatenation uploads from complete parts. `PreFinish` is gate-only. |
 
 ## Runtime Notes
 

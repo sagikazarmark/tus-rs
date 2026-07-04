@@ -10,6 +10,7 @@ mod access;
 mod creation;
 mod final_upload;
 mod finish;
+mod pre_hook;
 mod receive;
 mod reclamation;
 mod recovery;
@@ -22,6 +23,7 @@ pub(crate) use access::{
 pub use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub(crate) use final_upload::FinalUploadMaterializer;
 pub(crate) use finish::UploadCompletion;
+pub(crate) use pre_hook::PreHookGate;
 pub(crate) use receive::ByteReceiver;
 pub(crate) use receive::ReceiveRequest;
 pub use reclamation::{

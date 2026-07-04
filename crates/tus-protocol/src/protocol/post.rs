@@ -6,7 +6,8 @@ use crate::config::Extension;
 use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
-    ByteReceiver, CreationRequest, CreationTransition, FinalUploadMaterializer, prepare_creation,
+    ByteReceiver, CreationRequest, CreationTransition, FinalUploadMaterializer, PreHookGate,
+    prepare_creation,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
@@ -79,22 +80,11 @@ where
                 .await?;
             (received.state, received.response_headers)
         } else {
-            let mut state = state;
-            let hook_ctx = hook_contexts.context(HookEvent::PreCreate, state.clone());
-            let pre_result = self.hooks.execute_pre(&hook_ctx).await?;
-
-            if !pre_result.proceed {
-                return Err(Error::HookRejected {
-                    status_code: pre_result.reject_status.unwrap_or(400),
-                    message: pre_result.reject_message.unwrap_or_default(),
-                });
-            }
-
-            let response_headers = pre_result.response_headers;
-
-            if let Some(metadata) = pre_result.metadata {
-                state.set_metadata(metadata);
-            }
+            let pre_create = PreHookGate::Create
+                .run(self.hooks, hook_contexts.request_info(), state)
+                .await?;
+            let mut state = pre_create.state;
+            let response_headers = pre_create.response_headers;
 
             let handle = self.storage.create(state.id()).await?;
             state.set_storage_handle(handle);

@@ -1,8 +1,10 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
 use crate::state::UploadState;
+
+use super::PreHookGate;
 
 /// Owns upload completion hook timing around durable completion commits.
 pub(crate) struct UploadCompletion<'a, H>
@@ -26,17 +28,9 @@ where
 
     /// Runs the PreFinish hook gate before completion is durable.
     pub(crate) async fn before_commit(&self, state: UploadState) -> Result<()> {
-        let pre_finish_ctx =
-            HookContext::new(HookEvent::PreFinish, state, self.request_info.clone());
-        let pre_finish_result = self.hooks.execute_pre(&pre_finish_ctx).await?;
-
-        if !pre_finish_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_finish_result.reject_status.unwrap_or(400),
-                message: pre_finish_result.reject_message.unwrap_or_default(),
-            });
-        }
-
+        PreHookGate::Finish
+            .run(self.hooks, self.request_info, state)
+            .await?;
         Ok(())
     }
 
@@ -61,6 +55,7 @@ where
 #[cfg(all(test, not(feature = "local-futures")))]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use crate::hooks::{HookChain, PreHookResult};
 
     #[tokio::test]
