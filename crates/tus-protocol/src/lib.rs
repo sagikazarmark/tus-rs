@@ -92,7 +92,7 @@ pub use {async_trait, bytes, chrono, futures, http};
 #[cfg(feature = "checksum")]
 pub use checksum::{Hasher as ChecksumHasher, calculate as calculate_checksum};
 pub use config::{ChecksumAlgorithm, Config, Extension, TUS_RESUMABLE, TUS_VERSION};
-pub use error::{Error, Result};
+pub use error::{Error, ErrorResponse, Result};
 pub use extensions::UploadConcat;
 pub use hooks::{
     Hook, HookChain, HookContext, HookEvent, HookExecutor, HookRequestInfo, HookUpload,
