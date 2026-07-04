@@ -44,9 +44,9 @@
 //! (request errors, `429 Too Many Requests`, and 5xx responses) are retried
 //! with capped exponential backoff plus random jitter. A `Retry-After` header
 //! (seconds form) on `429`/`503` responses overrides the computed backoff.
-//! Retrying stops after [`max_retries`](HttpHookConfig::max_retries)
-//! additional attempts, or as soon as the next attempt would exceed
-//! [`retry_deadline`](HttpHookConfig::retry_deadline), whichever comes first.
+//! Retrying stops after [`HttpHookConfig::with_max_retries`] additional
+//! attempts, or as soon as the next attempt would exceed the deadline set by
+//! [`HttpHookConfig::with_retry_deadline`], whichever comes first.
 //!
 //! ## Pre-hook Response
 //!
@@ -118,44 +118,46 @@ const SIGNATURE_HEADER: &str = "X-Tus-Signature-256";
 /// Configuration for the HTTP webhook executor.
 ///
 /// Construct via [`HttpHookConfig::new`] and the `with_*` builder methods.
-/// The type is `#[non_exhaustive]` so new webhook knobs can be added without a
-/// major version bump.
+/// Fields are private so the configuration can gain invariants or change
+/// representation without a breaking change; the type is also
+/// `#[non_exhaustive]` so new webhook knobs can be added without a major
+/// version bump.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct HttpHookConfig {
     /// The webhook endpoint URL.
-    pub url: String,
+    url: String,
 
     /// Request timeout, applied to every webhook request (including each
     /// retry attempt individually), regardless of how the underlying client
     /// was constructed.
-    pub timeout: Duration,
+    timeout: Duration,
 
     /// Additional headers to include in webhook requests.
-    pub headers: HashMap<String, String>,
+    headers: HashMap<String, String>,
 
     /// Whether to retry failed requests.
-    pub retry_enabled: bool,
+    retry_enabled: bool,
 
     /// Maximum number of retry attempts.
-    pub max_retries: u32,
+    max_retries: u32,
 
     /// Overall deadline for retrying a single webhook delivery.
     ///
     /// Once the next retry (including its backoff delay) would exceed this
     /// deadline, the executor stops retrying and reports the last outcome.
     /// Defaults to 30 seconds.
-    pub retry_deadline: Duration,
+    retry_deadline: Duration,
 
     /// Whether post-hooks participate in retries.
     ///
     /// Post-hook results are logged and discarded, so retrying them only
     /// delays hook dispatch; they are sent exactly once by default. Only
-    /// takes effect when [`retry_enabled`](Self::retry_enabled) is set.
-    pub retry_post_hooks: bool,
+    /// takes effect when retries are enabled.
+    retry_post_hooks: bool,
 
     /// Shared secret used to sign webhook bodies with HMAC-SHA256.
-    pub signing_secret: Option<String>,
+    signing_secret: Option<String>,
 }
 
 impl HttpHookConfig {
@@ -199,7 +201,9 @@ impl HttpHookConfig {
 
     /// Sets the overall deadline for retrying a single webhook delivery.
     ///
-    /// See [`retry_deadline`](Self::retry_deadline).
+    /// Once the next retry (including its backoff delay) would exceed this
+    /// deadline, the executor stops retrying and reports the last outcome.
+    /// Defaults to 30 seconds.
     pub fn with_retry_deadline(mut self, deadline: Duration) -> Self {
         self.retry_deadline = deadline;
         self
@@ -207,7 +211,10 @@ impl HttpHookConfig {
 
     /// Enables retrying post-hook webhooks.
     ///
-    /// See [`retry_post_hooks`](Self::retry_post_hooks).
+    /// Post-hook results are logged and discarded, so retrying them only
+    /// delays hook dispatch; they are sent exactly once unless this is
+    /// enabled. Only takes effect when retries are enabled via
+    /// [`with_retry`](Self::with_retry).
     pub fn with_post_hook_retry(mut self, enabled: bool) -> Self {
         self.retry_post_hooks = enabled;
         self
@@ -222,31 +229,33 @@ impl HttpHookConfig {
 
 /// Response from a pre-hook webhook.
 ///
-/// Webhook servers can construct one via [`PreHookResponse::new`] (or
-/// [`Default`]) and the `with_*` builder methods, then serialize it as the
-/// response body.
+/// Webhook servers construct one via [`PreHookResponse::new`] (or [`Default`])
+/// and the `with_*` builder methods, then serialize it as the response body.
+/// Fields are private so construction always goes through the builder and the
+/// representation can evolve; the JSON wire contract is defined by the serde
+/// field names, which remain stable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct PreHookResponse {
     /// Whether to proceed with the operation.
     #[serde(default = "default_proceed")]
-    pub proceed: bool,
+    proceed: bool,
 
     /// Replacement user metadata, if any.
     #[serde(default)]
-    pub metadata: Option<UploadMetadata>,
+    metadata: Option<UploadMetadata>,
 
     /// HTTP status code for rejection.
     #[serde(default)]
-    pub reject_status: Option<u16>,
+    reject_status: Option<u16>,
 
     /// Rejection message for the client.
     #[serde(default)]
-    pub reject_message: Option<String>,
+    reject_message: Option<String>,
 
     /// Additional response headers to include.
     #[serde(default)]
-    pub response_headers: Option<HashMap<String, String>>,
+    response_headers: Option<HashMap<String, String>>,
 }
 
 impl PreHookResponse {
@@ -312,7 +321,7 @@ impl From<PreHookResponse> for PreHookResult {
             PreHookResult::proceed()
         } else {
             PreHookResult::reject(
-                response.reject_status.unwrap_or(400),
+                response.reject_status.unwrap_or(403),
                 response.reject_message.unwrap_or_default(),
             )
         };
@@ -358,7 +367,7 @@ impl HttpHookExecutor {
     ///
     /// Validates the configured webhook URL, failing fast with a
     /// [`BuildError`] instead of erroring on the first webhook send. The
-    /// configured [`timeout`](HttpHookConfig::timeout) is applied per request,
+    /// timeout set via [`HttpHookConfig::with_timeout`] is applied per request,
     /// so it takes effect for custom clients as well.
     pub fn with_client(
         client: Client,
@@ -531,7 +540,7 @@ impl HttpHookExecutor {
                 }
                 Err(error) => {
                     if is_last_attempt {
-                        return Err(Error::Hook(Box::new(error)));
+                        return Err(Error::hook(error));
                     }
 
                     let delay = self.retry_delay(attempt, None);
@@ -540,7 +549,7 @@ impl HttpHookExecutor {
                             error = %error,
                             "webhook retry deadline exceeded"
                         );
-                        return Err(Error::Hook(Box::new(error)));
+                        return Err(Error::hook(error));
                     }
 
                     tracing::warn!(

@@ -326,10 +326,10 @@ async fn upload_prints_created_upload_url_and_metadata() {
 
     let client = Client::new(endpoint_url(&endpoint));
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 5);
-    assert_eq!(info.length, Some(5));
+    assert_eq!(info.offset(), 5);
+    assert_eq!(info.length(), Some(5));
     assert_eq!(
-        info.metadata.get("filename").unwrap().to_string_lossy(),
+        info.metadata().get("filename").unwrap().to_string_lossy(),
         "upload.txt"
     );
 
@@ -503,8 +503,8 @@ async fn create_then_upload_uses_created_upload_url() {
     assert_eq!(stderr(&upload), "");
     let client = Client::new(endpoint_url(&endpoint));
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
-    assert_eq!(info.length, Some(10));
+    assert_eq!(info.offset(), 10);
+    assert_eq!(info.length(), Some(10));
 
     handle.abort();
 }
@@ -674,7 +674,7 @@ async fn upload_with_url_uploads_to_existing_upload() {
     );
     assert_existing_upload_human_output(&output, &upload_url);
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
+    assert_eq!(info.offset(), 10);
 
     handle.abort();
 }
@@ -711,7 +711,7 @@ async fn upload_chunk_size_flag_splits_existing_upload_patch_requests() {
     assert_eq!(stdout(&output).trim(), upload_url);
     assert_eq!(patch_requests.requests(), four_byte_patch_requests());
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
+    assert_eq!(info.offset(), 10);
 
     handle.abort();
 }
@@ -739,7 +739,7 @@ async fn upload_url_output_prints_only_existing_upload_url() {
     assert_eq!(stdout(&output).trim(), upload_url);
     assert_eq!(stderr(&output), "");
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
+    assert_eq!(info.offset(), 10);
 
     handle.abort();
 }
@@ -774,7 +774,7 @@ async fn upload_accepts_relative_existing_upload_url() {
     );
     assert_existing_upload_human_output(&output, &upload_url);
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
+    assert_eq!(info.offset(), 10);
 
     handle.abort();
 }
@@ -838,7 +838,7 @@ async fn upload_existing_relative_url_resumes_from_current_offset() {
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 5);
+    assert_eq!(info.offset(), 5);
 
     let output = run_cli(&[
         "--endpoint",
@@ -856,7 +856,7 @@ async fn upload_existing_relative_url_resumes_from_current_offset() {
     );
     assert_existing_upload_human_output(&output, &upload_url);
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
+    assert_eq!(info.offset(), 10);
 
     handle.abort();
 }
@@ -888,7 +888,7 @@ async fn upload_existing_url_resumes_from_current_offset() {
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 5);
+    assert_eq!(info.offset(), 5);
 
     let output = run_cli(&["upload", path.to_str().unwrap(), &upload_url]).await;
 
@@ -899,7 +899,7 @@ async fn upload_existing_url_resumes_from_current_offset() {
     );
     assert_existing_upload_human_output(&output, &upload_url);
     let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
-    assert_eq!(info.offset, 10);
+    assert_eq!(info.offset(), 10);
 
     handle.abort();
 }

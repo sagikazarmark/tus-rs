@@ -135,24 +135,28 @@ where
     }
 
     /// Sets headers added to every request.
+    #[must_use]
     pub fn with_headers(mut self, headers: HeaderMap) -> Self {
         self.headers = headers;
         self
     }
 
     /// Sets the number of PATCH retries on transport or 5xx failures.
+    #[must_use]
     pub fn with_max_retries(mut self, max_retries: usize) -> Self {
         self.max_retries = max_retries;
         self
     }
 
     /// Sets the base retry delay used for resumable PATCH retries.
+    #[must_use]
     pub fn with_retry_delay(mut self, retry_delay: Duration) -> Self {
         self.retry_delay = retry_delay;
         self
     }
 
     /// Sets the maximum PATCH request body size.
+    #[must_use]
     pub fn with_max_chunk_size(mut self, max_chunk_size: usize) -> Self {
         self.max_chunk_size = max_chunk_size.max(1);
         self
@@ -160,6 +164,7 @@ where
 
     /// Sets the maximum body size sent in the initial POST request when the
     /// server advertises creation-with-upload.
+    #[must_use]
     pub fn with_max_initial_upload_size(mut self, max_initial_upload_size: usize) -> Self {
         self.max_initial_upload_size = max_initial_upload_size;
         self
@@ -171,6 +176,7 @@ where
     /// browser `fetch` API cannot send request trailers; the first request
     /// fails with a permanent, non-retried [`Error::Transport`].
     #[cfg(feature = "checksum")]
+    #[must_use]
     pub fn with_checksum(mut self, mode: impl Into<ChecksumMode>) -> Self {
         self.checksum = Some(mode.into());
         self
@@ -185,6 +191,7 @@ where
     /// one. Configured headers with other names are unaffected. If the
     /// provider itself yields the same name more than once, the last value
     /// wins.
+    #[must_use]
     pub fn with_header_provider<P>(mut self, provider: P) -> Self
     where
         P: HeaderProvider + 'static,
@@ -194,6 +201,7 @@ where
     }
 
     /// Adds a retry hook invoked before the next retry attempt.
+    #[must_use]
     pub fn with_retry_hook<H>(mut self, hook: H) -> Self
     where
         H: RetryHook + 'static,

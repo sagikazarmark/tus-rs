@@ -7,8 +7,13 @@ use axum::{
 };
 
 /// Newtype around [`tus_protocol::Response`] that carries axum's [`IntoResponse`] impl.
+///
+/// The inner value is crate-private: `TusResponse` is only ever produced from a
+/// [`tus_protocol::Response`] (via [`From`]) and consumed by axum (via
+/// [`IntoResponse`]), so keeping the field private lets the wrapper evolve
+/// without a breaking change.
 #[derive(Debug)]
-pub struct TusResponse(pub tus_protocol::Response);
+pub struct TusResponse(pub(crate) tus_protocol::Response);
 
 impl From<tus_protocol::Response> for TusResponse {
     fn from(response: tus_protocol::Response) -> Self {

@@ -12,17 +12,43 @@ use crate::helpers::{
 use crate::transport::Transport;
 
 /// The current state of a remote upload.
+///
+/// Fields are private with accessors so the representation can evolve without a
+/// breaking change; the type is `#[non_exhaustive]` and is only produced by the
+/// client, never constructed by callers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct UploadInfo {
     /// Absolute upload URL.
-    pub url: Url,
+    pub(crate) url: Url,
     /// Current server-side offset.
-    pub offset: u64,
+    pub(crate) offset: u64,
     /// Declared upload length, if known.
-    pub length: Option<u64>,
+    pub(crate) length: Option<u64>,
     /// Decoded `Upload-Metadata` values.
-    pub metadata: UploadMetadata,
+    pub(crate) metadata: UploadMetadata,
+}
+
+impl UploadInfo {
+    /// Returns the absolute upload URL.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// Returns the current server-side offset in bytes.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the declared upload length, if known.
+    pub fn length(&self) -> Option<u64> {
+        self.length
+    }
+
+    /// Returns the decoded `Upload-Metadata` values.
+    pub fn metadata(&self) -> &UploadMetadata {
+        &self.metadata
+    }
 }
 
 /// Parameters for creating a new upload resource.
@@ -76,19 +102,42 @@ pub(crate) enum NewUploadContent {
 pub struct ServerCapabilities {
     /// Protocol versions the server supports (`Tus-Version`), most preferred
     /// first.
-    pub versions: Vec<String>,
+    pub(crate) versions: Vec<String>,
     /// Maximum upload size in bytes, if the server publishes one
     /// (`Tus-Max-Size`). `None` means unlimited or not advertised.
-    pub max_size: Option<u64>,
+    pub(crate) max_size: Option<u64>,
     /// Extensions the server supports (`Tus-Extension`), parsed from the
     /// comma-separated header.
-    pub extensions: Vec<String>,
+    pub(crate) extensions: Vec<String>,
     /// Checksum algorithms the server accepts (`Tus-Checksum-Algorithm`),
     /// when the `checksum` extension is enabled.
-    pub checksum_algorithms: Vec<String>,
+    pub(crate) checksum_algorithms: Vec<String>,
 }
 
 impl ServerCapabilities {
+    /// Returns the protocol versions the server supports (`Tus-Version`), most
+    /// preferred first.
+    pub fn versions(&self) -> &[String] {
+        &self.versions
+    }
+
+    /// Returns the maximum upload size in bytes, if the server publishes one
+    /// (`Tus-Max-Size`). `None` means unlimited or not advertised.
+    pub fn max_size(&self) -> Option<u64> {
+        self.max_size
+    }
+
+    /// Returns the extensions the server supports (`Tus-Extension`).
+    pub fn extensions(&self) -> &[String] {
+        &self.extensions
+    }
+
+    /// Returns the checksum algorithms the server accepts
+    /// (`Tus-Checksum-Algorithm`).
+    pub fn checksum_algorithms(&self) -> &[String] {
+        &self.checksum_algorithms
+    }
+
     /// Reports whether the server advertises the named TUS extension.
     ///
     /// Names are case-insensitive and match the TUS spec — e.g. `creation`,

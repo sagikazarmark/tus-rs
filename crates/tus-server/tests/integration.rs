@@ -148,10 +148,10 @@ mod tcp_tests {
     impl From<tus_client::UploadInfo> for TusUpload {
         fn from(info: tus_client::UploadInfo) -> Self {
             Self {
-                url: info.url.to_string(),
-                offset: info.offset,
-                length: info.length,
-                metadata: info.metadata,
+                url: info.url().to_string(),
+                offset: info.offset(),
+                length: info.length(),
+                metadata: info.metadata().clone(),
             }
         }
     }
