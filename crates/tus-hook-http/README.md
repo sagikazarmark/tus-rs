@@ -8,7 +8,7 @@
 `tus-hook-http` provides a [`tus-protocol`](https://crates.io/crates/tus-protocol)
 `HookExecutor` implementation that POSTs hook events to an HTTP endpoint. It can
 send custom headers, sign webhook bodies with HMAC-SHA256, and retry transport
-failures.
+failures as well as retryable HTTP responses (`429` and all `5xx` statuses).
 
 Blocking pre-hooks treat non-2xx responses and invalid successful JSON responses
 as hook execution errors. Post-hooks are best-effort notifications: failures are
@@ -36,7 +36,7 @@ let config = HttpHookConfig::new("https://example.com/tus-hooks")
     .with_max_retries(3)
     .with_signing_secret("shared-secret");
 
-let hooks = HttpHookExecutor::new(config);
+let hooks = HttpHookExecutor::new(config).expect("failed to build HTTP client");
 ```
 
 The executor sends JSON-serialized hook contexts with:
@@ -62,6 +62,15 @@ For pre-hooks, return a JSON response whose fields map to
 
 `metadata` replaces user metadata only for hook events that allow metadata
 changes, such as `PreCreate` and `PreReceive`.
+
+## TLS
+
+The crate's default features enable the bundled `reqwest` client's default TLS
+support. Disabling default features (`default-features = false`) drops TLS from
+the bundled `reqwest`, so `https://` webhook URLs will fail unless you supply
+your own TLS-capable client via `HttpHookExecutor::with_client`. The crate
+re-exports `reqwest` (`tus_hook_http::reqwest`) so you can build such a client
+against the exact version this crate uses.
 
 ## License
 
