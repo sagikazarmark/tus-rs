@@ -34,7 +34,7 @@ tokio-util = { version = "0.7", features = ["io"], optional = true }
 crc32fast = { version = "1", optional = true }
 md5 = { version = "0.8", optional = true }
 sha1 = { version = "0.11", optional = true }
-sha2 = { version = "0.11", optional = true }
+sha2 = { workspace = true, optional = true }
 
 # On wasm32, uuid's v4 RNG needs an explicit
 # randomness source. The `js` feature routes it through js-sys'
@@ -49,8 +49,12 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 [features]
 default = []
 
-# Platform features
-native = ["tokio", "tokio-util"]
+# Platform features.
+#
+# `native` is an internal building block bundling the native async runtime for
+# the file-backed backends below; the `dep:` form keeps the optional
+# dependencies from leaking implicit public features.
+native = ["dep:tokio", "dep:tokio-util"]
 
 # Conformance suites
 conformance-lock = ["tokio/time"]
@@ -66,15 +70,26 @@ state-file = ["native", "tokio/fs", "tokio/io-util"]
 state-memory = []
 
 # Locking implementations
-lock-file = ["native", "fs2", "tokio/fs", "tokio/rt", "tokio/time"]
+lock-file = ["native", "dep:fs2", "tokio/fs", "tokio/rt", "tokio/time"]
 lock-memory = ["native", "tokio/sync", "tokio/time"]
 
 # Checksum implementations
-checksum = ["crc32fast", "md5", "sha1", "sha2"]
+checksum = ["dep:crc32fast", "dep:md5", "dep:sha1", "dep:sha2"]
 
 # Internal-only hooks for fuzz harnesses.
 fuzzing = []
 
+# docs.rs builds the public backend surface, excluding the internal-only
+# `fuzzing` and `conformance-*` features.
 [package.metadata.docs.rs]
-all-features = true
+features = [
+    "native",
+    "storage-file",
+    "storage-memory",
+    "state-file",
+    "state-memory",
+    "lock-file",
+    "lock-memory",
+    "checksum",
+]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -283,19 +283,19 @@ fn print_upload_info(upload: tus_client::UploadInfo, output: OutputFormat) -> Re
 
 fn print_upload_result(upload: tus_client::UploadInfo, output: UploadOutputFormat) {
     match output {
-        UploadOutputFormat::Human => eprintln!("Upload complete: {}", upload.url),
-        UploadOutputFormat::Url => println!("{}", upload.url),
+        UploadOutputFormat::Human => eprintln!("Upload complete: {}", upload.url()),
+        UploadOutputFormat::Url => println!("{}", upload.url()),
     }
 }
 
 fn print_create_result(upload: tus_client::UploadInfo, output: CreateOutputFormat) -> Result<()> {
     match output {
         CreateOutputFormat::Human => {
-            eprintln!("Upload created: {}", upload.url);
+            eprintln!("Upload created: {}", upload.url());
             Ok(())
         }
         CreateOutputFormat::Url => {
-            println!("{}", upload.url);
+            println!("{}", upload.url());
             Ok(())
         }
         CreateOutputFormat::Json => print_upload_info_json(upload),
@@ -303,33 +303,33 @@ fn print_create_result(upload: tus_client::UploadInfo, output: CreateOutputForma
 }
 
 fn print_upload_info_human(upload: tus_client::UploadInfo) {
-    println!("url: {}", upload.url);
-    println!("offset: {}", upload.offset);
-    match upload.length {
+    println!("url: {}", upload.url());
+    println!("offset: {}", upload.offset());
+    match upload.length() {
         Some(length) => println!("length: {}", length),
         None => println!("length: deferred"),
     }
     println!("metadata:");
-    for (key, value) in metadata_to_sorted_strings(upload.metadata) {
+    for (key, value) in metadata_to_sorted_strings(upload.metadata()) {
         println!("{}={}", key, value);
     }
 }
 
 fn print_upload_info_json(upload: tus_client::UploadInfo) -> Result<()> {
     let output = UploadInfoJson {
-        url: upload.url.to_string(),
-        offset: upload.offset,
-        length: upload.length,
-        metadata: metadata_to_sorted_strings(upload.metadata),
+        url: upload.url().to_string(),
+        offset: upload.offset(),
+        length: upload.length(),
+        metadata: metadata_to_sorted_strings(upload.metadata()),
     };
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
-fn metadata_to_sorted_strings(metadata: tus_client::UploadMetadata) -> BTreeMap<String, String> {
+fn metadata_to_sorted_strings(metadata: &tus_client::UploadMetadata) -> BTreeMap<String, String> {
     metadata
-        .into_iter()
-        .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
+        .iter()
+        .map(|(key, value)| (key.clone(), value.to_string_lossy().into_owned()))
         .collect()
 }
 
@@ -409,7 +409,7 @@ async fn create_upload_file(
 
     let info = drive_upload(&upload, source, output, options).await?;
     if output == UploadOutputFormat::Human {
-        eprintln!("Upload complete: {}", info.url);
+        eprintln!("Upload complete: {}", info.url());
     }
 
     Ok(())
@@ -445,7 +445,7 @@ async fn drive_upload(
         let total = source.len();
         let mut progress = Progress::new(total);
         let info = upload.upload_with_progress(source, &mut progress).await?;
-        progress.finish(info.offset);
+        progress.finish(info.offset());
         info
     } else {
         upload.upload(source).await?

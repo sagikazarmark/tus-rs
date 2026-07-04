@@ -32,7 +32,7 @@ mod platform {
                 let upload = Client::new(Url::parse(&endpoint)?)
                     .upload_from(source, &metadata)
                     .await?;
-                println!("{}", upload.url);
+                println!("{}", upload.url());
                 Ok(())
             })
     }
