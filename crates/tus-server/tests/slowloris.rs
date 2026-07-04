@@ -8,9 +8,11 @@
 //! bandwidth.
 //!
 //! The server exposes `--request-body-read-timeout <SECS>` which
-//! wires `tower_http::timeout::RequestBodyTimeoutLayer`. The default
-//! is 60 seconds, so a stock server tears down stalled bodies on its
-//! own; `0` is the explicit opt-out that disables the timeout. This
+//! wraps request bodies with an idle-timeout middleware (built on
+//! `tower_http::timeout::TimeoutBody`, applied only to bodies that
+//! are not already at end of stream). The default is 60 seconds, so
+//! a stock server tears down stalled bodies on its own; `0` is the
+//! explicit opt-out that disables the timeout. This
 //! test pins down two properties:
 //!
 //!   1. With the timeout set, a stalled body causes the server to

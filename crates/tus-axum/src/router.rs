@@ -233,7 +233,10 @@ struct RoutePaths {
 /// `/files//{upload_id}`. A bare `/` mounts the routes at the server root.
 fn route_paths(config: &Config) -> Result<RoutePaths, RouterError> {
     let raw = config.base_path();
-    if !raw.starts_with('/') {
+    // Braces would be parsed as axum capture syntax (or panic inside
+    // `Router::route` when malformed), and empty segments produce broken
+    // `//`-routes; both must fail construction instead.
+    if !raw.starts_with('/') || raw.contains(['{', '}']) || raw.contains("//") {
         return Err(RouterError::InvalidBasePath(raw.to_string()));
     }
 
@@ -519,6 +522,34 @@ mod tests {
 
         let err = create_router(TusState::new(protocol)).unwrap_err();
         assert!(matches!(err, RouterError::InvalidBasePath(ref path) if path == "files"));
+    }
+
+    #[test]
+    fn create_router_rejects_base_path_with_braces() {
+        let protocol = ProtocolHandle::new(
+            Config::default().with_base_path("/files/{tenant}"),
+            UploadOnlyStorage,
+            MemoryStateStore::new(),
+            NoopLocker::new(),
+            NoopHookExecutor::new(),
+        );
+
+        let err = create_router(TusState::new(protocol)).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidBasePath(_)));
+    }
+
+    #[test]
+    fn create_router_rejects_base_path_with_empty_segment() {
+        let protocol = ProtocolHandle::new(
+            Config::default().with_base_path("/files//nested"),
+            UploadOnlyStorage,
+            MemoryStateStore::new(),
+            NoopLocker::new(),
+            NoopHookExecutor::new(),
+        );
+
+        let err = create_router(TusState::new(protocol)).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidBasePath(_)));
     }
 
     #[test]

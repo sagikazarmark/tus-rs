@@ -78,6 +78,8 @@ use tus_protocol::{Error, HookContext, HookExecutor, PreHookResult, Result, Uplo
 
 /// Default timeout for webhook requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound on the per-attempt webhook retry backoff.
+const MAX_RETRY_DELAY_MILLIS: u64 = 10_000;
 const SIGNATURE_HEADER: &str = "X-Tus-Signature-256";
 
 /// Configuration for the HTTP webhook executor.
@@ -322,7 +324,11 @@ impl HttpHookExecutor {
                 }
             }
 
-            let delay = Duration::from_millis(100 * (1 << attempt));
+            // Exponential backoff, capped: `max_retries` is user-configurable
+            // and this runs on the synchronous pre-hook path, so the delay
+            // must stay bounded (and the shift must not overflow).
+            let delay =
+                Duration::from_millis((100u64 << attempt.min(8)).min(MAX_RETRY_DELAY_MILLIS));
             tokio::time::sleep(delay).await;
         }
 

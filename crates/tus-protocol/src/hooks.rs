@@ -495,6 +495,28 @@ where
     }
 }
 
+/// Compile-time proof that hook closures need not be `Send` on `wasm32`.
+///
+/// Not a runtime test: `cargo test` never runs for wasm32 in CI, but
+/// `cargo check --target wasm32-unknown-unknown` type-checks this function,
+/// which is the property being pinned (a `!Send` `Rc` captured across the
+/// closure and its future).
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+fn assert_hook_chain_accepts_non_send_closure() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let calls = Rc::new(Cell::new(0));
+    let _chain = HookChain::new().on_pre_create(move |_| {
+        let calls = Rc::clone(&calls);
+        async move {
+            calls.set(calls.get() + 1);
+            Ok(PreHookResult::proceed())
+        }
+    });
+}
+
 /// A chain of hooks that are executed in order.
 pub struct HookChain {
     hooks: Vec<Arc<dyn Hook>>,
@@ -1036,29 +1058,6 @@ mod tests {
         let result = chain.execute_pre(&ctx).await.unwrap();
         assert!(!result.proceed);
         assert_eq!(result.reject_status, Some(418));
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    #[tokio::test]
-    async fn hook_chain_accepts_non_send_closure_in_local_mode() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
-        let calls = Rc::new(Cell::new(0));
-        let calls_for_hook = calls.clone();
-        let chain = HookChain::new().on_pre_create(move |_| {
-            let calls_for_hook = calls_for_hook.clone();
-            async move {
-                calls_for_hook.set(calls_for_hook.get() + 1);
-                Ok(PreHookResult::proceed())
-            }
-        });
-
-        let ctx = make_context(HookEvent::PreCreate);
-        let result = chain.execute_pre(&ctx).await.unwrap();
-
-        assert!(result.proceed);
-        assert_eq!(calls.get(), 1);
     }
 
     #[tokio::test]

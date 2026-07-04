@@ -127,8 +127,12 @@ impl Error {
                 *status >= 500 || matches!(*status, 408 | 409 | 429)
             }
             Error::Transport(_) => true,
+            // Mid-transfer connection resets surface as request/body errors,
+            // not `is_connect()` failures, so anything short of a
+            // deterministic request-construction (builder) or redirect-policy
+            // error is worth retrying for a resumable upload.
             #[cfg(all(feature = "transport-reqwest", not(target_arch = "wasm32")))]
-            Error::Reqwest(error) => error.is_connect() || error.is_timeout(),
+            Error::Reqwest(error) => !(error.is_builder() || error.is_redirect()),
             // Browser fetch reports dropped connections as generic request
             // errors, so on wasm anything short of a request-construction
             // (builder) bug is worth retrying.

@@ -686,15 +686,8 @@ where
             continue;
         }
 
-        if let Some(name) = key.strip_prefix("TUS_STORAGE_") {
+        if apply_storage_env_var(key, value, &mut storage) {
             has_storage = true;
-            if name == "URI" {
-                storage.uri = Some(value.to_string());
-            } else {
-                storage
-                    .settings
-                    .insert(name.to_ascii_lowercase(), value.to_string());
-            }
             continue;
         }
 
@@ -837,6 +830,25 @@ where
     unknown
 }
 
+/// Applies a `TUS_STORAGE_*` environment variable to a storage patch.
+///
+/// Returns `true` when the variable was a storage key and has been consumed.
+fn apply_storage_env_var(key: &str, value: &str, storage: &mut StoragePatch) -> bool {
+    let Some(name) = key.strip_prefix("TUS_STORAGE_") else {
+        return false;
+    };
+
+    if name == "URI" {
+        storage.uri = Some(value.to_string());
+    } else {
+        storage
+            .settings
+            .insert(name.to_ascii_lowercase(), value.to_string());
+    }
+
+    true
+}
+
 pub(crate) fn warn_unknown_tus_env_keys() {
     for key in unknown_tus_env_keys(std::env::vars()) {
         tracing::warn!(key = %key, "ignoring unrecognized TUS_-prefixed environment variable");
@@ -856,19 +868,14 @@ where
     for (key, value) in vars {
         let key = key.as_ref();
         let value = value.as_ref();
+        // Same empty-value skip as settings_patch_from_env_vars: empty env
+        // values cannot reset config-file values.
         if value.is_empty() {
             continue;
         }
 
-        if let Some(name) = key.strip_prefix("TUS_STORAGE_") {
+        if apply_storage_env_var(key, value, &mut storage) {
             has_storage = true;
-            if name == "URI" {
-                storage.uri = Some(value.to_string());
-            } else {
-                storage
-                    .settings
-                    .insert(name.to_ascii_lowercase(), value.to_string());
-            }
             continue;
         }
 

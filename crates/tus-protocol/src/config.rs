@@ -75,8 +75,6 @@ pub struct Config {
     /// Whether to respect forwarded headers (X-Forwarded-Host, X-Forwarded-Proto).
     respect_forwarded_headers: bool,
 
-    /// CORS allowed origins. Empty means CORS is disabled.
-
     /// Maximum chunk size per PATCH request. None means unlimited.
     max_chunk_size: Option<u64>,
 

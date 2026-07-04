@@ -642,6 +642,32 @@ mod tests {
     }
 
     #[test]
+    fn legacy_state_without_schema_version_deserializes_as_v1() {
+        // Simulate a state file written before the field existed by
+        // stripping it from a freshly serialized state.
+        let mut value = serde_json::to_value(UploadState::new("upload-1")).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("schema_version")
+            .expect("serialized state should include schema_version");
+
+        let state: UploadState = serde_json::from_value(value).unwrap();
+
+        assert_eq!(state.schema_version(), 1);
+    }
+
+    #[test]
+    fn serialized_state_includes_current_schema_version() {
+        let value = serde_json::to_value(UploadState::new("upload-1")).unwrap();
+
+        assert_eq!(
+            value.get("schema_version").and_then(|v| v.as_u64()),
+            Some(u64::from(UPLOAD_STATE_SCHEMA_VERSION))
+        );
+    }
+
+    #[test]
     fn test_upload_state_new_random() {
         let state = UploadState::new_random();
         assert!(!state.id().is_empty());
