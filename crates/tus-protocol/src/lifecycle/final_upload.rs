@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
+use crate::locking::{LockGuard, Locker};
 use crate::protocol::UploadId;
 use crate::state::{StateStore, UploadState};
 use crate::storage::{ConcatRequest, Storage};
@@ -73,28 +74,32 @@ pub(crate) struct FinalUploadResponseFacts {
     pub(crate) length: Option<u64>,
 }
 
-pub(crate) struct FinalUploadMaterializer<'a, S, I, H>
+pub(crate) struct FinalUploadMaterializer<'a, S, I, L, H>
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     storage: &'a S,
     state_store: &'a I,
+    locker: &'a L,
     hooks: &'a H,
     config: &'a Config,
     request_info: &'a HookRequestInfo,
 }
 
-impl<'a, S, I, H> FinalUploadMaterializer<'a, S, I, H>
+impl<'a, S, I, L, H> FinalUploadMaterializer<'a, S, I, L, H>
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     pub(crate) fn new(
         storage: &'a S,
         state_store: &'a I,
+        locker: &'a L,
         hooks: &'a H,
         config: &'a Config,
         request_info: &'a HookRequestInfo,
@@ -102,6 +107,7 @@ where
         Self {
             storage,
             state_store,
+            locker,
             hooks,
             config,
             request_info,
@@ -116,6 +122,7 @@ where
         create_final_upload(
             self.storage,
             self.state_store,
+            self.locker,
             self.hooks,
             self.config,
             self.request_info,
@@ -139,6 +146,7 @@ where
         repair_final_upload(
             self.storage,
             self.state_store,
+            self.locker,
             self.hooks,
             self.request_info,
             state,
@@ -149,9 +157,35 @@ where
     }
 }
 
-async fn create_final_upload<S, I, H>(
+/// Acquires non-blocking guards for every referenced part so a concurrent
+/// PATCH, DELETE, or reclamation cannot mutate a part mid-concatenation.
+///
+/// Returns `Error::Locked` when a part is busy; concatenation requires
+/// quiescent, complete parts, so callers surface this as `423 Locked`.
+async fn lock_parts<L>(locker: &L, part_ids: &[String]) -> Result<Vec<LockGuard>>
+where
+    L: Locker + ?Sized,
+{
+    let mut ordered: Vec<&String> = part_ids.iter().collect();
+    ordered.sort();
+    ordered.dedup();
+
+    let mut guards = Vec::with_capacity(ordered.len());
+    for part_id in ordered {
+        match locker.try_lock(part_id).await? {
+            Some(guard) => guards.push(guard),
+            None => return Err(Error::Locked(part_id.clone())),
+        }
+    }
+
+    Ok(guards)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_final_upload<S, I, L, H>(
     storage: &S,
     state_store: &I,
+    locker: &L,
     hooks: &H,
     config: &Config,
     request_info: &HookRequestInfo,
@@ -161,6 +195,7 @@ async fn create_final_upload<S, I, H>(
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     let FinalUploadPlan {
@@ -169,6 +204,14 @@ where
         status,
     } = load_final_upload_plan(state_store, config, &part_urls).await?;
 
+    // Hold the part locks across materialization so no part changes between
+    // the completeness check above and the storage-level concat below.
+    let _part_guards = if status.ready_to_materialize() {
+        lock_parts(locker, &part_ids).await?
+    } else {
+        Vec::new()
+    };
+
     apply_final_upload_plan(&mut state, part_ids, &status);
     cap_planned_final_upload_expiration(&mut state, &parts);
     let pre_create = PreHookGate::Create.run(hooks, request_info, state).await?;
@@ -176,7 +219,7 @@ where
 
     let completion = UploadCompletion::new(hooks, request_info);
     if status.all_complete {
-        completion.before_commit(state.clone()).await?;
+        completion.finish_gate(state.clone()).await?;
     }
 
     let handle = storage.create(state.id()).await?;
@@ -201,9 +244,10 @@ where
     })
 }
 
-async fn repair_final_upload<S, I, H>(
+async fn repair_final_upload<S, I, L, H>(
     storage: &S,
     state_store: &I,
+    locker: &L,
     hooks: &H,
     request_info: &HookRequestInfo,
     state: &mut UploadState,
@@ -211,13 +255,24 @@ async fn repair_final_upload<S, I, H>(
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
-    let Some(FinalUploadPlan { parts, status, .. }) =
-        load_final_upload_status(state_store, state).await?
+    let Some(FinalUploadPlan {
+        part_ids,
+        parts,
+        status,
+    }) = load_final_upload_status(state_store, state).await?
     else {
         return Ok(false);
     };
+
+    let _part_guards = if status.ready_to_materialize() {
+        lock_parts(locker, &part_ids).await?
+    } else {
+        Vec::new()
+    };
+
     let refresh = PlannedFinalUploadRefresh::inspect(storage, state, parts, status).await?;
 
     let mut changed = refresh.refresh_length(state);
@@ -225,7 +280,7 @@ where
 
     if will_complete {
         UploadCompletion::new(hooks, request_info)
-            .before_commit(refresh.completed_state(state))
+            .finish_gate(refresh.completed_state(state))
             .await?;
     }
 
@@ -237,10 +292,7 @@ where
     changed |= refresh.refresh_offset(state);
 
     if changed {
-        state_store
-            .set(state, false)
-            .await
-            .map_err(|err| Error::Internal(err.to_string()))?;
+        state_store.set(state, false).await?;
     }
 
     if will_complete {
@@ -268,11 +320,7 @@ where
         return Ok(false);
     };
 
-    let actual_size = storage
-        .size(&handle)
-        .await
-        .map_err(|err| Error::Internal(err.to_string()))?
-        .unwrap_or(0);
+    let actual_size = storage.size(&handle).await?.unwrap_or(0);
     if actual_size != length {
         return Ok(false);
     }
@@ -286,10 +334,7 @@ where
         );
 
         state.set_offset(length);
-        state_store
-            .set(state, false)
-            .await
-            .map_err(|err| Error::Internal(err.to_string()))?;
+        state_store.set(state, false).await?;
     }
 
     Ok(true)
@@ -387,16 +432,15 @@ where
     let mut parts = Vec::with_capacity(part_urls.len());
 
     for url in part_urls {
-        let id = extract_partial_id(url, config.base_path_str()).ok_or_else(|| {
-            Error::InvalidHeader {
+        let id =
+            extract_partial_id(url, config.base_path()).ok_or_else(|| Error::InvalidHeader {
                 header: "Upload-Concat",
                 message: format!(
                     "partial URL not under base path {:?}: {}",
-                    config.base_path_str(),
+                    config.base_path(),
                     url
                 ),
-            }
-        })?;
+            })?;
 
         let part_state =
             state_store
@@ -448,8 +492,7 @@ where
     for part_id in &part_ids {
         let part_state = state_store
             .get(part_id)
-            .await
-            .map_err(|err| Error::Internal(err.to_string()))?
+            .await?
             .ok_or_else(|| Error::Expired(state.id().to_string()))?;
 
         if part_state.is_expired() {
@@ -558,11 +601,7 @@ where
         return Ok(0);
     };
 
-    Ok(storage
-        .size(&handle)
-        .await
-        .map_err(|err| Error::Internal(err.to_string()))?
-        .unwrap_or(0))
+    Ok(storage.size(&handle).await?.unwrap_or(0))
 }
 
 async fn materialize_final_upload<S>(
@@ -696,11 +735,12 @@ mod tests {
     test,
     feature = "storage-memory",
     feature = "state-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod materialization_tests {
     use super::*;
     use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
+    use crate::locking::NoopLocker;
     use crate::state::memory::MemoryStateStore;
     use crate::storage::{AppendRequest, ChunkStream, StorageReader, memory::MemoryStorage};
     use bytes::{Bytes, BytesMut};
@@ -735,7 +775,7 @@ mod materialization_tests {
 
     async fn stored_bytes(storage: &MemoryStorage, state: &UploadState) -> Bytes {
         let body = storage
-            .get_stream(&state.require_storage_handle().unwrap())
+            .stream(&state.require_storage_handle().unwrap())
             .await
             .unwrap();
         body.collect::<Vec<_>>()
@@ -766,8 +806,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
@@ -796,8 +837,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
@@ -830,8 +872,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
@@ -872,8 +915,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
@@ -909,8 +953,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let err = materializer
             .prepare_read(&mut final_upload)
@@ -947,8 +992,9 @@ mod materialization_tests {
         });
         let config = Config::default().with_extension(Extension::Concatenation);
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let err = materializer
             .prepare_read(&mut final_upload)
@@ -997,8 +1043,9 @@ mod materialization_tests {
             path: "/files/final-1".to_string(),
             ..Default::default()
         };
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let err = materializer
             .prepare_read(&mut final_upload)
@@ -1059,8 +1106,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
@@ -1095,8 +1143,9 @@ mod materialization_tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let prepared = materializer.prepare_read(&mut final_upload).await.unwrap();
 
@@ -1121,8 +1170,9 @@ mod materialization_tests {
             .with_extension(Extension::ConcatenationUnfinished);
         let hooks = NoopHookExecutor::new();
         let request_info = HookRequestInfo::default();
+        let locker = NoopLocker::new();
         let materializer =
-            FinalUploadMaterializer::new(&storage, &store, &hooks, &config, &request_info);
+            FinalUploadMaterializer::new(&storage, &store, &locker, &hooks, &config, &request_info);
 
         let created = materializer
             .create(
@@ -1194,9 +1244,11 @@ mod materialization_tests {
                 }
             });
 
+        let locker = NoopLocker::new();
         let created = create_final_upload(
             &storage,
             &store,
+            &locker,
             &hooks,
             &Config::default().with_extension(Extension::Concatenation),
             &HookRequestInfo::default(),
@@ -1239,9 +1291,11 @@ mod materialization_tests {
         let hooks = HookChain::new()
             .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) });
 
+        let locker = NoopLocker::new();
         let err = create_final_upload(
             &storage,
             &store,
+            &locker,
             &hooks,
             &Config::default().with_extension(Extension::Concatenation),
             &HookRequestInfo::default(),
@@ -1300,9 +1354,11 @@ mod materialization_tests {
                 }
             });
 
+        let locker = NoopLocker::new();
         let handled = repair_final_upload(
             &storage,
             &store,
+            &locker,
             &hooks,
             &HookRequestInfo::default(),
             &mut final_upload,
@@ -1342,9 +1398,11 @@ mod materialization_tests {
 
         let hooks = HookChain::new()
             .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) });
+        let locker = NoopLocker::new();
         let err = repair_final_upload(
             &storage,
             &store,
+            &locker,
             &hooks,
             &HookRequestInfo::default(),
             &mut final_upload,

@@ -34,11 +34,7 @@ where
         return Ok(false);
     };
 
-    let actual_offset = storage
-        .size(&handle)
-        .await
-        .map_err(|err| Error::Internal(err.to_string()))?
-        .unwrap_or(0);
+    let actual_offset = storage.size(&handle).await?.unwrap_or(0);
     if actual_offset > length {
         return Err(Error::Internal(format!(
             "storage size {actual_offset} exceeds declared length {length} for upload {}",
@@ -57,10 +53,7 @@ where
     );
 
     state.set_offset(actual_offset);
-    state_store
-        .set(state, false)
-        .await
-        .map_err(|err| Error::Internal(err.to_string()))?;
+    state_store.set(state, false).await?;
     Ok(true)
 }
 
@@ -74,11 +67,7 @@ where
     I: StateStore + ?Sized,
 {
     let actual_offset = match state.storage_handle() {
-        Some(handle) => storage
-            .size(&handle)
-            .await
-            .map_err(|err| Error::Internal(err.to_string()))?
-            .unwrap_or(0),
+        Some(handle) => storage.size(&handle).await?.unwrap_or(0),
         None => 0,
     };
 
@@ -103,9 +92,6 @@ where
     );
 
     state.set_offset(actual_offset);
-    state_store
-        .set(state, false)
-        .await
-        .map_err(|err| Error::Internal(err.to_string()))?;
+    state_store.set(state, false).await?;
     Ok(())
 }

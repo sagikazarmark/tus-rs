@@ -67,6 +67,13 @@ pub fn prepare_creation(config: &Config, request: CreationRequest) -> Result<Cre
                 message: "Upload-Length and Upload-Defer-Length must not be set on a final concatenation upload".to_string(),
             });
         }
+
+        if request.has_body {
+            return Err(Error::InvalidHeader {
+                header: "Upload-Concat",
+                message: "a final concatenation upload must not include a request body".to_string(),
+            });
+        }
     } else {
         if request.upload_length.is_none() && !request.upload_defer_length {
             return Err(Error::MissingHeader("Upload-Length or Upload-Defer-Length"));
@@ -105,7 +112,7 @@ pub fn prepare_creation(config: &Config, request: CreationRequest) -> Result<Cre
         });
     }
 
-    if let (Some(length), Some(max_size)) = (request.upload_length, config.max_size_limit())
+    if let (Some(length), Some(max_size)) = (request.upload_length, config.max_size())
         && length > max_size
     {
         return Err(Error::SizeExceeded {
@@ -114,14 +121,14 @@ pub fn prepare_creation(config: &Config, request: CreationRequest) -> Result<Cre
         });
     }
 
-    let mut state = UploadState::with_uuid();
+    let mut state = UploadState::new_random();
     if let Some(length) = request.upload_length {
         state.set_length(length);
     }
     if let Some(metadata) = request.upload_metadata {
         state.set_metadata(metadata);
     }
-    if let Some(expiration) = config.expiration_duration() {
+    if let Some(expiration) = config.expiration() {
         let expiration = ChronoDuration::from_std(expiration)
             .map_err(|error| Error::Internal(error.to_string()))?;
         state.set_expiration(Utc::now() + expiration);
@@ -235,7 +242,7 @@ mod tests {
         let config = Config::default()
             .with_extension(Extension::CreationDeferLength)
             .with_extension(Extension::CreationWithUpload)
-            .allow_empty_creation(false);
+            .with_allow_empty_creation(false);
 
         let transition = prepare_creation(&config, request).unwrap();
 

@@ -18,11 +18,28 @@ use super::hook_context::{HookContextBuilder, HookRequestFacts};
 use super::{Protocol, UploadId};
 
 /// Request inputs for the non-standard download helper.
+#[derive(Debug, Clone, Copy)]
 pub struct DownloadRequest<'a> {
-    /// Upload id to download.
-    pub upload_id: &'a UploadId,
-    /// Raw HTTP `Range` header value, if present.
-    pub range: Option<&'a str>,
+    upload_id: &'a UploadId,
+    range: Option<&'a str>,
+}
+
+impl<'a> DownloadRequest<'a> {
+    /// Creates a download request for an upload, without a byte range.
+    #[must_use]
+    pub fn new(upload_id: &'a UploadId) -> Self {
+        Self {
+            upload_id,
+            range: None,
+        }
+    }
+
+    /// Sets the raw HTTP `Range` header value, if present.
+    #[must_use]
+    pub fn with_range(mut self, range: Option<&'a str>) -> Self {
+        self.range = range;
+        self
+    }
 }
 
 /// Streaming response produced by the non-standard download helper.
@@ -63,19 +80,19 @@ where
         let upload_id = request.upload_id.as_str();
         let _guard = self
             .locker
-            .lock(upload_id, self.config.lock_timeout_duration())
+            .lock(upload_id, self.config.lock_timeout())
             .await?;
 
         let mut state = self
             .state_store
             .get(upload_id)
-            .await
-            .map_err(|err| Error::Internal(err.to_string()))?
+            .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
         prepare_upload_download_access(
             self.storage,
             self.state_store,
+            self.locker,
             self.hooks,
             self.config,
             hook_contexts.request_info(),
@@ -102,7 +119,7 @@ where
             (
                 StatusCode::PARTIAL_CONTENT,
                 self.storage
-                    .get_range(&handle, start, Some(end + 1))
+                    .stream_range(&handle, start, Some(end + 1))
                     .await?,
             )
         } else if size == 0 {
@@ -112,7 +129,7 @@ where
         } else {
             let handle = state.require_storage_handle()?;
             insert_header(&mut headers, "content-length", size.to_string())?;
-            (StatusCode::OK, self.storage.get_stream(&handle).await?)
+            (StatusCode::OK, self.storage.stream(&handle).await?)
         };
 
         Ok(DownloadResponse {
@@ -225,7 +242,7 @@ fn content_type(state: &UploadState) -> &str {
     test,
     feature = "state-memory",
     feature = "storage-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod tests {
     use super::*;
@@ -300,10 +317,7 @@ mod tests {
         let upload_id = "test-id".parse().unwrap();
 
         let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
-            .download(DownloadRequest {
-                upload_id: &upload_id,
-                range: None,
-            })
+            .download(DownloadRequest::new(&upload_id))
             .await
             .unwrap();
 
@@ -321,10 +335,7 @@ mod tests {
         let upload_id = "test-id".parse().unwrap();
 
         let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
-            .download(DownloadRequest {
-                upload_id: &upload_id,
-                range: Some("bytes=6-10"),
-            })
+            .download(DownloadRequest::new(&upload_id).with_range(Some("bytes=6-10")))
             .await
             .unwrap();
 
@@ -372,10 +383,7 @@ mod tests {
             &locker,
             &hooks,
         )
-        .download(DownloadRequest {
-            upload_id: &upload_id,
-            range: None,
-        })
+        .download(DownloadRequest::new(&upload_id))
         .await
         .unwrap();
 
@@ -408,10 +416,7 @@ mod tests {
             &locker,
             &hooks,
         )
-        .download(DownloadRequest {
-            upload_id: &upload_id,
-            range: None,
-        })
+        .download(DownloadRequest::new(&upload_id))
         .await;
 
         assert!(matches!(result, Err(Error::Expired(id)) if id == "final-1"));

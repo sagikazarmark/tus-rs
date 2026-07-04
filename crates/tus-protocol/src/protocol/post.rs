@@ -7,7 +7,7 @@ use crate::error::Error;
 use crate::hooks::{HookEvent, HookExecutor, execute_post_best_effort};
 use crate::lifecycle::{
     ByteReceiver, CreationRequest, CreationTransition, FinalUploadMaterializer, PreHookGate,
-    prepare_creation,
+    UploadCompletion, prepare_creation,
 };
 use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
@@ -90,8 +90,23 @@ where
             state.set_storage_handle(handle);
             self.state_store.set(&state, true).await?;
 
+            // A zero-length upload is already complete at creation, so finish
+            // hooks must fire here or consumers would never observe it. The
+            // resource is new, so a gate rejection rolls the creation back.
+            let completion = UploadCompletion::new(self.hooks, hook_contexts.request_info());
+            if state.is_complete()
+                && let Err(err) = completion.finish_gate(state.clone()).await
+            {
+                if let Some(handle) = state.storage_handle() {
+                    let _ = self.storage.delete(&handle).await;
+                }
+                let _ = self.state_store.delete(state.id()).await;
+                return Err(err);
+            }
+
             let post_ctx = hook_contexts.context(HookEvent::PostCreate, state.clone());
             execute_post_best_effort(self.hooks, &post_ctx).await;
+            completion.after_commit_if_complete(&state).await;
             (state, response_headers)
         };
 
@@ -136,6 +151,7 @@ where
         let materializer = FinalUploadMaterializer::new(
             self.storage,
             self.state_store,
+            self.locker,
             self.hooks,
             self.config,
             hook_contexts.request_info(),
@@ -174,7 +190,7 @@ where
     test,
     feature = "storage-memory",
     feature = "state-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod tests {
     use super::*;
@@ -433,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn size_exceeded() {
-        let config = Config::default().max_size(500);
+        let config = Config::default().with_max_size(500);
         let err = call(
             &config,
             &MemoryStorage::new(),
@@ -472,7 +488,7 @@ mod tests {
         };
 
         let err = call(
-            &Config::default().allow_empty_creation(false),
+            &Config::default().with_allow_empty_creation(false),
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
@@ -487,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn fixed_length_creation_respects_allow_empty_creation() {
         let err = call(
-            &Config::default().allow_empty_creation(false),
+            &Config::default().with_allow_empty_creation(false),
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers_with_length(100),
@@ -508,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn creation_with_upload_is_allowed_when_empty_creation_disabled() {
         let config = Config::default()
-            .allow_empty_creation(false)
+            .with_allow_empty_creation(false)
             .with_extension(Extension::CreationWithUpload);
         let body_data = Bytes::from_static(b"Hello");
         let headers = Headers {
@@ -535,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn deferred_creation_with_upload_is_allowed_when_empty_creation_disabled() {
         let config = Config::default()
-            .allow_empty_creation(false)
+            .with_allow_empty_creation(false)
             .with_extension(Extension::CreationDeferLength)
             .with_extension(Extension::CreationWithUpload);
         let body_data = Bytes::from_static(b"Hello");
@@ -1502,7 +1518,7 @@ mod tests {
     async fn creation_with_upload_rejects_actual_body_beyond_max_size() {
         let config = Config::default()
             .with_extension(Extension::CreationWithUpload)
-            .max_size(5);
+            .with_max_size(5);
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let headers = Headers {
