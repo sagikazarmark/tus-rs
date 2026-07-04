@@ -60,7 +60,7 @@ mod upload_id;
 pub use body::{BodyFrame, BodyStream, RequestBody};
 pub use download::{DownloadRequest, DownloadResponse};
 pub use headers::Headers;
-pub use response::Response;
+pub use response::{Response, TUS_SUCCESS_RESPONSE_HEADERS};
 pub use upload_id::UploadId;
 
 /// PATCH request body input.

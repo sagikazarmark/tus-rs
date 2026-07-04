@@ -13,8 +13,8 @@ use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
     AppendRequest, ChunkStream, Config, Error, Extension, Headers, HookChain, HookContext,
     HookEvent, HookExecutor, HookRequestInfo, NoopHookExecutor, NoopLocker, PreHookResult,
-    Protocol, RequestBody, Response, StateStore, Storage, UploadConcat, UploadId, UploadMetadata,
-    UploadState, reclaim_expired_uploads,
+    Protocol, RequestBody, Response, StateStore, Storage, TUS_SUCCESS_RESPONSE_HEADERS,
+    UploadConcat, UploadId, UploadMetadata, UploadState, reclaim_expired_uploads,
 };
 
 fn post_headers_with_length(length: u64) -> Headers {
@@ -69,6 +69,35 @@ fn assert_default_hook_rejection(err: Error) {
         } if message.is_empty() => {}
         err => panic!("expected default hook rejection, got {err:?}"),
     }
+}
+
+fn assert_response_headers_covered_by_protocol_facts(response: &Response) {
+    for name in response.headers.keys() {
+        let name = name.as_str();
+        if is_cors_safelisted_response_header(name) {
+            continue;
+        }
+
+        assert!(
+            TUS_SUCCESS_RESPONSE_HEADERS
+                .iter()
+                .any(|expected| expected.eq_ignore_ascii_case(name)),
+            "{name} missing from TUS_SUCCESS_RESPONSE_HEADERS",
+        );
+    }
+}
+
+fn is_cors_safelisted_response_header(name: &str) -> bool {
+    matches!(
+        name,
+        "cache-control"
+            | "content-language"
+            | "content-length"
+            | "content-type"
+            | "expires"
+            | "last-modified"
+            | "pragma"
+    )
 }
 
 struct FinishSideEffectHook;
@@ -147,6 +176,81 @@ async fn protocol_head_uses_bundled_dependencies() {
 
     let stored = state_store.get("test-id").await.unwrap().unwrap();
     assert_eq!(stored.offset(), 5);
+}
+
+#[tokio::test]
+async fn protocol_success_response_headers_are_covered_by_header_facts() {
+    let config = Config::default()
+        .with_extension(Extension::CreationWithUpload)
+        .with_extension(Extension::Concatenation)
+        .expiration(StdDuration::from_secs(60))
+        .max_size(1024);
+    #[cfg(feature = "checksum")]
+    let config = config.with_extension(Extension::Checksum);
+    let storage = MemoryStorage::new();
+    let state_store = MemoryStateStore::new();
+    let locker = NoopLocker::new();
+    let hooks = NoopHookExecutor::new();
+    let protocol = Protocol::new(&config, &storage, &state_store, &locker, &hooks);
+
+    assert_response_headers_covered_by_protocol_facts(&protocol.options());
+
+    let mut creation_with_upload = post_headers_with_length(10);
+    creation_with_upload.content_type = Some("application/offset+octet-stream".to_string());
+    creation_with_upload.content_length = Some(5);
+    let post_response = protocol
+        .post(
+            creation_with_upload,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"hello"))),
+        )
+        .await
+        .unwrap();
+    assert_response_headers_covered_by_protocol_facts(&post_response);
+    let upload_id = upload_id_from_location(&post_response);
+
+    let head_response = protocol.head(&upload_id).await.unwrap();
+    assert_response_headers_covered_by_protocol_facts(&head_response);
+
+    let patch_response = protocol
+        .patch(
+            patch_headers(5),
+            &upload_id,
+            RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(b"world"))),
+        )
+        .await
+        .unwrap();
+    assert_response_headers_covered_by_protocol_facts(&patch_response);
+
+    let mut deferred_headers = Headers::default();
+    deferred_headers.upload_defer_length = true;
+    let deferred_response = protocol
+        .post(deferred_headers, RequestBody::absent())
+        .await
+        .unwrap();
+    let deferred_id = upload_id_from_location(&deferred_response);
+    let deferred_head = protocol.head(&deferred_id).await.unwrap();
+    assert_response_headers_covered_by_protocol_facts(&deferred_head);
+
+    let partial_response = protocol
+        .post(partial_post_headers(1), RequestBody::absent())
+        .await
+        .unwrap();
+    let partial_id = upload_id_from_location(&partial_response);
+    let partial_head = protocol.head(&partial_id).await.unwrap();
+    assert_response_headers_covered_by_protocol_facts(&partial_head);
+
+    let mut metadata = UploadMetadata::new();
+    metadata.insert("filename".to_string(), "test.txt");
+    let mut metadata_headers = Headers::default();
+    metadata_headers.upload_length = Some(5);
+    metadata_headers.upload_metadata = Some(metadata);
+    let metadata_response = protocol
+        .post(metadata_headers, RequestBody::absent())
+        .await
+        .unwrap();
+    let metadata_id = upload_id_from_location(&metadata_response);
+    let metadata_head = protocol.head(&metadata_id).await.unwrap();
+    assert_response_headers_covered_by_protocol_facts(&metadata_head);
 }
 
 #[tokio::test]
