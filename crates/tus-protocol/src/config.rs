@@ -47,7 +47,7 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 /// assert_eq!(config.base_path(), "/uploads");
 /// assert!(config.has_extension(Extension::Concatenation));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
     /// Maximum upload size in bytes. None means unlimited.
