@@ -13,6 +13,26 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 
 use crate::config::TUS_RESUMABLE;
 
+/// Protocol-owned success response headers that browser clients may need to read.
+///
+/// Framework adapters should use this list for CORS exposure instead of
+/// maintaining their own copy. Hook-added headers are application-specific and
+/// intentionally excluded.
+pub const TUS_SUCCESS_RESPONSE_HEADERS: &[&str] = &[
+    "tus-resumable",
+    "tus-version",
+    "tus-extension",
+    "tus-max-size",
+    "tus-checksum-algorithm",
+    "upload-offset",
+    "upload-length",
+    "upload-defer-length",
+    "upload-concat",
+    "upload-expires",
+    "upload-metadata",
+    "location",
+];
+
 /// A framework-neutral HTTP response produced by a TUS protocol handler.
 ///
 /// The adapter layer is responsible for turning this into a

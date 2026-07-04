@@ -11,7 +11,9 @@ use axum::{
 };
 use tower_http::cors::{Any, CorsLayer};
 
-use tus_protocol::{Config, HookExecutor, Locker, StateStore, Storage, StorageReader};
+use tus_protocol::{
+    Config, HookExecutor, Locker, StateStore, Storage, StorageReader, TUS_SUCCESS_RESPONSE_HEADERS,
+};
 
 use crate::handlers;
 use crate::state::TusState;
@@ -176,20 +178,13 @@ pub fn build_cors_layer(config: &Config) -> CorsLayer {
             // For clients behind proxies that block PATCH/DELETE.
             HeaderName::from_static("x-http-method-override"),
         ])
-        .expose_headers(vec![
-            HeaderName::from_static("tus-resumable"),
-            HeaderName::from_static("tus-version"),
-            HeaderName::from_static("tus-extension"),
-            HeaderName::from_static("tus-max-size"),
-            HeaderName::from_static("tus-checksum-algorithm"),
-            HeaderName::from_static("upload-offset"),
-            HeaderName::from_static("upload-length"),
-            HeaderName::from_static("upload-defer-length"),
-            HeaderName::from_static("upload-concat"),
-            HeaderName::from_static("upload-expires"),
-            HeaderName::from_static("upload-metadata"),
-            HeaderName::from_static("location"),
-        ])
+        .expose_headers(
+            TUS_SUCCESS_RESPONSE_HEADERS
+                .iter()
+                .copied()
+                .map(HeaderName::from_static)
+                .collect::<Vec<_>>(),
+        )
         .max_age(std::time::Duration::from_secs(86400));
 
     if config
@@ -224,8 +219,8 @@ mod tests {
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
     use tus_protocol::{
-        AppendRequest, ChunkStream, ConcatRequest, Extension, NoopHookExecutor, NoopLocker,
-        ProtocolHandle, Result, StorageHandle, UploadState,
+        AppendRequest, ChunkStream, ConcatRequest, Extension, HookChain, NoopHookExecutor,
+        NoopLocker, PreHookResult, ProtocolHandle, Result, StorageHandle, UploadState,
     };
 
     fn upload_only_router() -> Router {
@@ -251,6 +246,23 @@ mod tests {
             state_store,
             Arc::new(MemoryLocker::new()),
             Arc::new(NoopHookExecutor::new()),
+        );
+
+        create_router(TusState::new(protocol))
+    }
+
+    fn router_with_hooks(
+        config: Config,
+        storage: Arc<MemoryStorage>,
+        state_store: Arc<MemoryStateStore>,
+        hooks: HookChain,
+    ) -> Router {
+        let protocol = ProtocolHandle::from_arcs(
+            Arc::new(config),
+            storage,
+            state_store,
+            Arc::new(MemoryLocker::new()),
+            Arc::new(hooks),
         );
 
         create_router(TusState::new(protocol))
@@ -729,5 +741,89 @@ mod tests {
             .unwrap()
             .to_ascii_lowercase();
         assert!(allow_headers.contains("authorization"));
+    }
+
+    #[tokio::test]
+    async fn cors_exposes_protocol_success_response_headers() {
+        use axum::body::Body;
+        use axum::http::{Request, Response, StatusCode};
+        use tower::{ServiceBuilder, ServiceExt, service_fn};
+
+        let service = ServiceBuilder::new()
+            .layer(build_cors_layer(&Config::default().cors_all()))
+            .service(service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/files/test-id")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let expose_headers = response
+            .headers()
+            .get("access-control-expose-headers")
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        for expected in tus_protocol::TUS_SUCCESS_RESPONSE_HEADERS {
+            assert!(
+                expose_headers
+                    .split(',')
+                    .map(str::trim)
+                    .any(|actual| actual.eq_ignore_ascii_case(expected)),
+                "{expected} missing from Access-Control-Expose-Headers: {expose_headers}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cors_exposure_excludes_hook_added_response_headers() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        let hooks = HookChain::new().on_pre_create(|_| async {
+            Ok(PreHookResult::proceed().with_header("x-hook", "created"))
+        });
+        let router = router_with_hooks(Config::default().cors_all(), storage, state_store, hooks);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .header("tus-resumable", "1.0.0")
+                    .header("upload-length", "1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers().get("x-hook").unwrap(), "created");
+        let expose_headers = response
+            .headers()
+            .get("access-control-expose-headers")
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert!(
+            !expose_headers
+                .split(',')
+                .map(str::trim)
+                .any(|actual| actual.eq_ignore_ascii_case("x-hook")),
+            "hook header leaked into Access-Control-Expose-Headers: {expose_headers}",
+        );
     }
 }

@@ -97,7 +97,7 @@ pub use lifecycle::{
 pub use locking::{LockGuard, Locker, NoopLocker};
 pub use protocol::{
     BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
-    ProtocolHandle, RequestBody, Response, UploadId,
+    ProtocolHandle, RequestBody, Response, TUS_SUCCESS_RESPONSE_HEADERS, UploadId,
 };
 pub use state::{MetadataValue, StateStore, UploadInventory, UploadMetadata, UploadState};
 pub use storage::ByteStream;
