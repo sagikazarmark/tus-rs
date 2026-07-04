@@ -253,6 +253,18 @@ impl ParallelProgressState {
     }
 }
 
+/// The outcome of a single parallel part task.
+///
+/// `created_url` records the partial upload's URL as soon as creation
+/// succeeds, so a failure in a *later* step (resume/PATCH) can still be
+/// cleaned up. It equals the final URL on success.
+#[cfg(not(target_arch = "wasm32"))]
+struct PartOutcome {
+    index: usize,
+    created_url: Option<String>,
+    result: Result<String>,
+}
+
 /// Per-part adapter translating part-local offsets into shared byte deltas.
 #[cfg(not(target_arch = "wasm32"))]
 struct PartProgress {
@@ -373,22 +385,25 @@ where
             })
         });
 
-        let mut join_set: JoinSet<Result<(usize, String)>> = JoinSet::new();
+        let mut join_set: JoinSet<PartOutcome> = JoinSet::new();
+        // Final partial URLs used for concatenation; set only on success.
         let mut part_urls: Vec<Option<String>> = vec![None; part_count];
+        // Every partial URL that was created, so cleanup can terminate a
+        // partial whose creation succeeded but whose later resume failed.
+        let mut created_urls: Vec<Option<String>> = vec![None; part_count];
         let mut next_index = 0;
         let mut failure: Option<Error> = None;
 
-        let spawn_part =
-            |join_set: &mut JoinSet<Result<(usize, String)>>, index: usize, bytes: Vec<u8>| {
-                let client = self.clone();
-                let capabilities = capabilities.clone();
-                let progress = progress.clone();
-                join_set.spawn(async move {
-                    client
-                        .upload_parallel_part(index, bytes, capabilities, progress)
-                        .await
-                });
-            };
+        let spawn_part = |join_set: &mut JoinSet<PartOutcome>, index: usize, bytes: Vec<u8>| {
+            let client = self.clone();
+            let capabilities = capabilities.clone();
+            let progress = progress.clone();
+            join_set.spawn(async move {
+                client
+                    .upload_parallel_part(index, bytes, capabilities, progress)
+                    .await
+            });
+        };
 
         while next_index < part_count && join_set.len() < max_concurrency {
             match Self::read_parallel_part(
@@ -418,24 +433,31 @@ where
                         "parallel upload task failed: {join_error}"
                     )));
                 }
-                Some(Ok(Err(error))) => failure = Some(error),
-                Some(Ok(Ok((index, url)))) => {
-                    part_urls[index] = Some(url);
+                Some(Ok(outcome)) => {
+                    if let Some(url) = &outcome.created_url {
+                        created_urls[outcome.index] = Some(url.clone());
+                    }
+                    match outcome.result {
+                        Err(error) => failure = Some(error),
+                        Ok(url) => {
+                            part_urls[outcome.index] = Some(url);
 
-                    if next_index < part_count {
-                        match Self::read_parallel_part(
-                            &mut source,
-                            next_index,
-                            source_length,
-                            options.part_size,
-                        )
-                        .await
-                        {
-                            Ok(bytes) => {
-                                spawn_part(&mut join_set, next_index, bytes);
-                                next_index += 1;
+                            if next_index < part_count {
+                                match Self::read_parallel_part(
+                                    &mut source,
+                                    next_index,
+                                    source_length,
+                                    options.part_size,
+                                )
+                                .await
+                                {
+                                    Ok(bytes) => {
+                                        spawn_part(&mut join_set, next_index, bytes);
+                                        next_index += 1;
+                                    }
+                                    Err(error) => failure = Some(error),
+                                }
                             }
-                            Err(error) => failure = Some(error),
                         }
                     }
                 }
@@ -444,13 +466,16 @@ where
 
         if let Some(error) = failure {
             join_set.abort_all();
-            // Collect parts that still completed so cleanup can cover them.
+            // Record created URLs from any parts that still completed so
+            // cleanup can terminate them too, even if their upload later failed.
             while let Some(result) = join_set.join_next().await {
-                if let Ok(Ok((index, url))) = result {
-                    part_urls[index] = Some(url);
+                if let Ok(outcome) = result
+                    && let Some(url) = outcome.created_url
+                {
+                    created_urls[outcome.index] = Some(url);
                 }
             }
-            self.cleanup_partial_uploads(part_urls).await;
+            self.cleanup_partial_uploads(created_urls).await;
             return Err(error);
         }
 
@@ -621,21 +646,28 @@ where
         bytes: Vec<u8>,
         capabilities: Option<ServerCapabilities>,
         progress: Option<std::sync::Arc<ParallelProgressState>>,
-    ) -> Result<(usize, String)> {
+    ) -> PartOutcome {
         let mut progress = PartProgress {
             shared: progress,
             last: 0,
         };
-        let upload = self
+        let mut created_url = None;
+        let result = self
             .upload_partial_with_capabilities(
                 bytes,
                 UploadMetadata::new(),
                 capabilities.as_ref(),
                 &mut progress,
+                &mut created_url,
             )
-            .await?;
+            .await
+            .map(|upload| upload.url.to_string());
 
-        Ok((index, upload.url.to_string()))
+        PartOutcome {
+            index,
+            created_url,
+            result,
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -645,6 +677,7 @@ where
         metadata: UploadMetadata,
         capabilities: Option<&ServerCapabilities>,
         progress: &mut P,
+        created_url: &mut Option<String>,
     ) -> Result<UploadInfo>
     where
         S: UploadSource,
@@ -657,6 +690,7 @@ where
             let upload = self
                 .create_upload_info(NewUpload::with_body(body, metadata).partial())
                 .await?;
+            *created_url = Some(upload.url.to_string());
             progress.on_progress(upload.offset, length);
             if upload.offset == length {
                 return Ok(upload);
@@ -669,6 +703,7 @@ where
         let upload = self
             .create_upload_info(NewUpload::new(length, metadata).partial())
             .await?;
+        *created_url = Some(upload.url.to_string());
         self.resume_at_with_progress(&upload.url, source, progress)
             .await
     }
@@ -1951,6 +1986,65 @@ mod tests {
             .iter()
             .find(|request| request.method() == Method::DELETE)
             .expect("failed parallel upload must terminate created partials");
+        assert_eq!(delete.uri().to_string(), "http://example.test/files/part-1");
+    }
+
+    /// A partial whose creation succeeds but whose follow-up resume fails must
+    /// still be terminated: the created URL is only known inside the part task,
+    /// so it has to survive the error back to the cleanup step.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_terminates_partial_created_before_a_resume_failure() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
+                ]),
+                Vec::new(),
+            )));
+            // Creation-with-upload accepts only part of the body, so the part
+            // task must resume the created partial.
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "2")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(2, 4)));
+            // The resume PATCH fails after the partial already exists.
+            responses.push_back(Ok(transport_response(
+                400,
+                http::HeaderMap::new(),
+                b"resume rejected".to_vec(),
+            )));
+            // Best-effort DELETE of the created-but-unfinished partial.
+            responses.push_back(Ok(transport_response(
+                204,
+                http::HeaderMap::new(),
+                Vec::new(),
+            )));
+        }
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_initial_upload_size(1024)
+            .with_max_retries(0);
+
+        let result = client
+            .upload_parallel(
+                b"abcd".to_vec(),
+                UploadMetadata::new(),
+                ParallelUpload::new(4).with_max_concurrency(1),
+            )
+            .await;
+
+        assert!(result.is_err());
+        let requests = transport.requests.lock().unwrap();
+        let delete = requests
+            .iter()
+            .find(|request| request.method() == Method::DELETE)
+            .expect("a partial created before a resume failure must be terminated");
         assert_eq!(delete.uri().to_string(), "http://example.test/files/part-1");
     }
 

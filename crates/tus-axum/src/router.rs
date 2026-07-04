@@ -360,22 +360,14 @@ where
     }
 }
 
-/// Builds the CORS layer from router options.
-///
-/// Only called when CORS is enabled (the origin list is non-empty). The
-/// CorsLayer intercepts OPTIONS requests for preflight handling.
-///
-/// When the non-standard GET download route is registered (`download` is
-/// true), the download-specific response headers (`Content-Range`,
-/// `Accept-Ranges`) are additionally exposed; they are not CORS-safelisted
-/// and would otherwise be invisible to browser clients issuing range
-/// requests.
 /// Response headers exposed to CORS clients.
 ///
-/// Always exposes the protocol's success response headers. When the download
-/// route is registered, also exposes the range-related download headers.
-/// (`Content-Disposition` is not listed because the download path never sets
-/// it.)
+/// Always exposes the protocol's success response headers. When the
+/// non-standard GET download route is registered (`download` is true), also
+/// exposes the range-related download headers (`Content-Range`,
+/// `Accept-Ranges`); they are not CORS-safelisted and would otherwise be
+/// invisible to browser clients issuing range requests. (`Content-Disposition`
+/// is not listed because the download path never sets it.)
 fn exposed_headers(download: bool) -> Vec<HeaderName> {
     let mut headers: Vec<HeaderName> = TUS_SUCCESS_RESPONSE_HEADERS
         .iter()
@@ -391,6 +383,10 @@ fn exposed_headers(download: bool) -> Vec<HeaderName> {
     headers
 }
 
+/// Builds the CORS layer from router options.
+///
+/// Only called when CORS is enabled (the origin list is non-empty). The
+/// CorsLayer intercepts OPTIONS requests for preflight handling.
 fn build_cors_layer(options: &RouterOptions, download: bool) -> Result<CorsLayer, RouterError> {
     let cors = CorsLayer::new()
         .allow_methods([

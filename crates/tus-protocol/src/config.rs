@@ -344,13 +344,11 @@ impl Config {
 
     /// Returns the checksum algorithms as a comma-separated string.
     pub fn checksum_algorithms_string(&self) -> String {
-        let mut algs: Vec<_> = self
-            .checksum_algorithms
+        self.checksum_algorithms()
             .iter()
             .map(|a| a.as_str())
-            .collect();
-        algs.sort();
-        algs.join(",")
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     /// Builds the full URL for an upload.

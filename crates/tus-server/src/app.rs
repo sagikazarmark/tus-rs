@@ -296,7 +296,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+        // The preflight must reach the OPTIONS handler (NO_CONTENT), not merely
+        // fail somewhere other than the auth layer.
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

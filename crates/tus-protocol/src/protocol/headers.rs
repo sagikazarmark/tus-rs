@@ -63,8 +63,11 @@ impl Headers {
     ///
     /// # Errors
     ///
-    /// Returns an error if `Tus-Resumable` is missing or unsupported, or if any
-    /// TUS-specific header value cannot be parsed or validated.
+    /// Returns an error if `Tus-Resumable` is missing or unsupported, or if a
+    /// required TUS header value cannot be parsed or validated.
+    /// `Upload-Checksum` parse failures are the exception: they are deferred
+    /// (captured, not returned) and only surfaced later by handlers, and only
+    /// when the Checksum extension is enabled.
     pub fn from_headers(headers: &HeaderMap) -> Result<Self, Error> {
         // Validate Tus-Resumable header
         match headers.get("tus-resumable").and_then(|v| v.to_str().ok()) {
@@ -307,8 +310,15 @@ fn is_valid_metadata_key(key: &str) -> bool {
 }
 
 pub(crate) fn parse_upload_checksum(headers: &HeaderMap) -> Result<Option<UploadChecksum>, Error> {
-    let value = match headers.get("upload-checksum").and_then(|v| v.to_str().ok()) {
-        Some(v) => v,
+    // A present-but-opaque value is a malformed header, not an absent one:
+    // dropping it silently (via `to_str().ok()`) would ignore a checksum the
+    // client did send. Map the decode failure to a deferred parse error so
+    // handlers can reject it when the Checksum extension is enabled.
+    let value = match headers.get("upload-checksum") {
+        Some(value) => value.to_str().map_err(|_| Error::InvalidHeader {
+            header: "Upload-Checksum",
+            message: "expected a valid UTF-8 value".to_string(),
+        })?,
         None => return Ok(None),
     };
 

@@ -44,10 +44,12 @@ impl<'a> UploadObjects<'a> {
     ///
     /// When `completes_upload` is set, a completion marker recording the part
     /// number of this final part is written durably *before* the body is
-    /// staged. Part writes are atomic, so after a crash the marked part either
-    /// exists (the upload is fully staged and [`ensure_materialized`]
-    /// can repair it) or does not (the upload is still incomplete and the
-    /// client resumes normally).
+    /// staged. The final part is staged through a temporary object and promoted
+    /// atomically, so after a crash the marked part either exists in full (the
+    /// upload is fully staged and [`ensure_materialized`] can repair it) or does
+    /// not exist at all (the upload is still incomplete and the client resumes
+    /// normally); a torn write can never leave a truncated part behind the
+    /// marker.
     ///
     /// [`ensure_materialized`]: Self::ensure_materialized
     pub(crate) async fn append_part(
@@ -68,15 +70,18 @@ impl<'a> UploadObjects<'a> {
             });
         }
 
-        if completes_upload {
-            self.write_completion_marker(position.part_number).await?;
-        }
-
         let part_key = self.part_key(position.part_number);
-        let written = match self.write_part(&part_key, data).await {
-            Ok(written) => written,
-            Err(error) => {
-                if completes_upload {
+        let written = if completes_upload {
+            self.write_completion_marker(position.part_number).await?;
+            // The marker makes this part authoritative for repair, so it must
+            // never be observable half-written: a crash mid-write on a backend
+            // without atomic object writes (e.g. `fs`) could otherwise leave a
+            // truncated part that `ensure_materialized` would promote as the
+            // whole upload. Stage it to a temp object and promote it, so the
+            // part key holds either the full final body or nothing at all.
+            match self.stage_final_part(&part_key, data).await {
+                Ok(written) => written,
+                Err(error) => {
                     // The completing body was not staged; remove the marker so
                     // a later part written at this number (for example after
                     // the client re-declares a different deferred length)
@@ -84,9 +89,14 @@ impl<'a> UploadObjects<'a> {
                     // a leaked marker only matters together with that rare
                     // sequence, and the next completing append rewrites it.
                     let _ = self.operator.delete(&self.completion_marker_key()).await;
+                    return Err(error);
                 }
-                return Err(error);
             }
+        } else {
+            // A torn non-completing part is resume-safe: offsets are derived
+            // from the bytes actually staged, so the client just continues from
+            // there. Only the marked final part needs atomic staging.
+            self.write_part(&part_key, data).await?
         };
 
         handle.set_internal(INTERNAL_NEXT_PART, (position.part_number + 1).to_string());
@@ -159,9 +169,10 @@ impl<'a> UploadObjects<'a> {
     ///
     /// Repair eligibility is decided by the durable completion marker written
     /// by the completing [`append_part`](Self::append_part): if the marker
-    /// exists and the part it names was staged (part writes are atomic, so
-    /// its existence implies the full final body was staged), the upload
-    /// completed but its finalize never materialized the main object. In that
+    /// exists and the part it names was staged (the completing part is promoted
+    /// atomically, so its existence implies the full final body was staged),
+    /// the upload completed but its finalize never materialized the main
+    /// object. In that
     /// case the staged parts are re-driven through the same
     /// temp-object-then-promote path as finalize.
     ///
@@ -344,6 +355,26 @@ impl<'a> UploadObjects<'a> {
                 Ok(written)
             }
         }
+    }
+
+    /// Stages the completing part so it appears atomically at the part key.
+    ///
+    /// The body is written to a temporary object and promoted with the same
+    /// rename-or-copy path as finalize, so the part key only ever holds the
+    /// fully written final body. That is what lets the completion marker be
+    /// trusted during repair: a crash mid-write leaves the temp object behind
+    /// (inert garbage a later cleanup removes), never a truncated part.
+    async fn stage_final_part(&self, part_key: &str, data: ChunkStream) -> Result<u64> {
+        let temp_key = self.temp_key("part");
+        let written = match self.write_part(&temp_key, data).await {
+            Ok(written) => written,
+            Err(error) => {
+                let _ = self.operator.delete(&temp_key).await;
+                return Err(error);
+            }
+        };
+        self.promote_object(&temp_key, part_key).await?;
+        Ok(written)
     }
 
     /// Ensures a failed streamed part write leaves no object behind.
@@ -533,22 +564,31 @@ impl<'a> UploadObjects<'a> {
     }
 
     async fn promote_temp(&self, temp_key: &str) -> Result<()> {
+        self.promote_object(temp_key, self.key).await
+    }
+
+    /// Atomically moves a temporary object onto a target key.
+    ///
+    /// Prefers a native rename; falls back to copy-then-delete on backends
+    /// without rename. Used both to promote a materialized main object and to
+    /// stage the completing part atomically.
+    async fn promote_object(&self, from_key: &str, to_key: &str) -> Result<()> {
         let capability = self.operator.info().full_capability();
 
         if capability.rename {
             return self
                 .operator
-                .rename(temp_key, self.key)
+                .rename(from_key, to_key)
                 .await
                 .map_err(Error::storage);
         }
 
         if capability.copy {
             self.operator
-                .copy(temp_key, self.key)
+                .copy(from_key, to_key)
                 .await
                 .map_err(Error::storage)?;
-            let _ = self.operator.delete(temp_key).await;
+            let _ = self.operator.delete(from_key).await;
             return Ok(());
         }
 
@@ -557,7 +597,7 @@ impl<'a> UploadObjects<'a> {
                 opendal::ErrorKind::Unsupported,
                 "OpenDAL service must support rename or copy to promote materialized uploads",
             )
-            .with_operation("tus_storage_opendal::staging::UploadObjects::promote_temp")
+            .with_operation("tus_storage_opendal::staging::UploadObjects::promote_object")
             .with_context("service", self.operator.info().scheme()),
         ))
     }
@@ -669,6 +709,34 @@ mod tests {
         assert!(upload.list_parts().await.unwrap().is_empty());
         assert!(upload.list_temp_objects().await.unwrap().is_empty());
         assert_eq!(upload.read_completion_marker().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn completing_append_stages_final_part_atomically() {
+        let test_operator = create_test_operator();
+        let upload = UploadObjects::new(&test_operator.operator, "atomic-final");
+        let mut handle = StorageHandle::new("atomic-final");
+        UploadObjects::initialize_handle(&mut handle);
+
+        upload
+            .append_part(
+                &mut handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+                true,
+            )
+            .await
+            .unwrap();
+
+        // The promoted part holds the full body and leaves no temp object
+        // behind, so the completion marker can be trusted during repair.
+        let part = test_operator
+            .operator
+            .read(&upload.part_key(1))
+            .await
+            .unwrap();
+        assert_eq!(part.to_bytes().as_ref(), b"hello");
+        assert!(upload.list_temp_objects().await.unwrap().is_empty());
     }
 
     #[tokio::test]

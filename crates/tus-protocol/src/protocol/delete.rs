@@ -20,9 +20,9 @@ use super::{Headers, Protocol, Response, UploadId};
 /// - [`Error::NotFound`] if the upload doesn't exist.
 /// - [`Error::HookRejected`] if a pre-terminate hook rejects.
 ///
-/// Storage deletion errors are logged and ignored; state deletion always
-/// proceeds, because otherwise a failing storage backend would leak
-/// undeletable upload IDs.
+/// Storage deletion failures are returned and the upload state is preserved,
+/// so a retried DELETE can still reach the storage object. Backends treat a
+/// missing object as success, keeping the retry idempotent.
 impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
 where
     S: Storage + ?Sized,
@@ -32,9 +32,9 @@ where
 {
     /// Terminates an upload: removes the state and the stored bytes.
     ///
-    /// Storage deletion errors are logged and ignored; state deletion always
-    /// proceeds, because otherwise a failing storage backend would leak
-    /// undeletable upload IDs.
+    /// Storage deletion failures are returned and the state is left intact, so
+    /// a retried DELETE can still reach the storage object rather than leaving
+    /// orphaned bytes behind.
     ///
     /// # Errors
     ///
