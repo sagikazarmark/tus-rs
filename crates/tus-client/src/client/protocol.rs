@@ -116,11 +116,21 @@ where
     /// to gate features at runtime, e.g. picking
     /// `creation-with-upload` over `creation` for small files.
     ///
-    /// Note: this is a separate roundtrip from any browser CORS preflight —
-    /// modern browsers cache preflight responses but a manual OPTIONS does
-    /// not benefit from that cache. Cache the result on your end if you call
-    /// it for every upload.
+    /// The first successful probe is cached per client (clones share the
+    /// cache), so repeated calls — including the implicit probes made by
+    /// `upload_from` and `upload_parallel` — cost a single OPTIONS
+    /// roundtrip. Failed probes are not cached.
     pub async fn server_capabilities(&self) -> Result<ServerCapabilities> {
+        if let Some(capabilities) = self.known_capabilities() {
+            return Ok(capabilities);
+        }
+
+        let capabilities = self.fetch_server_capabilities().await?;
+        self.store_capabilities(&capabilities);
+        Ok(capabilities)
+    }
+
+    async fn fetch_server_capabilities(&self) -> Result<ServerCapabilities> {
         // TUS 1.0.0 §2.3 explicitly excludes OPTIONS from the
         // "Tus-Resumable required on every request" rule. Strict server
         // implementations (some `tusd` deployments, custom impls) reject
@@ -128,7 +138,9 @@ where
         // helper inserts that header unconditionally; strip it back out
         // for OPTIONS to match the spec and stay compatible with strict
         // servers.
-        let mut req = self.request(Method::OPTIONS, self.endpoint.as_str())?;
+        let mut req = self
+            .request(Method::OPTIONS, self.endpoint.as_str())
+            .await?;
         req.headers_mut().remove("tus-resumable");
         let response = self.transport.send(req).await?;
         // TUS allows 200 or 204 here; other statuses are not valid OPTIONS responses.
@@ -191,7 +203,7 @@ where
             })
             .collect::<Result<Vec<_>>>()?;
         let upload_concat = format!("final;{}", part_urls.join(" "));
-        let mut request = self.request(Method::POST, self.endpoint.as_str())?;
+        let mut request = self.request(Method::POST, self.endpoint.as_str()).await?;
         insert_request_header(&mut request, "upload-concat", upload_concat)?;
         let encoded_metadata = encode_metadata(&metadata)?;
         if !encoded_metadata.is_empty() {
@@ -232,7 +244,7 @@ where
         partial: bool,
     ) -> Result<UploadInfo> {
         let has_body = body.is_some();
-        let mut request = self.request(Method::POST, self.endpoint.as_str())?;
+        let mut request = self.request(Method::POST, self.endpoint.as_str()).await?;
         insert_request_header(&mut request, "upload-length", length)?;
         if has_body {
             insert_request_header(
@@ -249,7 +261,7 @@ where
             insert_request_header(&mut request, "upload-concat", "partial")?;
         }
         if let Some(body) = body {
-            request = self.apply_checksum(request, body)?;
+            request = self.apply_creation_checksum(request, body)?;
         }
 
         let response = self.transport.send(request).await?;
@@ -284,7 +296,7 @@ where
     pub(super) async fn upload_info_at(&self, upload_url: &Url) -> Result<UploadInfo> {
         let response = self
             .transport
-            .send(self.request(Method::HEAD, upload_url.as_str())?)
+            .send(self.request(Method::HEAD, upload_url.as_str()).await?)
             .await?;
         if response.status().as_u16() != 200 && response.status().as_u16() != 204 {
             return Err(unexpected_response("upload info", response).await);
@@ -306,7 +318,7 @@ where
     pub(super) async fn terminate_upload_at(&self, upload_url: &Url) -> Result<()> {
         let response = self
             .transport
-            .send(self.request(Method::DELETE, upload_url.as_str())?)
+            .send(self.request(Method::DELETE, upload_url.as_str()).await?)
             .await?;
         if response.status().as_u16() != 204 {
             Err(unexpected_response("terminate upload", response).await)
@@ -337,7 +349,7 @@ where
         offset: u64,
         operation: &'static str,
     ) -> Result<u64> {
-        let mut request = self.request(Method::PATCH, upload_url.as_str())?;
+        let mut request = self.request(Method::PATCH, upload_url.as_str()).await?;
         insert_request_header(&mut request, "upload-offset", offset)?;
         insert_request_header(
             &mut request,

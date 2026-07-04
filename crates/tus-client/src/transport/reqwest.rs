@@ -60,11 +60,8 @@ impl Default for ReqwestTransport {
     }
 }
 
-#[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(any(feature = "local-futures", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Transport for ReqwestTransport {
     async fn send(&self, request: TransportRequest) -> Result<TransportResponse> {
         let (parts, body) = request.into_parts();
@@ -111,7 +108,7 @@ impl Transport for ReqwestTransport {
             }
             #[cfg(target_arch = "wasm32")]
             TransportBody::BytesWithTrailer { .. } => {
-                return Err(Error::Transport(
+                return Err(Error::TransportPermanent(
                     "reqwest transport does not support request trailers on wasm32".to_string(),
                 ));
             }
@@ -164,7 +161,7 @@ async fn send_request(builder: ::reqwest::RequestBuilder) -> Result<::reqwest::R
 #[cfg(feature = "transport-reqwest-middleware")]
 fn reqwest_middleware_error(error: reqwest_middleware::Error) -> Error {
     match error {
-        reqwest_middleware::Error::Reqwest(error) => Error::Http(error),
+        reqwest_middleware::Error::Reqwest(error) => Error::Reqwest(error),
         reqwest_middleware::Error::Middleware(error) => {
             Error::Transport(format!("reqwest middleware failed: {error}"))
         }
@@ -215,7 +212,7 @@ mod tests {
             MemoryLocker::new(),
             NoopHookExecutor::new(),
         ));
-        let app: axum::Router = tus_axum::create_router(state);
+        let app: axum::Router = tus_axum::create_router(state).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
@@ -243,12 +240,9 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     #[cfg_attr(
-        all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-        async_trait
-    )]
-    #[cfg_attr(
-        any(feature = "local-futures", target_arch = "wasm32"),
+        target_arch = "wasm32",
         async_trait(?Send)
     )]
     impl Transport for OneShotPatchFailureTransport {
@@ -299,12 +293,9 @@ mod tests {
         }
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     #[cfg_attr(
-        all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-        async_trait
-    )]
-    #[cfg_attr(
-        any(feature = "local-futures", target_arch = "wasm32"),
+        target_arch = "wasm32",
         async_trait(?Send)
     )]
     impl Transport for MidBodyDropTransport {
@@ -441,7 +432,7 @@ mod tests {
         let (endpoint, handle) = spawn_test_server().await;
 
         let client = Client::new(endpoint_url(&endpoint)).with_max_retries(0);
-        let upload = client
+        let (upload, _info) = client
             .create_upload(NewUpload::new(10, UploadMetadata::new()))
             .await
             .unwrap();
@@ -458,7 +449,7 @@ mod tests {
         assert!(partial.status().is_success());
 
         let resumed = client
-            .upload(upload.url().clone())
+            .upload_at(upload.url().clone())
             .unwrap()
             .upload(b"abcdefghij".to_vec())
             .await
@@ -560,12 +551,12 @@ mod tests {
     async fn terminate_upload_terminates_remote_upload() {
         let (endpoint, server_handle) = spawn_test_server().await;
         let client = Client::new(endpoint_url(&endpoint));
-        let upload = client
+        let (upload, _info) = client
             .create_upload(NewUpload::new(5, UploadMetadata::new()))
             .await
             .unwrap();
 
-        let handle = client.upload(upload.url().clone()).unwrap();
+        let handle = client.upload_at(upload.url().clone()).unwrap();
         handle.terminate().await.unwrap();
 
         let err = handle.info().await.unwrap_err();
@@ -628,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn server_capabilities_returns_advertised_extensions() {
         let (endpoint, _handle) =
-            spawn_test_server_with_config(Config::with_all_extensions().max_size(1024 * 1024))
+            spawn_test_server_with_config(Config::with_all_extensions().with_max_size(1024 * 1024))
                 .await;
         let client = Client::new(endpoint_url(&endpoint));
         let info = client

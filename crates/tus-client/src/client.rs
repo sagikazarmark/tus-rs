@@ -3,7 +3,10 @@
 use async_trait::async_trait;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use url::Url;
 
 use crate::error::{Error, Result};
@@ -42,6 +45,10 @@ pub struct Client<
     checksum: Option<ChecksumMode>,
     header_provider: Option<Arc<dyn HeaderProvider>>,
     retry_hook: Option<Arc<dyn RetryHook>>,
+    /// Capabilities discovered via OPTIONS, shared across clones of this
+    /// client. A `std::sync::Mutex` (never held across an await) keeps the
+    /// cache usable on both native and wasm targets.
+    capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
 }
 
 /// Checksum mode applied to each upload chunk.
@@ -81,7 +88,7 @@ impl Client<ReqwestTransport> {
 
 impl<T> std::fmt::Debug for Client<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = f.debug_struct("TusClient");
+        let mut debug = f.debug_struct("Client");
         debug
             .field("endpoint", &self.endpoint)
             .field("max_retries", &self.max_retries)
@@ -112,6 +119,7 @@ where
             checksum: None,
             header_provider: None,
             retry_hook: None,
+            capabilities: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -147,6 +155,10 @@ where
     }
 
     /// Enables per-chunk checksum verification.
+    ///
+    /// [`ChecksumMode::Trailer`] is not supported on `wasm32` because the
+    /// browser `fetch` API cannot send request trailers; the first request
+    /// fails with a permanent, non-retried [`Error::TransportPermanent`].
     #[cfg(feature = "checksum")]
     pub fn with_checksum(mut self, mode: impl Into<ChecksumMode>) -> Self {
         self.checksum = Some(mode.into());
@@ -171,22 +183,25 @@ where
         self
     }
 
-    fn request(&self, method: Method, url: &str) -> Result<TransportRequest> {
+    async fn request(&self, method: Method, url: &str) -> Result<TransportRequest> {
         let url = Url::parse(url)?;
         let uri: Uri = url.as_str().parse().map_err(|err| {
-            Error::Transport(format!("invalid transport URI {}: {err}", url.as_str()))
+            Error::TransportPermanent(format!("invalid transport URI {}: {err}", url.as_str()))
         })?;
         let mut request = http::Request::builder()
             .method(method)
             .uri(uri)
             .body(TransportBody::Empty)
-            .map_err(|err| Error::Transport(format!("failed to build request: {err}")))?;
+            .map_err(|err| Error::TransportPermanent(format!("failed to build request: {err}")))?;
 
+        // `append` keeps every value of repeated default header names
+        // (e.g. multiple `Cookie` or custom multi-valued headers) instead of
+        // keeping only the last one.
         for (name, value) in &self.headers {
-            request.headers_mut().insert(name.clone(), value.clone());
+            request.headers_mut().append(name.clone(), value.clone());
         }
         if let Some(provider) = &self.header_provider {
-            for (name, value) in provider.headers()? {
+            for (name, value) in provider.headers().await? {
                 insert_request_header(&mut request, name, value)?;
             }
         }
@@ -195,6 +210,15 @@ where
             HeaderValue::from_static(tus_protocol::TUS_RESUMABLE),
         );
         Ok(request)
+    }
+
+    /// Returns the capabilities previously discovered via OPTIONS, if any.
+    pub(crate) fn known_capabilities(&self) -> Option<ServerCapabilities> {
+        self.capabilities.lock().unwrap().clone()
+    }
+
+    pub(crate) fn store_capabilities(&self, capabilities: &ServerCapabilities) {
+        *self.capabilities.lock().unwrap() = Some(capabilities.clone());
     }
 
     #[cfg(feature = "checksum")]
@@ -223,6 +247,13 @@ where
                 *request.body_mut() = TransportBody::Bytes(body);
                 Ok(request)
             }
+            #[cfg(target_arch = "wasm32")]
+            ChecksumMode::Trailer(_) => Err(Error::TransportPermanent(
+                "checksum trailers are not supported on wasm32 (browser fetch cannot send \
+                 request trailers); use ChecksumMode::Header instead"
+                    .to_string(),
+            )),
+            #[cfg(not(target_arch = "wasm32"))]
             ChecksumMode::Trailer(algorithm) => {
                 request.headers_mut().insert(
                     HeaderName::from_static("trailer"),
@@ -247,39 +278,73 @@ where
         *request.body_mut() = TransportBody::Bytes(body);
         Ok(request)
     }
+
+    /// Applies the configured checksum to a creation-with-upload POST body.
+    ///
+    /// The TUS checksum extension defines `Upload-Checksum` for PATCH
+    /// requests, so the header is only attached to the creation POST when
+    /// the server is known (from cached OPTIONS capabilities) to advertise
+    /// the `checksum` extension. Otherwise the body is sent unadorned.
+    #[cfg(feature = "checksum")]
+    fn apply_creation_checksum(
+        &self,
+        mut request: TransportRequest,
+        body: Vec<u8>,
+    ) -> Result<TransportRequest> {
+        let server_advertises_checksum = self
+            .known_capabilities()
+            .is_some_and(|capabilities| capabilities.has_extension("checksum"));
+        if server_advertises_checksum {
+            self.apply_checksum(request, body)
+        } else {
+            *request.body_mut() = TransportBody::Bytes(body);
+            Ok(request)
+        }
+    }
+
+    #[cfg(not(feature = "checksum"))]
+    fn apply_creation_checksum(
+        &self,
+        request: TransportRequest,
+        body: Vec<u8>,
+    ) -> Result<TransportRequest> {
+        self.apply_checksum(request, body)
+    }
 }
 
 /// Hook for providing dynamic request headers.
+///
+/// The hook is asynchronous so implementations can refresh credentials
+/// (e.g. renew an OAuth token) before each request.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait HeaderProvider: MaybeSendSync {
     /// Produces headers to append to the next request.
-    fn headers(&self) -> Result<Vec<(String, String)>>;
+    async fn headers(&self) -> Result<Vec<(String, String)>>;
 }
 
-impl<F> HeaderProvider for F
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<F, Fut> HeaderProvider for F
 where
-    F: Fn() -> Result<Vec<(String, String)>> + MaybeSendSync,
+    F: Fn() -> Fut + MaybeSendSync,
+    Fut: std::future::Future<Output = Result<Vec<(String, String)>>> + MaybeSend,
 {
-    fn headers(&self) -> Result<Vec<(String, String)>> {
-        self()
+    async fn headers(&self) -> Result<Vec<(String, String)>> {
+        self().await
     }
 }
 
 /// Hook invoked before a failed request is retried.
-#[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(any(feature = "local-futures", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait RetryHook: MaybeSendSync {
     /// Returns true if the client should retry the failed operation.
     async fn before_retry(&self, attempt: usize, error: &Error) -> Result<bool>;
 }
 
-#[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(any(feature = "local-futures", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<F, Fut> RetryHook for F
 where
     F: Fn(usize, &Error) -> Fut + MaybeSendSync,
@@ -350,7 +415,7 @@ mod tests {
         let client =
             Client::with_transport(endpoint_url(), transport.clone()).with_headers(headers);
 
-        let upload = client
+        let (upload, _info) = client
             .create_upload(NewUpload::new(5, UploadMetadata::new()))
             .await
             .unwrap();
@@ -365,6 +430,52 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("team-a")
         );
+    }
+
+    #[async_test]
+    async fn repeated_default_header_values_are_all_sent() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                201,
+                {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(LOCATION, HeaderValue::from_static("/files/mock-id"));
+                    headers
+                },
+                Vec::new(),
+            )));
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            HeaderName::from_static("x-trace-tag"),
+            HeaderValue::from_static("alpha"),
+        );
+        headers.append(
+            HeaderName::from_static("x-trace-tag"),
+            HeaderValue::from_static("beta"),
+        );
+        let client =
+            Client::with_transport(endpoint_url(), transport.clone()).with_headers(headers);
+
+        client
+            .create_upload(NewUpload::new(5, UploadMetadata::new()))
+            .await
+            .unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        let values: Vec<_> = requests
+            .first()
+            .unwrap()
+            .headers()
+            .get_all("x-trace-tag")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect();
+        assert_eq!(values, vec!["alpha", "beta"]);
     }
 
     #[async_test]
@@ -385,9 +496,12 @@ mod tests {
             )));
 
         let client = Client::with_transport(endpoint_url(), transport.clone())
-            .with_header_provider(|| Ok(vec![("x-tenant-id".to_string(), "team-a".to_string())]));
+            .with_header_provider(|| {
+                // Async providers can refresh tokens before answering.
+                std::future::ready(Ok(vec![("x-tenant-id".to_string(), "team-a".to_string())]))
+            });
 
-        let upload = client
+        let (upload, _info) = client
             .create_upload(NewUpload::new(5, UploadMetadata::new()))
             .await
             .unwrap();

@@ -205,10 +205,12 @@ async fn spawn_recording_server(
         NoopHookExecutor::new(),
     ));
     let patch_requests = PatchRequestLog::default();
-    let app: Router = tus_axum::create_router(state).layer(from_fn_with_state(
-        patch_requests.clone(),
-        record_patch_request,
-    ));
+    let app: Router = tus_axum::create_router(state)
+        .unwrap()
+        .layer(from_fn_with_state(
+            patch_requests.clone(),
+            record_patch_request,
+        ));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -229,6 +231,7 @@ async fn spawn_head_rewrite_server(
         NoopHookExecutor::new(),
     ));
     let app: Router = tus_axum::create_router_with_download(state)
+        .unwrap()
         .layer(from_fn_with_state(rewrite, rewrite_file_on_head));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -249,7 +252,7 @@ async fn spawn_server_with_bearer(
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let app: Router = tus_axum::create_router(state);
+    let app: Router = tus_axum::create_router(state).unwrap();
     let app = match bearer_token {
         Some(token) => app.layer(from_fn_with_state(token.to_string(), bearer_auth)),
         None => app,
@@ -319,7 +322,7 @@ async fn upload_prints_created_upload_url_and_metadata() {
     assert!(upload_url.starts_with(&endpoint));
 
     let client = Client::new(endpoint_url(&endpoint));
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 5);
     assert_eq!(info.length, Some(5));
     assert_eq!(
@@ -433,7 +436,7 @@ async fn create_then_upload_uses_created_upload_url() {
     assert_eq!(stdout(&upload).trim(), upload_url);
     assert_eq!(stderr(&upload), "");
     let client = Client::new(endpoint_url(&endpoint));
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
     assert_eq!(info.length, Some(10));
 
@@ -464,7 +467,7 @@ async fn create_then_terminate_removes_created_upload() {
     assert_eq!(stderr(&terminate), "Upload terminated\n");
     let client = Client::new(endpoint_url(&endpoint));
     let err = client
-        .upload(&upload_url)
+        .upload_at(&upload_url)
         .unwrap()
         .info()
         .await
@@ -590,7 +593,7 @@ async fn upload_with_url_uploads_to_existing_upload() {
     let path = dir.path().join("existing-upload.txt");
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -604,7 +607,7 @@ async fn upload_with_url_uploads_to_existing_upload() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_existing_upload_human_output(&output, &upload_url);
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
 
     handle.abort();
@@ -617,7 +620,7 @@ async fn upload_chunk_size_flag_splits_existing_upload_patch_requests() {
     let path = dir.path().join("existing-chunked-upload.txt");
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -641,7 +644,7 @@ async fn upload_chunk_size_flag_splits_existing_upload_patch_requests() {
     );
     assert_eq!(stdout(&output).trim(), upload_url);
     assert_eq!(patch_requests.requests(), four_byte_patch_requests());
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
 
     handle.abort();
@@ -654,7 +657,7 @@ async fn upload_url_output_prints_only_existing_upload_url() {
     let path = dir.path().join("existing-url-output.txt");
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -669,7 +672,7 @@ async fn upload_url_output_prints_only_existing_upload_url() {
     );
     assert_eq!(stdout(&output).trim(), upload_url);
     assert_eq!(stderr(&output), "");
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
 
     handle.abort();
@@ -682,7 +685,7 @@ async fn upload_accepts_relative_existing_upload_url() {
     let path = dir.path().join("relative-existing-upload.txt");
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -704,7 +707,7 @@ async fn upload_accepts_relative_existing_upload_url() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_existing_upload_human_output(&output, &upload_url);
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
 
     handle.abort();
@@ -717,7 +720,7 @@ async fn upload_rejects_metadata_with_existing_upload_url() {
     let path = dir.path().join("metadata-existing-upload.txt");
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -749,7 +752,7 @@ async fn upload_existing_relative_url_resumes_from_current_offset() {
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
 
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -768,7 +771,7 @@ async fn upload_existing_relative_url_resumes_from_current_offset() {
         .await
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 5);
 
     let output = run_cli(&[
@@ -786,7 +789,7 @@ async fn upload_existing_relative_url_resumes_from_current_offset() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_existing_upload_human_output(&output, &upload_url);
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
 
     handle.abort();
@@ -800,7 +803,7 @@ async fn upload_existing_url_resumes_from_current_offset() {
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
 
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -818,7 +821,7 @@ async fn upload_existing_url_resumes_from_current_offset() {
         .await
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 5);
 
     let output = run_cli(&["upload", path.to_str().unwrap(), &upload_url]).await;
@@ -829,7 +832,7 @@ async fn upload_existing_url_resumes_from_current_offset() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_existing_upload_human_output(&output, &upload_url);
-    let info = client.upload(&upload_url).unwrap().info().await.unwrap();
+    let info = client.upload_at(&upload_url).unwrap().info().await.unwrap();
     assert_eq!(info.offset, 10);
 
     handle.abort();
@@ -851,7 +854,7 @@ async fn upload_existing_url_reads_file_chunks_after_resume_offset_check() {
     )
     .await;
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(10, UploadMetadata::new()))
         .await
         .unwrap();
@@ -935,7 +938,7 @@ async fn resume_command_is_removed() {
 async fn info_accepts_relative_upload_url() {
     let (endpoint, handle) = spawn_server(Config::default()).await;
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(12, UploadMetadata::new()))
         .await
         .unwrap();
@@ -965,7 +968,7 @@ async fn info_prints_human_offset_length_and_metadata() {
     let mut metadata = HashMap::new();
     metadata.insert("z-last".to_string(), "tail".to_string());
     metadata.insert("a-first".to_string(), "info.txt".to_string());
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(12, &metadata))
         .await
         .unwrap();
@@ -1014,7 +1017,7 @@ async fn info_json_prints_upload_info() {
     let mut metadata = HashMap::new();
     metadata.insert("z-last".to_string(), "tail".to_string());
     metadata.insert("a-first".to_string(), "info.txt".to_string());
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(12, &metadata))
         .await
         .unwrap();
@@ -1101,7 +1104,7 @@ async fn head_command_is_removed() {
 async fn terminate_accepts_absolute_path_upload_url() {
     let (endpoint, handle) = spawn_server(Config::default()).await;
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(3, UploadMetadata::new()))
         .await
         .unwrap();
@@ -1118,7 +1121,7 @@ async fn terminate_accepts_absolute_path_upload_url() {
     assert_eq!(stdout(&output), "");
     assert_eq!(stderr(&output), "Upload terminated\n");
     let err = client
-        .upload(parse_upload_url(&upload_url))
+        .upload_at(parse_upload_url(&upload_url))
         .unwrap()
         .info()
         .await
@@ -1135,7 +1138,7 @@ async fn terminate_accepts_absolute_path_upload_url() {
 async fn terminate_terminates_the_upload() {
     let (endpoint, handle) = spawn_server(Config::default()).await;
     let client = Client::new(endpoint_url(&endpoint));
-    let upload = client
+    let (upload, _info) = client
         .create_upload(NewUpload::new(3, UploadMetadata::new()))
         .await
         .unwrap();
@@ -1151,7 +1154,7 @@ async fn terminate_terminates_the_upload() {
     assert_eq!(stdout(&output), "");
     assert_eq!(stderr(&output), "Upload terminated\n");
     let err = client
-        .upload(parse_upload_url(&upload_url))
+        .upload_at(parse_upload_url(&upload_url))
         .unwrap()
         .info()
         .await

@@ -15,21 +15,15 @@ use super::{Client, NewUpload, ServerCapabilities, UploadInfo};
 use crate::error::Error;
 use crate::error::Result;
 
-use crate::helpers::{
-    is_retryable_resume_error, jittered_backoff_delay, validate_patch_advance,
-    validate_remote_for_resume,
-};
+use crate::helpers::{jittered_backoff_delay, validate_patch_advance, validate_remote_for_resume};
 use crate::runtime::MaybeSend;
 
 use crate::transport::Transport;
 use tus_protocol::UploadMetadata;
 
 /// Offset-addressable upload content.
-#[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(any(feature = "local-futures", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait UploadSource: MaybeSend {
     /// Total source length in bytes.
     fn len(&self) -> u64;
@@ -43,11 +37,8 @@ pub trait UploadSource: MaybeSend {
     async fn read_chunk(&mut self, offset: u64, max_len: usize) -> Result<Vec<u8>>;
 }
 
-#[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(any(feature = "local-futures", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl UploadSource for Vec<u8> {
     fn len(&self) -> u64 {
         self.as_slice().len() as u64
@@ -66,11 +57,17 @@ impl UploadSource for Vec<u8> {
 }
 
 /// Path-backed upload content for native Tokio applications.
+///
+/// The file is opened once at [`FileSource::open`] time and the handle is
+/// reused for every chunk read. If the file's length changes after open,
+/// reads fail with a permanent [`Error::Source`] instead of silently
+/// uploading torn content.
 #[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FileSource {
-    path: PathBuf,
+    file: File,
     len: u64,
+    path: PathBuf,
 }
 
 #[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
@@ -78,8 +75,9 @@ impl FileSource {
     /// Opens a file source and records its current length.
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let len = tokio::fs::metadata(&path).await?.len();
-        Ok(Self { path, len })
+        let file = File::open(&path).await?;
+        let len = file.metadata().await?.len();
+        Ok(Self { file, len, path })
     }
 
     /// Returns the path read by this source.
@@ -89,8 +87,8 @@ impl FileSource {
 }
 
 #[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl UploadSource for FileSource {
     fn len(&self) -> u64 {
         self.len
@@ -101,11 +99,21 @@ impl UploadSource for FileSource {
             return Ok(Vec::new());
         }
 
-        let mut file = File::open(&self.path).await?;
-        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        let current_len = self.file.metadata().await?.len();
+        if current_len != self.len {
+            return Err(Error::Source {
+                message: format!(
+                    "file {} changed length from {} to {current_len} after open",
+                    self.path.display(),
+                    self.len,
+                ),
+            });
+        }
+
+        self.file.seek(std::io::SeekFrom::Start(offset)).await?;
 
         let mut buffer = vec![0; max_len];
-        let read = file.read(&mut buffer).await?;
+        let read = self.file.read(&mut buffer).await?;
         buffer.truncate(read);
         Ok(buffer)
     }
@@ -189,7 +197,7 @@ where
     {
         let length = source.len();
         let metadata = metadata.into();
-        let capabilities = self.creation_capabilities(length).await;
+        let capabilities = self.creation_capabilities(length).await?;
 
         if self.should_use_creation_with_upload(length, capabilities.as_ref()) {
             let body = Self::read_source_exact(&mut source, 0, length).await?;
@@ -205,11 +213,17 @@ where
                 .await;
         }
 
-        let handle = self.create_upload(NewUpload::new(length, metadata)).await?;
+        let (handle, _info) = self.create_upload(NewUpload::new(length, metadata)).await?;
         handle.upload_with_progress(source, progress).await
     }
 
     /// Uploads a source as multiple partial uploads and concatenates them.
+    ///
+    /// Requires the server to advertise the `concatenation` extension; the
+    /// call fails fast with [`Error::UnsupportedExtension`] before creating
+    /// any partial uploads otherwise. If a part fails mid-flight, partial
+    /// uploads that were already created are terminated on a best-effort
+    /// basis before the error is returned.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload_parallel<S>(
         &self,
@@ -226,122 +240,111 @@ where
         }
 
         let metadata = metadata.into();
-        let capabilities = if self.max_initial_upload_size > 0 {
-            self.server_capabilities().await.ok()
-        } else {
-            None
-        };
+        let capabilities = self.server_capabilities().await?;
+        if !capabilities.has_extension("concatenation") {
+            return Err(Error::UnsupportedExtension("concatenation"));
+        }
+        let capabilities = Some(capabilities);
         let part_count = source_length.div_ceil(options.part_size as u64) as usize;
         let max_concurrency = options.max_concurrency.min(part_count).max(1);
-        #[cfg(not(feature = "local-futures"))]
-        let part_urls = {
-            let mut join_set = JoinSet::new();
-            let mut next_index = 0;
 
-            while next_index < part_count && join_set.len() < max_concurrency {
+        let mut join_set: JoinSet<Result<(usize, String)>> = JoinSet::new();
+        let mut part_urls: Vec<Option<String>> = vec![None; part_count];
+        let mut next_index = 0;
+        let mut failure: Option<Error> = None;
+
+        let spawn_part =
+            |join_set: &mut JoinSet<Result<(usize, String)>>, index: usize, bytes: Vec<u8>| {
                 let client = self.clone();
                 let capabilities = capabilities.clone();
-                let index = next_index;
-                let bytes =
-                    Self::read_parallel_part(&mut source, index, source_length, options.part_size)
-                        .await?;
-                next_index += 1;
-                let task = async move {
+                join_set.spawn(async move {
                     client
                         .upload_parallel_part(index, bytes, capabilities)
                         .await
-                };
+                });
+            };
 
-                join_set.spawn(task);
-            }
-
-            let mut part_urls = vec![String::new(); part_count];
-            while let Some((index, url)) = Self::join_next_parallel_part(&mut join_set).await? {
-                part_urls[index] = url;
-
-                if next_index < part_count {
-                    let client = self.clone();
-                    let capabilities = capabilities.clone();
-                    let index = next_index;
-                    let bytes = Self::read_parallel_part(
-                        &mut source,
-                        index,
-                        source_length,
-                        options.part_size,
-                    )
-                    .await?;
+        while next_index < part_count && join_set.len() < max_concurrency {
+            match Self::read_parallel_part(
+                &mut source,
+                next_index,
+                source_length,
+                options.part_size,
+            )
+            .await
+            {
+                Ok(bytes) => {
+                    spawn_part(&mut join_set, next_index, bytes);
                     next_index += 1;
-                    let task = async move {
-                        client
-                            .upload_parallel_part(index, bytes, capabilities)
-                            .await
-                    };
-
-                    join_set.spawn(task);
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    break;
                 }
             }
+        }
 
-            part_urls
-        };
-
-        #[cfg(feature = "local-futures")]
-        let part_urls = tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut join_set = JoinSet::new();
-                let mut next_index = 0;
-
-                while next_index < part_count && join_set.len() < max_concurrency {
-                    let client = self.clone();
-                    let capabilities = capabilities.clone();
-                    let index = next_index;
-                    let bytes = Self::read_parallel_part(
-                        &mut source,
-                        index,
-                        source_length,
-                        options.part_size,
-                    )
-                    .await?;
-                    next_index += 1;
-                    let task = async move {
-                        client
-                            .upload_parallel_part(index, bytes, capabilities)
-                            .await
-                    };
-
-                    join_set.spawn_local(task);
+        while failure.is_none() {
+            match join_set.join_next().await {
+                None => break,
+                Some(Err(join_error)) => {
+                    failure = Some(Error::Internal(format!(
+                        "parallel upload task failed: {join_error}"
+                    )));
                 }
-
-                let mut part_urls = vec![String::new(); part_count];
-                while let Some((index, url)) = Self::join_next_parallel_part(&mut join_set).await? {
-                    part_urls[index] = url;
+                Some(Ok(Err(error))) => failure = Some(error),
+                Some(Ok(Ok((index, url)))) => {
+                    part_urls[index] = Some(url);
 
                     if next_index < part_count {
-                        let client = self.clone();
-                        let capabilities = capabilities.clone();
-                        let index = next_index;
-                        let bytes = Self::read_parallel_part(
+                        match Self::read_parallel_part(
                             &mut source,
-                            index,
+                            next_index,
                             source_length,
                             options.part_size,
                         )
-                        .await?;
-                        next_index += 1;
-                        let task = async move {
-                            client
-                                .upload_parallel_part(index, bytes, capabilities)
-                                .await
-                        };
-
-                        join_set.spawn_local(task);
+                        .await
+                        {
+                            Ok(bytes) => {
+                                spawn_part(&mut join_set, next_index, bytes);
+                                next_index += 1;
+                            }
+                            Err(error) => failure = Some(error),
+                        }
                     }
                 }
+            }
+        }
 
-                Ok::<_, Error>(part_urls)
-            })
-            .await?;
+        if let Some(error) = failure {
+            join_set.abort_all();
+            // Collect parts that still completed so cleanup can cover them.
+            while let Some(result) = join_set.join_next().await {
+                if let Ok(Ok((index, url))) = result {
+                    part_urls[index] = Some(url);
+                }
+            }
+            self.cleanup_partial_uploads(part_urls).await;
+            return Err(error);
+        }
 
+        let part_urls: Vec<String> = part_urls
+            .into_iter()
+            .map(|url| url.expect("every joined part records its upload URL"))
+            .collect();
         self.concatenate_uploads(&part_urls, metadata).await
+    }
+
+    /// Best-effort termination of partial uploads left behind by a failed
+    /// parallel upload. Cleanup errors are ignored: the caller's original
+    /// failure is the actionable one, and servers expire stray partials.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn cleanup_partial_uploads(&self, part_urls: Vec<Option<String>>) {
+        for url in part_urls.into_iter().flatten() {
+            if let Ok(url) = url::Url::parse(&url) {
+                let _ = self.terminate_upload_at(&url).await;
+            }
+        }
     }
 
     /// Resumes a previously created upload from the server's current offset.
@@ -366,19 +369,23 @@ where
     {
         let source_length = source.len();
 
-        for attempt in 0..=self.max_retries {
+        // The retry budget covers *consecutive attempts without progress*:
+        // whenever the server offset advances, the counter resets, because
+        // progress proves the link works and a long transfer should not run
+        // out of budget from unrelated hiccups spread across its lifetime.
+        let mut attempt = 0;
+        let mut last_observed_offset: Option<u64> = None;
+
+        loop {
             let remote = match self.upload_info_at(upload_url).await {
                 Ok(remote) => remote,
                 Err(error) => {
-                    if !is_retryable_resume_error(&error) || attempt == self.max_retries {
+                    if !error.is_retryable() || attempt == self.max_retries {
                         return Err(error);
                     }
-                    if let Some(hook) = &self.retry_hook
-                        && !hook.before_retry(attempt + 1, &error).await?
-                    {
-                        return Err(error);
-                    }
+                    self.consult_retry_hook(attempt + 1, error).await?;
                     sleep_before_retry(self.retry_delay, attempt).await;
+                    attempt += 1;
                     continue;
                 }
             };
@@ -387,6 +394,13 @@ where
             if remote.offset == source_length {
                 return Ok(remote);
             }
+
+            if last_observed_offset.is_some_and(|previous| remote.offset > previous) {
+                attempt = 0;
+            }
+            last_observed_offset = Some(
+                last_observed_offset.map_or(remote.offset, |previous| previous.max(remote.offset)),
+            );
 
             let patch_result = self
                 .patch_source(
@@ -402,15 +416,12 @@ where
                     let remote = match self.upload_info_at(upload_url).await {
                         Ok(remote) => remote,
                         Err(error) => {
-                            if !is_retryable_resume_error(&error) || attempt == self.max_retries {
+                            if !error.is_retryable() || attempt == self.max_retries {
                                 return Err(error);
                             }
-                            if let Some(hook) = &self.retry_hook
-                                && !hook.before_retry(attempt + 1, &error).await?
-                            {
-                                return Err(error);
-                            }
+                            self.consult_retry_hook(attempt + 1, error).await?;
                             sleep_before_retry(self.retry_delay, attempt).await;
+                            attempt += 1;
                             continue;
                         }
                     };
@@ -418,13 +429,13 @@ where
                     if remote.offset == source_length {
                         return Ok(remote);
                     }
-                    return Err(Error::Transport(format!(
-                        "server offset {} is below local source length {} after upload",
-                        remote.offset, source_length,
-                    )));
+                    return Err(Error::OffsetDesync {
+                        expected: source_length,
+                        actual: remote.offset,
+                    });
                 }
                 Err(error) => {
-                    if !is_retryable_resume_error(&error) {
+                    if !error.is_retryable() {
                         return Err(error);
                     }
 
@@ -437,18 +448,29 @@ where
                         return Err(error);
                     }
 
-                    if let Some(hook) = &self.retry_hook
-                        && !hook.before_retry(attempt + 1, &error).await?
-                    {
-                        return Err(error);
-                    }
+                    self.consult_retry_hook(attempt + 1, error).await?;
                 }
             }
 
             sleep_before_retry(self.retry_delay, attempt).await;
+            attempt += 1;
         }
+    }
 
-        self.upload_info_at(upload_url).await
+    /// Consults the configured retry hook before the next attempt.
+    ///
+    /// Returns `Err` with the *original* upload error both when the hook
+    /// vetoes the retry and when the hook itself fails — a broken hook must
+    /// not mask the error that triggered the retry, so its own error is
+    /// discarded.
+    async fn consult_retry_hook(&self, attempt: usize, error: Error) -> Result<()> {
+        let Some(hook) = &self.retry_hook else {
+            return Ok(());
+        };
+        match hook.before_retry(attempt, &error).await {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(error),
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -481,18 +503,6 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn join_next_parallel_part(
-        join_set: &mut JoinSet<Result<(usize, String)>>,
-    ) -> Result<Option<(usize, String)>> {
-        match join_set.join_next().await {
-            Some(result) => Ok(Some(
-                result.map_err(|e| Error::Io(std::io::Error::other(e)))??,
-            )),
-            None => Ok(None),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     async fn upload_partial_with_capabilities<S>(
         &self,
         mut source: S,
@@ -521,12 +531,28 @@ where
         self.resume_at(&upload.url, source).await
     }
 
-    async fn creation_capabilities(&self, length: u64) -> Option<ServerCapabilities> {
+    /// Fetches server capabilities ahead of creation when the source is
+    /// small enough for creation-with-upload to matter.
+    ///
+    /// Auth-style OPTIONS failures (401/403/407) are propagated so callers
+    /// see the real problem instead of a doomed follow-up POST. Any other
+    /// failure (endpoint without OPTIONS support, non-TUS proxy) degrades
+    /// to "no known capabilities".
+    async fn creation_capabilities(&self, length: u64) -> Result<Option<ServerCapabilities>> {
         if length == 0 || length > self.max_initial_upload_size as u64 {
-            return None;
+            return Ok(None);
         }
 
-        self.server_capabilities().await.ok()
+        match self.server_capabilities().await {
+            Ok(capabilities) => Ok(Some(capabilities)),
+            Err(
+                error @ Error::UnexpectedResponse {
+                    status: 401 | 403 | 407,
+                    ..
+                },
+            ) => Err(error),
+            Err(_) => Ok(None),
+        }
     }
 
     fn should_use_creation_with_upload(
@@ -545,10 +571,8 @@ where
     where
         S: UploadSource,
     {
-        let capacity = usize::try_from(length).map_err(|_| {
-            Error::Transport(format!(
-                "source range length {length} does not fit in memory"
-            ))
+        let capacity = usize::try_from(length).map_err(|_| Error::Source {
+            message: format!("source range length {length} does not fit in memory"),
         })?;
         let mut body = Vec::with_capacity(capacity);
 
@@ -563,10 +587,12 @@ where
                 });
             }
             if chunk.len() > remaining {
-                return Err(Error::Transport(format!(
-                    "source returned {} bytes for a {remaining}-byte read",
-                    chunk.len()
-                )));
+                return Err(Error::Source {
+                    message: format!(
+                        "source returned {} bytes for a {remaining}-byte read",
+                        chunk.len()
+                    ),
+                });
             }
             body.extend(chunk);
         }
@@ -599,10 +625,12 @@ where
                 });
             }
             if chunk.len() > chunk_len {
-                return Err(Error::Transport(format!(
-                    "source returned {} bytes for a {chunk_len}-byte read",
-                    chunk.len()
-                )));
+                return Err(Error::Source {
+                    message: format!(
+                        "source returned {} bytes for a {chunk_len}-byte read",
+                        chunk.len()
+                    ),
+                });
             }
             let new_offset = self
                 .send_upload_chunk_at(upload_url, chunk, sent, "patch upload")
@@ -751,7 +779,7 @@ mod tests {
                 204,
                 header_map(&[
                     ("tus-version", "1.0.0"),
-                    ("tus-extension", "creation-with-upload"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
                 ]),
                 Vec::new(),
             )));
@@ -802,8 +830,8 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(not(feature = "local-futures"), async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl Transport for ActiveCountingTransport {
         async fn send(&self, request: crate::TransportRequest) -> Result<crate::TransportResponse> {
             let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
@@ -816,7 +844,7 @@ mod tests {
                     204,
                     header_map(&[
                         ("tus-version", "1.0.0"),
-                        ("tus-extension", "creation-with-upload"),
+                        ("tus-extension", "creation-with-upload,concatenation"),
                     ]),
                     Vec::new(),
                 )),
@@ -887,7 +915,7 @@ mod tests {
                 204,
                 header_map(&[
                     ("tus-version", "1.0.0"),
-                    ("tus-extension", "creation-with-upload"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
                 ]),
                 Vec::new(),
             )));
@@ -940,8 +968,8 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg_attr(not(feature = "local-futures"), async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl UploadSource for NonCloneSource<'_> {
         fn len(&self) -> u64 {
             self.bytes.len() as u64
@@ -967,7 +995,7 @@ mod tests {
                 204,
                 header_map(&[
                     ("tus-version", "1.0.0"),
-                    ("tus-extension", "creation-with-upload"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
                 ]),
                 Vec::new(),
             )));
@@ -1034,7 +1062,7 @@ mod tests {
                 204,
                 header_map(&[
                     ("tus-version", "1.0.0"),
-                    ("tus-extension", "creation-with-upload"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
                 ]),
                 Vec::new(),
             )));
@@ -1369,15 +1397,13 @@ mod tests {
             .resume_at(&upload_url("upload-1"), b"data".to_vec())
             .await;
 
-        match result {
-            Err(Error::Transport(message)) => {
-                assert!(
-                    message.contains("did not advance"),
-                    "unexpected error: {message}"
-                );
-            }
-            other => panic!("expected non-advancing offset error, got {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            Err(Error::OffsetDesync {
+                expected: 1,
+                actual: 0,
+            })
+        ));
     }
 
     #[async_test]
@@ -1410,12 +1436,9 @@ mod tests {
         #[derive(Clone)]
         struct OversizedSource;
 
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
         #[cfg_attr(
-            all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-            async_trait
-        )]
-        #[cfg_attr(
-            any(feature = "local-futures", target_arch = "wasm32"),
+            target_arch = "wasm32",
             async_trait(?Send)
         )]
         impl UploadSource for OversizedSource {
@@ -1434,32 +1457,25 @@ mod tests {
             .lock()
             .unwrap()
             .push_back(Ok(mock_head_response(0, 4)));
-        transport
-            .responses
-            .lock()
-            .unwrap()
-            .push_back(Ok(mock_head_response(0, 4)));
         let client = Client::with_transport(endpoint_url(), transport.clone())
             .with_max_chunk_size(4)
-            .with_max_retries(0);
+            .with_max_retries(3);
 
         let result = client
             .resume_at(&upload_url("upload-1"), OversizedSource)
             .await;
 
         match result {
-            Err(Error::Transport(message)) => {
+            Err(Error::Source { message }) => {
                 assert!(message.contains("source returned 5 bytes for a 4-byte read"));
             }
             other => panic!("expected oversized source chunk error, got {other:?}"),
         }
+        // A misbehaving source is a deterministic bug: no retry, no
+        // recovery HEAD — the initial HEAD must be the only request.
         let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.method() == Method::HEAD)
-        );
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.first().unwrap().method(), Method::HEAD);
     }
 
     #[async_test]
@@ -1492,5 +1508,261 @@ mod tests {
             })
             .collect();
         assert_eq!(patch_bodies, vec![b"data".to_vec(), b"ta".to_vec()]);
+    }
+
+    /// The retry budget must reset whenever the server offset advances:
+    /// three transient failures spread across a transfer that keeps making
+    /// progress must not exhaust a `max_retries` of 1.
+    #[async_test]
+    async fn resume_at_resets_retry_budget_when_offset_advances() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(mock_head_response(0, 6)));
+            responses.push_back(Ok(transport_response(
+                503,
+                http::HeaderMap::new(),
+                b"failure 1".to_vec(),
+            )));
+            responses.push_back(Ok(mock_head_response(2, 6)));
+            responses.push_back(Ok(transport_response(
+                503,
+                http::HeaderMap::new(),
+                b"failure 2".to_vec(),
+            )));
+            responses.push_back(Ok(mock_head_response(4, 6)));
+            responses.push_back(Ok(transport_response(
+                503,
+                http::HeaderMap::new(),
+                b"failure 3".to_vec(),
+            )));
+            responses.push_back(Ok(mock_head_response(6, 6)));
+        }
+
+        let client = Client::with_transport(endpoint_url(), transport)
+            .with_max_chunk_size(2)
+            .with_max_retries(1)
+            .with_retry_delay(Duration::from_millis(0));
+
+        let upload = client
+            .resume_at(&upload_url("upload-1"), b"abcdef".to_vec())
+            .await
+            .expect("progress between failures must reset the retry budget");
+        assert_eq!(upload.offset, 6);
+    }
+
+    /// A failing retry hook must not mask the upload error that triggered
+    /// the retry.
+    #[async_test]
+    async fn retry_hook_failure_returns_original_upload_error() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(mock_head_response(0, 4)));
+            responses.push_back(Ok(transport_response(
+                503,
+                http::HeaderMap::new(),
+                b"temporary failure".to_vec(),
+            )));
+        }
+
+        let client = Client::with_transport(endpoint_url(), transport)
+            .with_retry_hook(|_attempt: usize, _error: &Error| {
+                std::future::ready(Err::<bool, Error>(Error::Internal("hook broke".into())))
+            })
+            .with_max_retries(3)
+            .with_retry_delay(Duration::from_millis(0));
+
+        let result = client
+            .resume_at(&upload_url("upload-1"), b"data".to_vec())
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::UnexpectedResponse { status: 503, .. })),
+            "hook failure must surface the original 503, got {result:?}"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_requires_concatenation_extension() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation,creation-with-upload"),
+                ]),
+                Vec::new(),
+            )));
+        let client = Client::with_transport(endpoint_url(), transport.clone());
+
+        let result = client
+            .upload_parallel(
+                b"abcdefgh".to_vec(),
+                UploadMetadata::new(),
+                ParallelUpload::new(4),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::UnsupportedExtension("concatenation"))
+        ));
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "no partial uploads may be created without concatenation support"
+        );
+        assert_eq!(requests.first().unwrap().method(), Method::OPTIONS);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_terminates_created_partials_when_a_part_fails() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
+                ]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                400,
+                http::HeaderMap::new(),
+                b"part rejected".to_vec(),
+            )));
+            // Best-effort DELETE of the surviving partial.
+            responses.push_back(Ok(transport_response(
+                204,
+                http::HeaderMap::new(),
+                Vec::new(),
+            )));
+        }
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_initial_upload_size(1024)
+            .with_max_retries(0);
+
+        let result = client
+            .upload_parallel(
+                b"abcdefgh".to_vec(),
+                UploadMetadata::new(),
+                ParallelUpload::new(4).with_max_concurrency(1),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::UnexpectedResponse { status: 400, .. })
+        ));
+        let requests = transport.requests.lock().unwrap();
+        let delete = requests
+            .iter()
+            .find(|request| request.method() == Method::DELETE)
+            .expect("failed parallel upload must terminate created partials");
+        assert_eq!(delete.uri().to_string(), "http://example.test/files/part-1");
+    }
+
+    /// An auth failure on the capabilities OPTIONS must surface instead of
+    /// being swallowed into "no capabilities" followed by a doomed POST.
+    #[async_test]
+    async fn upload_from_propagates_options_auth_failures() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                401,
+                http::HeaderMap::new(),
+                b"missing token".to_vec(),
+            )));
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_initial_upload_size(1024);
+
+        let result = client
+            .upload_from(b"data".to_vec(), UploadMetadata::new())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::UnexpectedResponse { status: 401, .. })
+        ));
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "no POST may follow a 401 OPTIONS");
+    }
+
+    /// Non-auth OPTIONS failures (e.g. an endpoint without OPTIONS support)
+    /// still degrade to the plain creation path.
+    #[async_test]
+    async fn upload_from_falls_back_to_plain_creation_when_options_unsupported() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                405,
+                http::HeaderMap::new(),
+                b"method not allowed".to_vec(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/upload-1")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(0, 4)));
+            responses.push_back(Ok(mock_patch_response(4)));
+            responses.push_back(Ok(mock_head_response(4, 4)));
+        }
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_initial_upload_size(1024);
+
+        let upload = client
+            .upload_from(b"data".to_vec(), UploadMetadata::new())
+            .await
+            .expect("plain creation must proceed without OPTIONS support");
+        assert_eq!(upload.offset, 4);
+    }
+
+    /// Capabilities are cached per client: repeated probes reuse the first
+    /// successful OPTIONS response.
+    #[async_test]
+    async fn server_capabilities_are_cached_per_client() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                204,
+                header_map(&[("tus-version", "1.0.0"), ("tus-extension", "creation")]),
+                Vec::new(),
+            )));
+        let client = Client::with_transport(endpoint_url(), transport.clone());
+
+        let first = client.server_capabilities().await.unwrap();
+        let second = client.server_capabilities().await.unwrap();
+        let via_clone = client.clone().server_capabilities().await.unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first, via_clone);
+        assert_eq!(
+            transport.requests.lock().unwrap().len(),
+            1,
+            "capability probes after the first must be served from cache"
+        );
     }
 }

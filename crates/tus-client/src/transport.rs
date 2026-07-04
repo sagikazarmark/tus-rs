@@ -13,11 +13,8 @@ mod reqwest;
 pub use reqwest::ReqwestTransport;
 
 /// Pluggable HTTP transport used by the client core.
-#[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(any(feature = "local-futures", target_arch = "wasm32"), async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Transport: Clone + MaybeSendSync + 'static {
     /// Executes a request and returns a buffered response.
     async fn send(&self, request: TransportRequest) -> Result<TransportResponse>;
