@@ -65,7 +65,7 @@ state-file = ["native", "tokio/fs", "tokio/io-util"]
 state-memory = []
 
 # Locking implementations
-lock-file = ["native", "fs2", "tokio/fs", "tokio/time"]
+lock-file = ["native", "fs2", "tokio/fs", "tokio/rt", "tokio/time"]
 lock-memory = ["native", "tokio/sync", "tokio/time"]
 
 # Checksum implementations
