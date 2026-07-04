@@ -396,32 +396,36 @@ pub struct HookRequestInfo {
 
 /// Result from a pre-hook execution.
 ///
-/// Construct with the associated helpers: [`PreHookResult::proceed`],
-/// [`PreHookResult::proceed_with_metadata`], or [`PreHookResult::reject`],
-/// rather than with a struct literal. The type is `#[non_exhaustive]` so new
-/// decision knobs (for example, per-request rate-limit overrides) can be added
-/// without a major version bump.
+/// Construct with the associated helpers — [`PreHookResult::proceed`],
+/// [`PreHookResult::proceed_with_metadata`], or [`PreHookResult::reject`] —
+/// then refine with the `with_*` builders. Fields are private so a "proceed"
+/// result can never also carry a rejection status (invalid states are
+/// unrepresentable), and read them back through the accessors
+/// ([`proceeds`](Self::proceeds), [`reject_status`](Self::reject_status),
+/// etc.). The type is `#[non_exhaustive]` so new decision knobs (for example,
+/// per-request rate-limit overrides) can be added without a major version
+/// bump.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct PreHookResult {
     /// Whether to proceed with the operation.
-    pub proceed: bool,
+    proceed: bool,
 
     /// Replacement user metadata, if any.
     ///
     /// The protocol applies this only at documented mutation points such as
     /// `PreCreate` and `PreReceive`; hooks cannot mutate storage locator or
     /// backend-internal storage facts.
-    pub metadata: Option<UploadMetadata>,
+    metadata: Option<UploadMetadata>,
 
     /// HTTP status code for rejection.
-    pub reject_status: Option<u16>,
+    reject_status: Option<u16>,
 
     /// Rejection message for the client.
-    pub reject_message: Option<String>,
+    reject_message: Option<String>,
 
     /// Additional response headers to include.
-    pub response_headers: HashMap<String, String>,
+    response_headers: HashMap<String, String>,
 }
 
 impl PreHookResult {
@@ -463,6 +467,36 @@ impl PreHookResult {
     pub fn with_metadata(mut self, metadata: impl Into<UploadMetadata>) -> Self {
         self.metadata = Some(metadata.into());
         self
+    }
+
+    /// Returns whether the operation should proceed.
+    #[must_use]
+    pub fn proceeds(&self) -> bool {
+        self.proceed
+    }
+
+    /// Returns the replacement user metadata, if the hook supplied any.
+    #[must_use]
+    pub fn metadata(&self) -> Option<&UploadMetadata> {
+        self.metadata.as_ref()
+    }
+
+    /// Returns the rejection status code, if the operation was rejected.
+    #[must_use]
+    pub fn reject_status(&self) -> Option<u16> {
+        self.reject_status
+    }
+
+    /// Returns the rejection message, if the operation was rejected.
+    #[must_use]
+    pub fn reject_message(&self) -> Option<&str> {
+        self.reject_message.as_deref()
+    }
+
+    /// Returns the additional response headers the hook supplied.
+    #[must_use]
+    pub fn response_headers(&self) -> &HashMap<String, String> {
+        &self.response_headers
     }
 }
 
