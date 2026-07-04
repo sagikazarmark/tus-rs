@@ -11,10 +11,17 @@ use tus_protocol::{
 use tus_storage_opendal::Storage as ServerStorage;
 
 use crate::config::{HookConfig, StorageConfig, build_storage_operator};
+use crate::expiration::ExpirationTarget;
+
+pub(in crate::command) struct CommandRuntime {
+    pub(in crate::command) backends: CommandBackends,
+    pub(in crate::command) cleanup_target:
+        ExpirationTarget<ServerStorage, FileStateStore, MemoryLocker>,
+}
 
 // Wraps the two hook executors so TusState's concrete type stays
 // monomorphic regardless of whether the operator configured webhooks.
-pub(crate) enum ServerHooks {
+pub(in crate::command) enum ServerHooks {
     Noop(NoopHookExecutor),
     Http(HttpHookExecutor),
 }
@@ -36,13 +43,31 @@ impl HookExecutor for ServerHooks {
     }
 }
 
-pub(crate) struct RuntimeBackends {
-    pub(crate) storage: Arc<ServerStorage>,
-    pub(crate) state_store: Arc<FileStateStore>,
-    pub(crate) locker: Arc<MemoryLocker>,
+pub(in crate::command) struct CommandBackends {
+    pub(in crate::command) storage: Arc<ServerStorage>,
+    pub(in crate::command) state_store: Arc<FileStateStore>,
+    pub(in crate::command) locker: Arc<MemoryLocker>,
 }
 
-pub(crate) fn build_hooks(config: &HookConfig) -> anyhow::Result<ServerHooks> {
+pub(in crate::command) async fn build_command_runtime(
+    storage_config: &StorageConfig,
+    state_dir: &std::path::Path,
+) -> anyhow::Result<CommandRuntime> {
+    let backends = build_backends(storage_config, state_dir).await?;
+    let cleanup_target = ExpirationTarget::new(
+        "default",
+        backends.storage.clone(),
+        backends.state_store.clone(),
+        backends.locker.clone(),
+    );
+
+    Ok(CommandRuntime {
+        backends,
+        cleanup_target,
+    })
+}
+
+pub(in crate::command) fn build_hooks(config: &HookConfig) -> anyhow::Result<ServerHooks> {
     let Some(url) = config.url.as_deref() else {
         tracing::info!("Hooks: disabled");
         return Ok(ServerHooks::Noop(NoopHookExecutor::new()));
@@ -75,10 +100,10 @@ pub(crate) fn build_hooks(config: &HookConfig) -> anyhow::Result<ServerHooks> {
     Ok(ServerHooks::Http(HttpHookExecutor::new(cfg)))
 }
 
-pub(crate) async fn build_backends(
+async fn build_backends(
     storage_config: &StorageConfig,
     state_dir: &std::path::Path,
-) -> anyhow::Result<RuntimeBackends> {
+) -> anyhow::Result<CommandBackends> {
     tokio::fs::create_dir_all(state_dir)
         .await
         .with_context(|| format!("failed to create state directory {}", state_dir.display()))?;
@@ -98,7 +123,7 @@ pub(crate) async fn build_backends(
     tracing::info!("State store: {}", state_store.name());
     tracing::info!("Locker: {}", locker.name());
 
-    Ok(RuntimeBackends {
+    Ok(CommandBackends {
         storage,
         state_store,
         locker,
