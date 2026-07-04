@@ -43,8 +43,9 @@ where
         self.client.terminate_upload_at(&self.url).await
     }
 
-    /// Uploads one chunk to this upload resource and returns the new server offset.
-    pub async fn upload_chunk(&self, chunk: Vec<u8>, offset: u64) -> Result<u64> {
+    /// Uploads one chunk at the given offset to this upload resource and
+    /// returns the new server offset.
+    pub async fn upload_chunk(&self, offset: u64, chunk: Vec<u8>) -> Result<u64> {
         self.client.upload_chunk_at(&self.url, chunk, offset).await
     }
 
@@ -272,7 +273,7 @@ mod tests {
         let offset = client
             .upload_at(upload_url())
             .unwrap()
-            .upload_chunk(b"hello".to_vec(), 0)
+            .upload_chunk(0, b"hello".to_vec())
             .await
             .unwrap();
 
