@@ -34,7 +34,7 @@ use tus_protocol::{
     AppendRequest, ByteStream, ChunkStream, ConcatRequest, Error, Result, StorageHandle,
 };
 
-const INTERNAL_NEXT_PART: &str = "opendal_next_part";
+mod staging;
 
 /// OpenDAL-based storage backend.
 ///
@@ -68,210 +68,6 @@ impl Storage {
             format!("{}/{}", self.prefix.trim_end_matches('/'), id)
         }
     }
-
-    /// Directory prefix under which staging parts for an upload live.
-    fn parts_prefix(key: &str) -> String {
-        format!("{}.parts/", key)
-    }
-
-    /// Generates the staging key for a particular part number. Zero-padded
-    /// so lexicographic listing returns parts in order.
-    fn part_key(key: &str, part_number: u64) -> String {
-        format!("{}.parts/{:010}", key, part_number)
-    }
-
-    /// Directory prefix under which temporary materializations live.
-    fn temp_prefix(key: &str) -> String {
-        format!("{}.tmp/", key)
-    }
-
-    /// Generates a unique temporary key for materializing an object.
-    fn temp_key(key: &str, purpose: &str) -> String {
-        format!(
-            "{}{}-{}",
-            Self::temp_prefix(key),
-            purpose,
-            uuid::Uuid::new_v4().simple()
-        )
-    }
-
-    /// Streams an object into an already-open writer.
-    async fn copy_object_into_writer(
-        &self,
-        source_key: &str,
-        writer: &mut opendal::Writer,
-    ) -> Result<()> {
-        let reader = self
-            .operator
-            .reader(source_key)
-            .await
-            .map_err(Error::storage)?;
-        let mut stream = reader
-            .into_bytes_stream(0..)
-            .await
-            .map_err(Error::storage)?;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(Error::storage)?;
-            writer.write(chunk).await.map_err(Error::storage)?;
-        }
-        Ok(())
-    }
-
-    /// Streams source objects into `target_key`, replacing it only when closed.
-    async fn write_objects_to_key(&self, target_key: &str, source_keys: &[String]) -> Result<()> {
-        let mut writer = self
-            .operator
-            .writer(target_key)
-            .await
-            .map_err(Error::storage)?;
-        for source_key in source_keys {
-            self.copy_object_into_writer(source_key, &mut writer)
-                .await?;
-        }
-        writer.close().await.map(|_| ()).map_err(Error::storage)
-    }
-
-    /// Promotes a complete temporary object to its public target key.
-    async fn promote_temp(&self, temp_key: &str, target_key: &str) -> Result<()> {
-        let capability = self.operator.info().full_capability();
-
-        if capability.rename {
-            return self
-                .operator
-                .rename(temp_key, target_key)
-                .await
-                .map_err(Error::storage);
-        }
-
-        if capability.copy {
-            self.operator
-                .copy(temp_key, target_key)
-                .await
-                .map_err(Error::storage)?;
-            let _ = self.operator.delete(temp_key).await;
-            return Ok(());
-        }
-
-        Err(Error::storage(
-            opendal::Error::new(
-                opendal::ErrorKind::Unsupported,
-                "OpenDAL service must support rename or copy to promote materialized uploads",
-            )
-            .with_operation("tus_storage_opendal::Storage::promote_temp")
-            .with_context("service", self.operator.info().scheme()),
-        ))
-    }
-
-    /// Lists the staging parts for an upload, sorted by part number
-    /// (ascending), returning their storage keys.
-    async fn list_parts(&self, key: &str) -> Result<Vec<String>> {
-        let prefix = Self::parts_prefix(key);
-        let entries = match self.operator.list(&prefix).await {
-            Ok(e) => e,
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(Error::storage(e)),
-        };
-        let mut part_keys: Vec<String> = entries
-            .into_iter()
-            .filter(|e| e.metadata().is_file())
-            .map(|e| e.path().to_string())
-            .collect();
-        // Zero-padded part numbers mean lex sort == numeric sort.
-        part_keys.sort();
-        Ok(part_keys)
-    }
-
-    /// Returns the accumulated size of all staged parts for an upload.
-    async fn staged_size(&self, key: &str) -> Result<Option<u64>> {
-        let part_keys = self.list_parts(key).await?;
-        if part_keys.is_empty() {
-            return Ok(None);
-        }
-
-        let mut total = 0_u64;
-        for part_key in part_keys {
-            let stat = self
-                .operator
-                .stat(&part_key)
-                .await
-                .map_err(Error::storage)?;
-            total = total.saturating_add(stat.content_length());
-        }
-
-        Ok(Some(total))
-    }
-
-    /// Lists leftover temporary materialization objects for an upload.
-    async fn list_temp_objects(&self, key: &str) -> Result<Vec<String>> {
-        let prefix = Self::temp_prefix(key);
-        let entries = match self.operator.list(&prefix).await {
-            Ok(e) => e,
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(Error::storage(e)),
-        };
-        Ok(entries
-            .into_iter()
-            .filter(|e| e.metadata().is_file())
-            .map(|e| e.path().to_string())
-            .collect())
-    }
-
-    /// Concatenates all staging parts into the main key and removes them.
-    async fn finalize(&self, key: &str) -> Result<()> {
-        let part_keys = self.list_parts(key).await?;
-        let temp_key = Self::temp_key(key, "finalize");
-
-        if let Err(error) = self.write_objects_to_key(&temp_key, &part_keys).await {
-            let _ = self.operator.delete(&temp_key).await;
-            return Err(error);
-        }
-
-        if let Err(error) = self.promote_temp(&temp_key, key).await {
-            let _ = self.operator.delete(&temp_key).await;
-            return Err(error);
-        }
-
-        for part_key in &part_keys {
-            let _ = self.operator.delete(part_key).await;
-        }
-        let _ = self.operator.delete(&Self::parts_prefix(key)).await;
-        let _ = self.operator.delete(&Self::temp_prefix(key)).await;
-
-        Ok(())
-    }
-
-    fn next_part(handle: &StorageHandle) -> u64 {
-        handle
-            .get_internal(INTERNAL_NEXT_PART)
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(1)
-    }
-
-    fn part_number(part_key: &str) -> Option<u64> {
-        part_key.rsplit('/').next()?.parse::<u64>().ok()
-    }
-
-    async fn next_part_for_append(&self, handle: &StorageHandle, key: &str) -> Result<u64> {
-        let candidate = Self::next_part(handle);
-        let candidate_key = Self::part_key(key, candidate);
-
-        match self.operator.stat(&candidate_key).await {
-            Ok(_) => {
-                let next_existing = self
-                    .list_parts(key)
-                    .await?
-                    .iter()
-                    .filter_map(|part_key| Self::part_number(part_key))
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(1);
-
-                Ok(candidate.max(next_existing))
-            }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(candidate),
-            Err(e) => Err(Error::storage(e)),
-        }
-    }
 }
 
 impl std::fmt::Debug for Storage {
@@ -291,7 +87,7 @@ impl tus_protocol::Storage for Storage {
     async fn create(&self, upload_id: &str) -> Result<StorageHandle> {
         let key = self.make_key(upload_id);
         let mut handle = StorageHandle::new(key);
-        handle.set_internal(INTERNAL_NEXT_PART, "1");
+        staging::UploadObjects::initialize_handle(&mut handle);
         Ok(handle)
     }
 
@@ -303,8 +99,9 @@ impl tus_protocol::Storage for Storage {
             completes_upload,
         } = request;
         let key = handle.key().to_string();
+        let upload = staging::UploadObjects::new(&self.operator, &key);
 
-        let current_size = self.size(&handle).await?.unwrap_or(0);
+        let current_size = upload.stored_size().await?.unwrap_or(0);
         if current_size != expected_offset {
             return Err(Error::Internal(format!(
                 "opendal storage size {current_size} does not match expected offset {expected_offset} for key {key}"
@@ -315,21 +112,12 @@ impl tus_protocol::Storage for Storage {
         // a single staging-object PUT must be atomic; we can't split it.
         // Callers bound this by `config.max_chunk_size`.
         let bytes = collect_chunk_stream(data).await?;
-
-        let part_number = self.next_part_for_append(&handle, &key).await?;
-        let part_key = Self::part_key(&key, part_number);
-
-        self.operator
-            .write(&part_key, bytes)
-            .await
-            .map_err(Error::storage)?;
-
-        handle.set_internal(INTERNAL_NEXT_PART, (part_number + 1).to_string());
+        upload.append_part(&mut handle, bytes).await?;
 
         // Lifecycle owns completion detection. Deferred-length uploads stay in
         // staging until the PATCH that declares and reaches the length.
         if completes_upload {
-            self.finalize(&key).await?;
+            upload.finalize().await?;
         }
 
         Ok(handle)
@@ -340,64 +128,23 @@ impl tus_protocol::Storage for Storage {
         let target_key = target.key();
 
         let part_keys: Vec<String> = parts.iter().map(|part| part.key().to_string()).collect();
-        let temp_key = Self::temp_key(target_key, "concat");
-
-        if let Err(error) = self.write_objects_to_key(&temp_key, &part_keys).await {
-            let _ = self.operator.delete(&temp_key).await;
-            return Err(error);
-        }
-
-        if let Err(error) = self.promote_temp(&temp_key, target_key).await {
-            let _ = self.operator.delete(&temp_key).await;
-            return Err(error);
-        }
+        staging::UploadObjects::new(&self.operator, target_key)
+            .concat(&part_keys)
+            .await?;
 
         Ok(target)
     }
 
     async fn delete(&self, handle: &StorageHandle) -> Result<()> {
-        let key = handle.key();
-
-        // Best-effort cleanup of any staging parts left over from an
-        // unfinished upload.
-        if let Ok(parts) = self.list_parts(key).await {
-            for p in parts {
-                let _ = self.operator.delete(&p).await;
-            }
-            let _ = self.operator.delete(&Self::parts_prefix(key)).await;
-        }
-
-        if let Ok(temp_objects) = self.list_temp_objects(key).await {
-            for temp_key in temp_objects {
-                let _ = self.operator.delete(&temp_key).await;
-            }
-            let _ = self.operator.delete(&Self::temp_prefix(key)).await;
-        }
-
-        match self.operator.delete(key).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::storage(e)),
-        }
+        staging::UploadObjects::new(&self.operator, handle.key())
+            .delete_all()
+            .await
     }
 
     async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>> {
-        let key = handle.key();
-
-        let staged_size = self.staged_size(key).await?;
-
-        // If both main and staged objects exist, use the larger size. This is
-        // safe for recovery from old direct-to-main finalize failures (partial
-        // main object plus complete staged parts) and from crashes after temp
-        // promotion but before all staged parts were cleaned up.
-        match self.operator.stat(key).await {
-            Ok(stat) => Ok(Some(match staged_size {
-                Some(staged_size) => staged_size.max(stat.content_length()),
-                None => stat.content_length(),
-            })),
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(staged_size),
-            Err(e) => Err(Error::storage(e)),
-        }
+        staging::UploadObjects::new(&self.operator, handle.key())
+            .stored_size()
+            .await
     }
 }
 
@@ -507,7 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_and_append() {
+    async fn append_that_completes_upload_finalizes_content() {
         let storage = create_test_storage();
 
         // Create
@@ -529,14 +276,6 @@ mod tests {
 
         // After finalize the main key holds the bytes.
         assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
-        assert!(storage.list_parts(handle.key()).await.unwrap().is_empty());
-        assert!(
-            storage
-                .list_temp_objects(handle.key())
-                .await
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[tokio::test]
@@ -603,7 +342,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(handle.get_internal(INTERNAL_NEXT_PART), Some("2"));
+        assert_eq!(handle.get_internal(staging::INTERNAL_NEXT_PART), Some("2"));
     }
 
     #[tokio::test]
@@ -621,7 +360,7 @@ mod tests {
             .await
             .unwrap();
 
-        handle.set_internal(INTERNAL_NEXT_PART, "99");
+        handle.set_internal(staging::INTERNAL_NEXT_PART, "99");
         assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
     }
 
@@ -761,17 +500,10 @@ mod tests {
         }
 
         assert_eq!(String::from_utf8(data).unwrap(), "Hello World");
-        assert!(
-            storage
-                .list_temp_objects(target.key())
-                .await
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[tokio::test]
-    async fn failed_concat_does_not_expose_partial_target_or_leave_temp_object() {
+    async fn failed_concat_does_not_expose_partial_target() {
         let storage = create_test_storage();
 
         let part = storage.create("concat-good-part").await.unwrap();
@@ -787,8 +519,6 @@ mod tests {
 
         let missing_part = storage.create("concat-missing-part").await.unwrap();
         let target = storage.create("concat-failed-target").await.unwrap();
-        let target_key = target.key().to_string();
-
         let error = storage
             .concat(ConcatRequest {
                 target: target.clone(),
@@ -799,13 +529,6 @@ mod tests {
 
         assert!(matches!(error, Error::Storage(_)));
         assert_eq!(storage.size(&target).await.unwrap(), None);
-        assert!(
-            storage
-                .list_temp_objects(&target_key)
-                .await
-                .unwrap()
-                .is_empty()
-        );
     }
 
     #[tokio::test]
@@ -872,11 +595,10 @@ mod tests {
             .await
             .unwrap();
 
-        let key = handle.key().to_string();
-        assert!(!storage.list_parts(&key).await.unwrap().is_empty());
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(3));
 
         storage.delete(&handle).await.unwrap();
-        assert!(storage.list_parts(&key).await.unwrap().is_empty());
+        assert_eq!(storage.size(&handle).await.unwrap(), None);
     }
 
     #[tokio::test]
