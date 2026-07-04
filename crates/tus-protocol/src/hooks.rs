@@ -201,6 +201,12 @@ impl HookEvent {
     }
 }
 
+impl std::fmt::Display for HookEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Context provided to hooks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]

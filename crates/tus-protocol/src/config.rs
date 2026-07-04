@@ -456,6 +456,12 @@ impl Extension {
     }
 }
 
+impl std::fmt::Display for Extension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl std::str::FromStr for Extension {
     type Err = Error;
 
@@ -498,6 +504,12 @@ impl ChecksumAlgorithm {
             ChecksumAlgorithm::Md5 => "md5",
             ChecksumAlgorithm::Crc32 => "crc32",
         }
+    }
+}
+
+impl std::fmt::Display for ChecksumAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
