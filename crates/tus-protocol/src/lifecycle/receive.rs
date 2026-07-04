@@ -15,7 +15,7 @@ use crate::state::StateStore;
 use crate::state::UploadState;
 use crate::storage::{AppendRequest, ChunkStream, Storage, StorageHandle};
 
-use super::{UploadCompletion, ensure_active};
+use super::{PreHookGate, UploadCompletion, ensure_active};
 
 /// Request fields needed before a PATCH body is accepted.
 #[derive(Debug, Clone, Copy)]
@@ -135,7 +135,9 @@ where
         state: UploadState,
         request_body: RequestBody,
     ) -> Result<CreationWithUploadOutcome> {
-        let pre_create = self.run_pre_create(state).await?;
+        let pre_create = PreHookGate::Create
+            .run(self.hooks, self.request_info, state)
+            .await?;
         let mut state = pre_create.state;
         let mut response_headers = pre_create.response_headers;
         let prepared = prepare_receive_body(
@@ -174,33 +176,6 @@ where
         })
     }
 
-    async fn run_pre_create(&self, state: UploadState) -> Result<PreCreateDecision> {
-        let hook_ctx = HookContext::new(
-            HookEvent::PreCreate,
-            state.clone(),
-            self.request_info.clone(),
-        );
-        let pre_result = self.hooks.execute_pre(&hook_ctx).await?;
-
-        if !pre_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_result.reject_status.unwrap_or(400),
-                message: pre_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        Ok(PreCreateDecision {
-            state: {
-                let mut state = state;
-                if let Some(metadata) = pre_result.metadata {
-                    state.set_metadata(metadata);
-                }
-                state
-            },
-            response_headers: pre_result.response_headers,
-        })
-    }
-
     fn completion(&self) -> UploadCompletion<'_, H> {
         UploadCompletion::new(self.hooks, self.request_info)
     }
@@ -209,11 +184,6 @@ where
         let ctx = HookContext::new(event, state.clone(), self.request_info.clone());
         execute_post_best_effort(self.hooks, &ctx).await;
     }
-}
-
-struct PreCreateDecision {
-    state: UploadState,
-    response_headers: HashMap<String, String>,
 }
 
 /// Validates PATCH preflight state and applies deferred Upload-Length.
@@ -342,22 +312,11 @@ async fn prepare_receive_body<H>(
 where
     H: HookExecutor + ?Sized,
 {
-    let pre_receive_ctx =
-        HookContext::new(HookEvent::PreReceive, state.clone(), request_info.clone());
-    let pre_receive_result = hooks.execute_pre(&pre_receive_ctx).await?;
-
-    if !pre_receive_result.proceed {
-        return Err(Error::HookRejected {
-            status_code: pre_receive_result.reject_status.unwrap_or(400),
-            message: pre_receive_result.reject_message.unwrap_or_default(),
-        });
-    }
-
-    let response_headers = pre_receive_result.response_headers;
-
-    if let Some(metadata) = pre_receive_result.metadata {
-        state.set_metadata(metadata);
-    }
+    let pre_receive = PreHookGate::Receive
+        .run(hooks, request_info, state.clone())
+        .await?;
+    let response_headers = pre_receive.response_headers;
+    *state = pre_receive.state;
 
     let collected = collect_receive_body(config, headers, state, request_body, kind).await?;
     if matches!(kind, ReceiveBodyKind::CreationWithUpload) {

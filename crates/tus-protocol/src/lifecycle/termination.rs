@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
 use crate::state::{StateStore, UploadState};
 use crate::storage::Storage;
+
+use super::PreHookGate;
 
 pub(crate) struct UploadTerminator<'a, S, I, H>
 where
@@ -59,21 +61,11 @@ where
     }
 
     async fn run_pre_terminate(&self, state: &UploadState) -> Result<HashMap<String, String>> {
-        let pre_ctx = HookContext::new(
-            HookEvent::PreTerminate,
-            state.clone(),
-            self.request_info.clone(),
-        );
-        let pre_result = self.hooks.execute_pre(&pre_ctx).await?;
+        let pre_terminate = PreHookGate::Terminate
+            .run(self.hooks, self.request_info, state.clone())
+            .await?;
 
-        if !pre_result.proceed {
-            return Err(Error::HookRejected {
-                status_code: pre_result.reject_status.unwrap_or(400),
-                message: pre_result.reject_message.unwrap_or_default(),
-            });
-        }
-
-        Ok(pre_result.response_headers)
+        Ok(pre_terminate.response_headers)
     }
 
     async fn run_post_terminate(&self, state: UploadState) {

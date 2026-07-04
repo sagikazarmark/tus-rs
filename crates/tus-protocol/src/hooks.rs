@@ -43,9 +43,11 @@
 //!   are gates: the protocol awaits the result and acts on it. A pre-hook
 //!   that returns [`PreHookResult::reject`] aborts the operation; a pre-hook
 //!   error fails the request. Run-to-completion is part of the contract.
+//!   `PreCreate`, `PreReceive`, and `PreTerminate` may add response headers.
 //!   `PreCreate` and `PreReceive` may replace user metadata through
-//!   [`PreHookResult::proceed_with_metadata`]; hooks never receive or return storage
-//!   locator or backend-internal storage facts.
+//!   [`PreHookResult::proceed_with_metadata`]. `PreFinish` is gate-only: it may
+//!   reject completion, but metadata and response headers are ignored. Hooks never
+//!   receive or return storage locator or backend-internal storage facts.
 //!
 //! - **Post-hooks** (`PostCreate`, `PostReceive`, `PostFinish`, `PostTerminate`)
 //!   are notifications, and they are **best-effort**. The protocol awaits
@@ -73,11 +75,11 @@
 //! | Request path | Hook events | Notes |
 //! | --- | --- | --- |
 //! | `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may reject, add response headers, or replace user metadata before storage/state creation. `PostCreate` runs after storage and state are committed. |
-//! | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreReceive` runs before the body is collected and may reject, add response headers, or replace user metadata after `PreCreate`. `PreFinish` runs after body validation with the projected completed state, but before commit. Post-hooks run only after storage and state commit; if commit fails, the upload is rolled back and no post-hooks fire. |
-//! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may replace user metadata. |
-//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. |
-//! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PostTerminate` runs after state deletion and best-effort storage deletion. |
-//! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths reconcile final concatenation uploads. If complete referenced parts can materialize or repair the final upload, `PreFinish` gates that commit and `PostFinish` follows it. |
+//! | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreReceive` runs before the body is collected and may reject, add response headers, or replace user metadata after `PreCreate`. `PreFinish` runs after body validation with the projected completed state, but before commit; it is gate-only. Post-hooks run only after storage and state commit; if commit fails, the upload is rolled back and no post-hooks fire. |
+//! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may reject, add response headers, or replace user metadata. `PreFinish` is gate-only. |
+//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. `PreFinish` is gate-only. |
+//! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PreTerminate` may reject or add response headers. `PostTerminate` runs after state deletion and best-effort storage deletion. |
+//! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths reconcile final concatenation uploads. If complete referenced parts can materialize or repair the final upload, `PreFinish` gates that commit and `PostFinish` follows it. `PreFinish` is gate-only. |
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

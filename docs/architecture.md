@@ -90,10 +90,10 @@ composition interface. Hooks receive `HookContext` values containing
 protocol-level `HookUpload` snapshots. Hook contexts intentionally omit storage
 keys and backend-internal storage metadata.
 
-Pre-hooks are gates. They may reject an operation, add response headers, and, at
-documented mutation points, replace user metadata before commit. Post-hooks are
-best-effort notifications after commit; post-hook failures do not fail an
-already-committed request.
+Pre-hooks are gates. `PreCreate`, `PreReceive`, and `PreTerminate` may add
+response headers. `PreCreate` and `PreReceive` may replace user metadata before
+commit. `PreFinish` is gate-only. Post-hooks are best-effort notifications after
+commit; post-hook failures do not fail an already-committed request.
 
 ## Framework Adapters
 
