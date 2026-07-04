@@ -209,12 +209,12 @@ async fn main() -> Result<()> {
         }
         Command::Info { upload_url, output } => {
             let client = build_upload_client(&upload_url, &settings)?;
-            let upload = client.upload(&upload_url)?.info().await?;
+            let upload = client.upload_at(&upload_url)?.info().await?;
             print_upload_info(upload, output)?;
         }
         Command::Terminate { upload_url } => {
             let client = build_upload_client(&upload_url, &settings)?;
-            let upload = client.upload(&upload_url)?;
+            let upload = client.upload_at(&upload_url)?;
             upload.terminate().await?;
             eprintln!("Upload terminated");
         }
@@ -352,11 +352,11 @@ async fn create_upload(
     let endpoint = resolve_collection_endpoint(settings)?;
     let client = build_collection_client(endpoint, settings)?;
     let length = resolve_create_length(file, length).await?;
-    let upload = client
+    let (_upload, info) = client
         .create_upload(NewUpload::new(length, to_metadata_map(metadata)))
         .await?;
 
-    Ok(upload.info().await?)
+    Ok(info)
 }
 
 async fn resolve_create_length(file: Option<PathBuf>, length: Option<u64>) -> Result<u64> {
@@ -420,7 +420,7 @@ async fn upload_existing_file(
     settings: &Settings,
 ) -> Result<tus_client::UploadInfo> {
     let client = apply_upload_options(build_upload_client(upload_url, settings)?, options);
-    let upload = client.upload(upload_url)?;
+    let upload = client.upload_at(upload_url)?;
     let source = open_upload_file(&file).await?;
     if output == UploadOutputFormat::Human {
         eprintln!("Uploading to {}", upload.url());
@@ -781,7 +781,7 @@ mod tests {
         let client = build_upload_client("http://other.example/uploads/part-1", &settings).unwrap();
 
         assert_eq!(
-            client.upload("part-2").unwrap().url().as_str(),
+            client.upload_at("part-2").unwrap().url().as_str(),
             "http://example.com/files/part-2"
         );
     }

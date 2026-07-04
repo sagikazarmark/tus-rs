@@ -1,7 +1,11 @@
 //! OpenDAL storage implementation.
 //!
 //! This storage backend wraps a caller-provided Apache OpenDAL `Operator`.
-//! Configure the operator in application code, then pass it to [`Storage::new`].
+//! Configure the operator in application code, then pass it to
+//! [`OpendalStorage::new`]. Construct the operator from this crate's
+//! [`opendal`] re-export so it matches the exact `opendal` version this crate
+//! links against.
+//!
 //! # Append strategy
 //!
 //! Many OpenDAL backends do not support native append for object writes. Rather
@@ -23,16 +27,33 @@
 //! after the complete object is written, then the staging prefix is removed.
 //! Completion requires an OpenDAL service that supports `rename` or `copy` so
 //! partially materialized target objects are not exposed.
+//!
+//! # Single-writer expectation
+//!
+//! This backend expects a single writer per upload at a time. The staging
+//! scheme's check-then-put (stat the next part key, then write it) is not
+//! atomic across processes, so concurrent processes appending to the same
+//! upload can both claim the same part object. Deployments where multiple
+//! processes may serve PATCH requests for the same upload must serialize them
+//! through an external cross-process locker; the in-process locker shipped
+//! with `tus-protocol` is not sufficient.
+
+#![warn(missing_docs)]
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::StreamExt;
-use opendal::Operator;
 use std::io;
 
-use tus_protocol::{
-    AppendRequest, ByteStream, ChunkStream, ConcatRequest, Error, Result, StorageHandle,
-};
+/// Re-export of the [`opendal`] crate this backend is built against.
+///
+/// [`OpendalStorage::new`] takes an [`opendal::Operator`]. `opendal` is a
+/// fast-moving 0.x crate, so construct the operator through this re-export to
+/// guarantee the `Operator` comes from the exact version this crate links
+/// against.
+pub use opendal;
+use opendal::Operator;
+
+use tus_protocol::{AppendRequest, ByteStream, ConcatRequest, Error, Result, StorageHandle};
 
 mod staging;
 
@@ -40,21 +61,25 @@ mod staging;
 ///
 /// The caller provides the configured OpenDAL operator. This crate only maps
 /// the TUS storage operations onto OpenDAL object operations.
-pub struct Storage {
+pub struct OpendalStorage {
     operator: Operator,
     prefix: String,
 }
 
-impl Storage {
-    /// Creates a new OpenDAL storage with the given operator and storage-key prefix.
-    pub fn new(operator: Operator, prefix: impl Into<String>) -> Self {
+impl OpendalStorage {
+    /// Creates a new OpenDAL storage with the given operator.
+    ///
+    /// Upload objects are keyed directly by upload id; use
+    /// [`with_prefix`](Self::with_prefix) to nest them under a key prefix.
+    pub fn new(operator: Operator) -> Self {
         Self {
             operator,
-            prefix: prefix.into(),
+            prefix: String::new(),
         }
     }
 
-    /// Sets the prefix for storage keys.
+    /// Returns the storage with upload keys nested under the given prefix.
+    #[must_use]
     pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.prefix = prefix.into();
         self
@@ -70,16 +95,16 @@ impl Storage {
     }
 }
 
-impl std::fmt::Debug for Storage {
+impl std::fmt::Debug for OpendalStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Storage")
+        f.debug_struct("OpendalStorage")
             .field("prefix", &self.prefix)
             .finish()
     }
 }
 
 #[async_trait]
-impl tus_protocol::Storage for Storage {
+impl tus_protocol::Storage for OpendalStorage {
     fn name(&self) -> &'static str {
         "opendal"
     }
@@ -101,18 +126,12 @@ impl tus_protocol::Storage for Storage {
         let key = handle.key().to_string();
         let upload = staging::UploadObjects::new(&self.operator, &key);
 
-        let current_size = upload.stored_size().await?.unwrap_or(0);
-        if current_size != expected_offset {
-            return Err(Error::Internal(format!(
-                "opendal storage size {current_size} does not match expected offset {expected_offset} for key {key}"
-            )));
-        }
-
-        // Collect the chunk into bytes. OpenDAL's writer accepts Bytes, and
-        // a single staging-object PUT must be atomic; we can't split it.
-        // Callers bound this by `config.max_chunk_size`.
-        let bytes = collect_chunk_stream(data).await?;
-        upload.append_part(&mut handle, bytes).await?;
+        // Staging validates the offset, then streams the body into the next
+        // part object without buffering it; a mid-stream failure discards the
+        // partial part so a failed PATCH changes nothing.
+        upload
+            .append_part(&mut handle, expected_offset, data)
+            .await?;
 
         // Lifecycle owns completion detection. Deferred-length uploads stay in
         // staging until the PATCH that declares and reaches the length.
@@ -149,8 +168,8 @@ impl tus_protocol::Storage for Storage {
 }
 
 #[async_trait]
-impl tus_protocol::StorageReader for Storage {
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+impl tus_protocol::StorageReader for OpendalStorage {
+    async fn stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
         let key = handle.key();
 
         let reader = self.operator.reader(key).await.map_err(Error::storage)?;
@@ -166,7 +185,7 @@ impl tus_protocol::StorageReader for Storage {
         ))
     }
 
-    async fn get_range(
+    async fn stream_range(
         &self,
         handle: &StorageHandle,
         start: u64,
@@ -192,42 +211,28 @@ impl tus_protocol::StorageReader for Storage {
     }
 }
 
-/// Collects a `ChunkStream` into a contiguous `Bytes` buffer.
-async fn collect_chunk_stream(data: ChunkStream) -> Result<Bytes> {
-    match data {
-        ChunkStream::Buffered(b) => Ok(b),
-        ChunkStream::Stream(mut stream) => {
-            let mut out: Vec<u8> = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(Error::Io)?;
-                out.extend_from_slice(&chunk);
-            }
-            Ok(Bytes::from(out))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use opendal::services::Fs;
     use tus_protocol::storage::conformance;
-    use tus_protocol::{Storage as StorageBackend, StorageReader};
+    use tus_protocol::{ChunkStream, Storage, StorageReader};
 
     struct TestStorage {
-        storage: Storage,
+        storage: OpendalStorage,
         _tempdir: tempfile::TempDir,
     }
 
     impl TestStorage {
         fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
-            self.storage.prefix = prefix.into();
+            self.storage = self.storage.with_prefix(prefix);
             self
         }
     }
 
     impl std::ops::Deref for TestStorage {
-        type Target = Storage;
+        type Target = OpendalStorage;
 
         fn deref(&self) -> &Self::Target {
             &self.storage
@@ -241,7 +246,7 @@ mod tests {
             .finish();
 
         TestStorage {
-            storage: Storage::new(operator, ""),
+            storage: OpendalStorage::new(operator),
             _tempdir: tempdir,
         }
     }
@@ -342,7 +347,48 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(handle.get_internal(staging::INTERNAL_NEXT_PART), Some("2"));
+        assert_eq!(handle.internal(staging::INTERNAL_NEXT_PART), Some("2"));
+        assert_eq!(handle.internal(staging::INTERNAL_STAGED_SIZE), Some("5"));
+    }
+
+    #[tokio::test]
+    async fn failed_stream_append_discards_partial_part() {
+        let storage = create_test_storage();
+
+        let handle = storage.create("failed-stream-upload").await.unwrap();
+        let handle = storage
+            .append(AppendRequest {
+                handle,
+                expected_offset: 0,
+                data: ChunkStream::from_bytes(Bytes::from("hello")),
+                completes_upload: false,
+            })
+            .await
+            .unwrap();
+
+        let failing: ByteStream = Box::pin(futures::stream::iter(vec![
+            Ok(Bytes::from("wor")),
+            Err(io::Error::other("client went away")),
+        ]));
+        let error = storage
+            .append(AppendRequest {
+                handle: handle.clone(),
+                expected_offset: 5,
+                data: ChunkStream::from_stream(failing),
+                completes_upload: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Io(_)));
+        // The failed PATCH must leave no partial staged part behind: the
+        // offset is unchanged and the next part object does not exist.
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
+        let part2 = format!("{}.parts/{:010}", handle.key(), 2);
+        assert!(matches!(
+            storage.operator.stat(&part2).await,
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound
+        ));
     }
 
     #[tokio::test]
@@ -421,7 +467,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut stream = storage.get_stream(&recovered_handle).await.unwrap();
+        let mut stream = storage.stream(&recovered_handle).await.unwrap();
         let mut data = Vec::new();
         while let Some(chunk) = stream.next().await {
             data.extend_from_slice(&chunk.unwrap());
@@ -445,7 +491,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut stream = storage.get_stream(&handle).await.unwrap();
+        let mut stream = storage.stream(&handle).await.unwrap();
         let mut data = Vec::new();
 
         while let Some(chunk) = stream.next().await {
@@ -493,7 +539,7 @@ mod tests {
             .unwrap();
 
         // Read result
-        let mut stream = storage.get_stream(&target).await.unwrap();
+        let mut stream = storage.stream(&target).await.unwrap();
         let mut data = Vec::new();
         while let Some(chunk) = stream.next().await {
             data.extend_from_slice(&chunk.unwrap());
@@ -555,7 +601,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(target.get_internal("target_fact"), Some("keep-me"));
+        assert_eq!(target.internal("target_fact"), Some("keep-me"));
     }
 
     #[tokio::test]

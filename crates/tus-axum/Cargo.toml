@@ -49,3 +49,7 @@ default = []
 [[bench]]
 name = "hot_path"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

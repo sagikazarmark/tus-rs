@@ -69,9 +69,19 @@ pub(super) async fn prepare(
                     deferred_error,
                 })
             } else {
+                // Without Content-Length (chunked transfer, e.g. checksum
+                // trailers) the body size is unknown until the stream is
+                // drained, so intake must buffer. Refuse when nothing bounds
+                // that buffer; otherwise cap it at the tightest limit.
+                let effective_limit = match (body_limit, config.max_chunk_size()) {
+                    (None, None) => return Err(Error::LengthRequired),
+                    (Some(limit), None) => Some(limit),
+                    (None, Some(max_chunk)) => Some(max_chunk),
+                    (Some(limit), Some(max_chunk)) => Some(limit.min(max_chunk)),
+                };
                 let (bytes, trailers) =
-                    collect_frames(RequestBody::Stream(stream), body_limit).await?;
-                collect_buffered(config, headers, body_limit, supplied, bytes, trailers)
+                    collect_frames(RequestBody::Stream(stream), effective_limit).await?;
+                collect_buffered(config, headers, effective_limit, supplied, bytes, trailers)
             }
         }
     }
@@ -136,7 +146,7 @@ async fn collect_frames(
             let mut buffer = BytesMut::new();
             let mut trailers = None;
             while let Some(frame) = stream.next().await {
-                match frame.map_err(|err| Error::Internal(err.to_string()))? {
+                match frame.map_err(Error::Io)? {
                     BodyFrame::Data(bytes) => {
                         enforce_body_limit(buffer.len(), bytes.len(), body_limit)?;
                         buffer.extend_from_slice(&bytes);
@@ -165,12 +175,20 @@ struct StreamingBodyState {
     trailers: Option<HeaderMap>,
     done: bool,
     deferred_error: DeferredBodyError,
+    /// Incremental digests over the streamed body; constant memory per chunk.
+    ///
+    /// With a header checksum, only that algorithm is hashed. Without one, a
+    /// trailer checksum may still arrive with any supported algorithm, so all
+    /// configured algorithms are hashed concurrently.
     #[cfg(feature = "checksum")]
-    checksum_bytes: Vec<u8>,
+    hashers: Vec<crate::checksum::Hasher>,
 }
 
 impl StreamingBodyState {
     fn new(stream: BodyStream, policy: BodyPolicy, deferred_error: DeferredBodyError) -> Self {
+        #[cfg(feature = "checksum")]
+        let hashers = streaming_hashers(&policy);
+
         Self {
             stream,
             policy,
@@ -179,7 +197,7 @@ impl StreamingBodyState {
             done: false,
             deferred_error,
             #[cfg(feature = "checksum")]
-            checksum_bytes: Vec::new(),
+            hashers,
         }
     }
 
@@ -234,8 +252,8 @@ impl StreamingBodyState {
         self.bytes_seen = next_size;
 
         #[cfg(feature = "checksum")]
-        if self.needs_checksum_bytes() {
-            self.checksum_bytes.extend_from_slice(bytes);
+        for hasher in &mut self.hashers {
+            hasher.update(bytes);
         }
 
         Ok(())
@@ -251,7 +269,10 @@ impl StreamingBodyState {
         )?;
 
         #[cfg(feature = "checksum")]
-        verify_checksum(&self.policy.config, checksum, &self.checksum_bytes)?;
+        {
+            let hashers = std::mem::take(&mut self.hashers);
+            verify_streamed_checksum(&self.policy.config, checksum, hashers)?;
+        }
 
         #[cfg(not(feature = "checksum"))]
         verify_checksum(&self.policy.config, checksum, &[])?;
@@ -269,13 +290,65 @@ impl StreamingBodyState {
         self.deferred_error.set(error);
         Err(io::Error::new(io::ErrorKind::InvalidData, message))
     }
+}
 
-    #[cfg(feature = "checksum")]
-    fn needs_checksum_bytes(&self) -> bool {
-        self.policy.config.has_extension(Extension::Checksum)
-            && (self.policy.headers.upload_checksum.is_some()
-                || self.policy.config.has_extension(Extension::ChecksumTrailer))
+/// Builds the incremental hashers a streamed body needs for its checksum mode.
+#[cfg(feature = "checksum")]
+fn streaming_hashers(policy: &BodyPolicy) -> Vec<crate::checksum::Hasher> {
+    if !policy.config.has_extension(Extension::Checksum) {
+        return Vec::new();
     }
+
+    if let Some((algorithm, _)) = policy.headers.upload_checksum {
+        return vec![crate::checksum::Hasher::new(algorithm)];
+    }
+
+    if policy.config.has_extension(Extension::ChecksumTrailer) {
+        return policy
+            .config
+            .checksum_algorithms()
+            .iter()
+            .map(|algorithm| crate::checksum::Hasher::new(*algorithm))
+            .collect();
+    }
+
+    Vec::new()
+}
+
+/// Verifies a streamed body's checksum against its incremental digests.
+#[cfg(feature = "checksum")]
+fn verify_streamed_checksum(
+    config: &Config,
+    checksum: BodyChecksum,
+    hashers: Vec<crate::checksum::Hasher>,
+) -> Result<()> {
+    let Some((algorithm, expected)) = checksum else {
+        return Ok(());
+    };
+    if !config.has_extension(Extension::Checksum) {
+        return Ok(());
+    }
+
+    validate_checksum_algorithm(config, algorithm)?;
+    let calculated = hashers
+        .into_iter()
+        .find(|hasher| hasher.algorithm() == algorithm)
+        .map(crate::checksum::Hasher::finalize)
+        .ok_or_else(|| {
+            Error::Internal(format!(
+                "no streaming digest was computed for checksum algorithm {}",
+                algorithm.as_str()
+            ))
+        })?;
+    if calculated != expected {
+        use base64::Engine;
+        return Err(Error::ChecksumMismatch {
+            expected: base64::engine::general_purpose::STANDARD.encode(&expected),
+            actual: base64::engine::general_purpose::STANDARD.encode(&calculated),
+        });
+    }
+
+    Ok(())
 }
 
 fn validate_before_polling(

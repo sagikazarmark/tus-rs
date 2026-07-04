@@ -109,8 +109,9 @@ Feature flags enable optional built-in backends and checksum support:
   backends.
 - `checksum` for checksum validation algorithms.
 - `full-native` for the native feature set intended for server deployments.
-- `local-futures` for single-threaded runtimes that cannot require `Send`
-  futures, such as Worker-style environments.
+
+On `wasm32` targets (such as Cloudflare Workers), trait bounds relax to
+non-`Send` futures automatically; no feature flag is needed.
 
 ## License
 

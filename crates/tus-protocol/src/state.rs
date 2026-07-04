@@ -11,14 +11,14 @@
 //! - `file::FileStateStore` - File-based storage (feature: `state-file`)
 
 // Feature-gated implementations
-// Native implementations are not available in local-futures builds.
+// Native implementations are not available on wasm32.
 #[cfg(any(test, feature = "conformance-state"))]
 pub mod conformance;
 
-#[cfg(all(feature = "state-memory", not(feature = "local-futures")))]
+#[cfg(all(feature = "state-memory", not(target_arch = "wasm32")))]
 pub mod memory;
 
-#[cfg(all(feature = "state-file", not(feature = "local-futures")))]
+#[cfg(all(feature = "state-file", not(target_arch = "wasm32")))]
 pub mod file;
 
 use async_trait::async_trait;
@@ -56,9 +56,9 @@ use crate::storage::StorageHandle;
 ///
 /// This trait uses conditional bounds:
 /// - On native platforms: implementations and returned futures must be `Send + Sync`
-/// - With `local-futures`: `Send + Sync` is not required
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+/// - On `wasm32`: `Send + Sync` is not required
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait StateStore: MaybeSendSync {
     /// Returns the state store backend name for logging/debugging.
     fn name(&self) -> &'static str;
@@ -95,11 +95,19 @@ pub trait StateStore: MaybeSendSync {
 /// returned in deterministic upload-ID order for each call, but pagination is
 /// not a multi-call snapshot: concurrent creates or deletes may affect later
 /// pages.
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait UploadInventory: MaybeSendSync {
     /// Lists known upload IDs in deterministic upload-ID order.
     async fn list_upload_ids(&self, limit: usize, offset: usize) -> Result<Vec<String>>;
+}
+
+/// Current persistence schema version written by [`UploadState`].
+pub const UPLOAD_STATE_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    // Files written before the field existed are version 1.
+    1
 }
 
 /// Represents the state of an upload.
@@ -126,6 +134,16 @@ pub trait UploadInventory: MaybeSendSync {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadState {
+    /// Persistence schema version for serialized upload state.
+    ///
+    /// State files written before this field existed deserialize as
+    /// version 1. Bump [`UPLOAD_STATE_SCHEMA_VERSION`] when a change to this
+    /// struct cannot be represented for older readers; loaders can use the
+    /// version to migrate or reject newer state. New fields must carry
+    /// `#[serde(default)]` so older state files keep loading.
+    #[serde(default = "default_schema_version")]
+    schema_version: u32,
+
     // === Core TUS Fields ===
     /// Unique upload identifier.
     id: String,
@@ -171,6 +189,7 @@ impl UploadState {
     /// Creates a new upload state with the given ID.
     pub fn new(id: impl Into<String>) -> Self {
         Self {
+            schema_version: UPLOAD_STATE_SCHEMA_VERSION,
             id: id.into(),
             offset: 0,
             length: None,
@@ -186,8 +205,13 @@ impl UploadState {
     }
 
     /// Creates a new upload state with a generated UUID.
-    pub fn with_uuid() -> Self {
+    pub fn new_random() -> Self {
         Self::new(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// Returns the persistence schema version this state was loaded with.
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// Sets the upload length.
@@ -368,7 +392,7 @@ impl UploadState {
 
 impl Default for UploadState {
     fn default() -> Self {
-        Self::with_uuid()
+        Self::new_random()
     }
 }
 
@@ -618,8 +642,34 @@ mod tests {
     }
 
     #[test]
-    fn test_upload_state_with_uuid() {
-        let state = UploadState::with_uuid();
+    fn legacy_state_without_schema_version_deserializes_as_v1() {
+        // Simulate a state file written before the field existed by
+        // stripping it from a freshly serialized state.
+        let mut value = serde_json::to_value(UploadState::new("upload-1")).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("schema_version")
+            .expect("serialized state should include schema_version");
+
+        let state: UploadState = serde_json::from_value(value).unwrap();
+
+        assert_eq!(state.schema_version(), 1);
+    }
+
+    #[test]
+    fn serialized_state_includes_current_schema_version() {
+        let value = serde_json::to_value(UploadState::new("upload-1")).unwrap();
+
+        assert_eq!(
+            value.get("schema_version").and_then(|v| v.as_u64()),
+            Some(u64::from(UPLOAD_STATE_SCHEMA_VERSION))
+        );
+    }
+
+    #[test]
+    fn test_upload_state_new_random() {
+        let state = UploadState::new_random();
         assert!(!state.id().is_empty());
         assert_eq!(state.id().len(), 36); // UUID format
     }

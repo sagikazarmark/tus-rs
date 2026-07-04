@@ -31,8 +31,8 @@ static NEXT_UPLOAD_ID: AtomicU64 = AtomicU64::new(1);
 /// Asserts the complete `Storage` conformance suite.
 ///
 /// Use this for adapters that support both upload writes and read/download
-/// behavior through [`StorageReader::get_stream`] and
-/// [`StorageReader::get_range`].
+/// behavior through [`StorageReader::stream`] and
+/// [`StorageReader::stream_range`].
 pub async fn assert_full_semantics<S>(storage: &S)
 where
     S: Storage + StorageReader + ?Sized,
@@ -63,8 +63,8 @@ where
 /// Asserts optional read/download semantics.
 ///
 /// Run these scenarios only for adapters that intend to expose download or
-/// inspection behavior through [`StorageReader::get_stream`] and
-/// [`StorageReader::get_range`].
+/// inspection behavior through [`StorageReader::stream`] and
+/// [`StorageReader::stream_range`].
 pub async fn assert_read_download_semantics<S>(storage: &S)
 where
     S: Storage + StorageReader + ?Sized,
@@ -115,14 +115,14 @@ where
 
     let handle = append_bytes(storage, handle, 0, Bytes::from_static(b"hello"), false).await;
     assert_eq!(
-        handle.get_internal("conformance_fact"),
+        handle.internal("conformance_fact"),
         Some("keep-me"),
         "append should preserve existing StorageHandle internal facts"
     );
 
     let handle = append_bytes(storage, handle, 5, Bytes::from_static(b"world"), true).await;
     assert_eq!(
-        handle.get_internal("conformance_fact"),
+        handle.internal("conformance_fact"),
         Some("keep-me"),
         "completion append should preserve existing StorageHandle internal facts"
     );
@@ -374,7 +374,7 @@ where
 
     let body = collect_stream(
         storage
-            .get_stream(&handle)
+            .stream(&handle)
             .await
             .expect("get_stream should succeed for a completed upload"),
     )
@@ -399,7 +399,7 @@ where
 
     let range = collect_stream(
         storage
-            .get_range(&handle, 6, Some(10))
+            .stream_range(&handle, 6, Some(10))
             .await
             .expect("bounded get_range should succeed"),
     )
@@ -408,7 +408,7 @@ where
 
     let suffix = collect_stream(
         storage
-            .get_range(&handle, 11, None)
+            .stream_range(&handle, 11, None)
             .await
             .expect("suffix get_range should succeed"),
     )
@@ -454,7 +454,7 @@ where
 
     let body = collect_stream(
         storage
-            .get_stream(&target)
+            .stream(&target)
             .await
             .expect("concatenated target should be readable"),
     )
@@ -495,7 +495,7 @@ where
     assert!(result.is_err(), "concat should fail when a part is missing");
     let body = collect_stream(
         storage
-            .get_stream(&target)
+            .stream(&target)
             .await
             .expect("failed concat should leave the original target readable"),
     )

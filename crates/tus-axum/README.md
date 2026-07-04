@@ -47,7 +47,7 @@ use tus_protocol::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::with_all_extensions().base_path("/files");
+    let config = Config::with_all_extensions().with_base_path("/files");
 
     let protocol = ProtocolHandle::new(
         config,
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let state = TusState::new(protocol);
-    let router = create_router(state);
+    let router = create_router(state)?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
     axum::serve(listener, router).await?;

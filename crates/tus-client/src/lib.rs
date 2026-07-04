@@ -5,11 +5,12 @@
 //! resumable PATCH recovery, which also makes it useful as an end-to-end
 //! integration-test partner for `tus-server`.
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![warn(missing_docs)]
+
 mod client;
 mod error;
 mod helpers;
-#[cfg(feature = "transport-reqwest")]
-mod legacy;
 mod runtime;
 mod transport;
 
@@ -22,10 +23,17 @@ pub use client::{
     UploadInfo, UploadProgress, UploadSource,
 };
 pub use error::{Error, Result};
-#[cfg(feature = "transport-reqwest")]
-pub use legacy::{ClientError, TusClient, TusUpload};
 pub use transport::{Transport, TransportBody, TransportRequest, TransportResponse};
+#[cfg(feature = "checksum")]
+pub use tus_protocol::ChecksumAlgorithm;
 pub use tus_protocol::{MetadataValue, UploadMetadata};
+
+/// Re-export of the `url` crate used in the public API.
+pub use url;
 
 #[cfg(feature = "transport-reqwest")]
 pub use transport::ReqwestTransport;
+
+/// Re-export of the `reqwest` crate backing the default transport.
+#[cfg(feature = "transport-reqwest")]
+pub use reqwest;

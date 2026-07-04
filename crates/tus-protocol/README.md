@@ -54,11 +54,11 @@ The default feature set is empty.
 | `checksum` | Checksum validation algorithms. |
 | `native` | Native async runtime support used by file and lock backends. |
 | `full-native` | Convenience set for native servers: `native`, file storage/state, memory locks, and checksums. |
-| `local-futures` | Relax `Send` bounds for single-threaded runtimes such as Worker-style environments. |
 
-The built-in memory and file backends are not exposed when `local-futures` is
-enabled. In that mode, provide runtime-specific implementations of `Storage`,
-`StateStore`, and `Locker`.
+On `wasm32` targets (such as Cloudflare Workers), trait bounds automatically
+relax to non-`Send` futures; no feature flag is needed. The built-in memory and
+file backends are not exposed on `wasm32`. There, provide runtime-specific
+implementations of `Storage`, `StateStore`, and `Locker`.
 
 ## Protocol Support
 
@@ -133,10 +133,10 @@ notifications; failures are logged and do not fail already-committed requests.
 
 ## Runtime Notes
 
-By default, protocol traits use `Send` futures suitable for native multi-threaded
-async runtimes. The `local-futures` feature relaxes those bounds for
-single-threaded environments. When using `local-futures`, provide backend
-implementations that match the target runtime and concurrency model.
+On native targets, protocol traits use `Send` futures suitable for
+multi-threaded async runtimes. On `wasm32` targets the bounds relax to
+non-`Send` futures automatically; provide backend implementations that match
+the target runtime and concurrency model.
 
 The `NoopLocker` is useful when the hosting environment already serializes
 access per upload, or in tests. For multi-request native servers, use an actual

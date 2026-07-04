@@ -10,14 +10,14 @@
 //! - `file::FileLocker` - File-based locking (feature: `lock-file`)
 
 // Feature-gated implementations
-// Native implementations are not available in local-futures builds.
+// Native implementations are not available on wasm32.
 #[cfg(any(test, feature = "conformance-lock"))]
 pub mod conformance;
 
-#[cfg(all(feature = "lock-memory", not(feature = "local-futures")))]
+#[cfg(all(feature = "lock-memory", not(target_arch = "wasm32")))]
 pub mod memory;
 
-#[cfg(all(feature = "lock-file", not(feature = "local-futures")))]
+#[cfg(all(feature = "lock-file", not(target_arch = "wasm32")))]
 pub mod file;
 
 use async_trait::async_trait;
@@ -30,16 +30,26 @@ use crate::runtime::{MaybeSend, MaybeSendSync};
 ///
 /// Implementations must ensure that:
 /// 1. Only one caller can hold a lock for a given upload ID at a time
-/// 2. Locks are automatically released after timeout (to prevent deadlocks)
+/// 2. A lock stays held until its [`LockGuard`] is dropped
 /// 3. Lock acquisition is fair (roughly FIFO ordering preferred)
+///
+/// # Lock lifetime
+///
+/// The protocol holds a guard for the full duration of a request — a PATCH
+/// guard lives while the request body streams, which can take minutes or
+/// longer. A backend must therefore never expire a held lock on a fixed TTL:
+/// doing so would let a second request mutate the upload concurrently and
+/// corrupt it. Lease-based distributed backends must renew their lease for as
+/// long as the guard is alive and treat a lost lease as a fatal error for the
+/// holder.
 ///
 /// # Platform Support
 ///
 /// This trait uses conditional bounds:
 /// - On native platforms: implementations and returned futures must be `Send + Sync`
-/// - With `local-futures`: `Send + Sync` is not required
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+/// - On `wasm32`: `Send + Sync` is not required
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Locker: MaybeSendSync {
     /// Returns the locker backend name for logging/debugging.
     fn name(&self) -> &'static str;
@@ -48,7 +58,8 @@ pub trait Locker: MaybeSendSync {
     ///
     /// This will wait up to `timeout` for the lock to become available.
     /// If the timeout expires before the lock is acquired, returns
-    /// `Error::LockTimeout`.
+    /// `Error::LockTimeout`. The timeout bounds only the acquisition wait,
+    /// never how long an acquired lock may be held.
     ///
     /// Returns a `LockGuard` that releases the lock when dropped.
     /// Custom locker implementations outside this crate can return
@@ -63,18 +74,6 @@ pub trait Locker: MaybeSendSync {
     ///
     /// `Some(LockGuard)` if the lock was acquired, `None` if already locked.
     async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>>;
-
-    /// Explicitly releases a lock.
-    ///
-    /// This is called automatically when the `LockGuard` is dropped, but
-    /// can also be called explicitly. It's a no-op if the lock is not held.
-    async fn unlock(&self, upload_id: &str) -> Result<()>;
-
-    /// Checks if an upload is currently locked.
-    ///
-    /// This is primarily for debugging/monitoring. The result may be stale
-    /// by the time it's used due to concurrent operations.
-    async fn is_locked(&self, upload_id: &str) -> Result<bool>;
 }
 
 /// A guard that holds a lock on an upload.
@@ -107,7 +106,7 @@ impl LockGuard {
 
     /// Creates a lock guard with a release callback.
     ///
-    /// Native builds require a `Send` callback. `local-futures` builds allow
+    /// Native builds require a `Send` callback. `wasm32` builds allow
     /// callbacks that are local to a single-threaded runtime.
     pub fn with_release<F>(upload_id: impl Into<String>, release_fn: F) -> Self
     where
@@ -122,14 +121,6 @@ impl LockGuard {
     /// Returns the upload ID.
     pub fn upload_id(&self) -> &str {
         &self.upload_id
-    }
-
-    /// Disables the drop-time release callback.
-    ///
-    /// Callers that perform an explicit unlock should disarm the guard before
-    /// dropping it so the backend does not observe a duplicate release.
-    pub fn disarm(&mut self) {
-        self.release_fn = None;
     }
 }
 
@@ -163,8 +154,8 @@ impl NoopLocker {
     }
 }
 
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Locker for NoopLocker {
     fn name(&self) -> &'static str {
         "noop"
@@ -177,20 +168,12 @@ impl Locker for NoopLocker {
     async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>> {
         Ok(Some(LockGuard::new(upload_id)))
     }
-
-    async fn unlock(&self, _upload_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    async fn is_locked(&self, _upload_id: &str) -> Result<bool> {
-        Ok(false)
-    }
 }
 
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 type ReleaseFn = Box<dyn FnOnce()>;
 
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 type ReleaseFn = Box<dyn FnOnce() + Send>;
 
 #[cfg(test)]
@@ -220,7 +203,7 @@ mod tests {
         assert!(released.load(Ordering::SeqCst));
     }
 
-    #[cfg(feature = "local-futures")]
+    #[cfg(target_arch = "wasm32")]
     #[test]
     fn test_lock_guard_release_accepts_non_send_callback_in_local_mode() {
         use std::cell::Cell;
@@ -247,11 +230,5 @@ mod tests {
         // Try lock should also succeed
         let guard2 = locker.try_lock("test").await.unwrap();
         assert!(guard2.is_some());
-
-        // Is locked should always return false
-        assert!(!locker.is_locked("test").await.unwrap());
-
-        // Unlock should be a no-op
-        assert!(locker.unlock("test").await.is_ok());
     }
 }

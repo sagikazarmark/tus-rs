@@ -21,14 +21,15 @@ reqwest-middleware = { workspace = true, default-features = false, optional = tr
 thiserror = { workspace = true }
 url = { workspace = true }
 
-# tokio's `fs`/`io-util`/`time`/`rt` features all gate on functionality used
-# only on native (FS-backed methods, native retry sleep, JoinSet). Keeping
-# the dep cfg-gated keeps it (and its non-wasm transitive crates) out of
-# wasm consumer dep graphs.
+# tokio's `time`/`rt` features gate on functionality used only on native
+# (native retry sleep, JoinSet); `fs`/`io-util` are added by the
+# `source-file` feature. Keeping the dep cfg-gated keeps it (and its
+# non-wasm transitive crates) out of wasm consumer dep graphs.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bytes = { workspace = true, optional = true }
+fastrand = { workspace = true }
 http-body-util = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["fs", "io-util", "rt", "time"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tus-axum = { workspace = true }
@@ -36,6 +37,7 @@ tus-protocol = { workspace = true, features = ["lock-memory", "state-memory", "s
 
 axum = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-timers = { version = "0.4", features = ["futures"] }
@@ -47,11 +49,18 @@ wasm-bindgen-test = "0.3"
 [features]
 default = ["checksum", "transport-reqwest", "reqwest?/default"]
 checksum = ["tus-protocol/checksum"]
-local-futures = []
-source-file = []
+# TLS passthrough for builds that disable default features (which drop
+# reqwest's default TLS support).
+reqwest-native-tls = ["reqwest?/native-tls"]
+reqwest-rustls = ["reqwest?/rustls"]
+source-file = ["tokio/fs", "tokio/io-util"]
 transport-reqwest = ["dep:bytes", "dep:http-body-util", "dep:reqwest"]
 transport-reqwest-middleware = ["transport-reqwest", "dep:reqwest-middleware"]
 
 [[example]]
 name = "upload_file"
 required-features = ["source-file", "transport-reqwest"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -7,8 +7,10 @@ storage:
   root: "./uploads-ks"
 state_dir: "./state-ks"
 max_size: 104857600
+max_chunk_size: 268435456
 base_path: "/files"
 base_url: "https://tus.example.com"
+respect_forwarded_headers: false
 
 all_extensions: true
 disable_checksum_trailer: false
@@ -31,8 +33,8 @@ auth_token:
   - "token-one"
   - "token-two"
 
-max_request_body_bytes: 0
-request_body_read_timeout: 0
+max_request_body_bytes: 1073741824
+request_body_read_timeout: 60
 
 log_format: "text"
 

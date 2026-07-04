@@ -75,17 +75,17 @@
 //! | Request path | Hook events | Notes |
 //! | --- | --- | --- |
 //! | `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may reject, add response headers, or replace user metadata before storage/state creation. `PostCreate` runs after storage and state are committed. |
-//! | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreReceive` runs before the body is collected and may reject, add response headers, or replace user metadata after `PreCreate`. `PreFinish` runs after body validation with the projected completed state, but before commit; it is gate-only. Post-hooks run only after storage and state commit; if commit fails, the upload is rolled back and no post-hooks fire. |
-//! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may reject, add response headers, or replace user metadata. `PreFinish` is gate-only. |
-//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. `PreFinish` is gate-only. |
+//! | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreReceive` runs before the body is collected and may reject, add response headers, or replace user metadata after `PreCreate`. `PreFinish` runs after the initial body is committed; because the upload resource is new, a rejection rolls the whole creation back and no post-hooks fire. It is gate-only. |
+//! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may reject, add response headers, or replace user metadata. `PreFinish` gates the final record before it is materialized; it is gate-only. |
+//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. `PreFinish` runs after the completing bytes and state are durably committed; a rejection fails the PATCH response and skips `PostFinish`, but the upload remains stored and complete. It is gate-only. |
 //! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PreTerminate` may reject or add response headers. `PostTerminate` runs after state deletion and best-effort storage deletion. |
 //! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths reconcile final concatenation uploads. If complete referenced parts can materialize or repair the final upload, `PreFinish` gates that commit and `PostFinish` follows it. `PreFinish` is gate-only. |
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 use futures::future::BoxFuture;
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 use futures::future::LocalBoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -99,8 +99,8 @@ use crate::state::{UploadMetadata, UploadState};
 ///
 /// Hooks can subscribe to specific events and will be called with
 /// context about the operation being performed.
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Hook: MaybeSendSync {
     /// Returns the hook name for logging/debugging.
     fn name(&self) -> &str;
@@ -460,8 +460,8 @@ impl PreHookResult {
 }
 
 /// Trait for executing a chain of hooks.
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait HookExecutor: MaybeSendSync {
     /// Executes pre-hooks for an event.
     ///
@@ -495,9 +495,38 @@ where
     }
 }
 
+/// Compile-time proof that hook closures need not be `Send` on `wasm32`.
+///
+/// Not a runtime test: `cargo test` never runs for wasm32 in CI, but
+/// `cargo check --target wasm32-unknown-unknown` type-checks this function,
+/// which is the property being pinned (a `!Send` `Rc` captured across the
+/// closure and its future).
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+fn assert_hook_chain_accepts_non_send_closure() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let calls = Rc::new(Cell::new(0));
+    let _chain = HookChain::new().on_pre_create(move |_| {
+        let calls = Rc::clone(&calls);
+        async move {
+            calls.set(calls.get() + 1);
+            Ok(PreHookResult::proceed())
+        }
+    });
+}
+
 /// A chain of hooks that are executed in order.
 pub struct HookChain {
     hooks: Vec<Arc<dyn Hook>>,
+}
+
+impl std::fmt::Debug for HookChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.hooks.iter().map(|hook| hook.name()).collect();
+        f.debug_struct("HookChain").field("hooks", &names).finish()
+    }
 }
 
 impl HookChain {
@@ -539,27 +568,27 @@ impl Default for HookChain {
 // implement the `Hook` trait and register via `with_hook`.
 
 /// Type alias for a boxed pre-hook future.
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 type PreHookFut = BoxFuture<'static, Result<PreHookResult>>;
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 type PreHookFut = LocalBoxFuture<'static, Result<PreHookResult>>;
 
 /// Type alias for a boxed post-hook future.
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 type PostHookFut = BoxFuture<'static, Result<()>>;
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 type PostHookFut = LocalBoxFuture<'static, Result<()>>;
 
 /// Storage type for a pre-hook closure.
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 type PreHookFn = Arc<dyn Fn(HookContext) -> PreHookFut + Send + Sync>;
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 type PreHookFn = Arc<dyn Fn(HookContext) -> PreHookFut>;
 
 /// Storage type for a post-hook closure.
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 type PostHookFn = Arc<dyn Fn(HookContext) -> PostHookFut + Send + Sync>;
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 type PostHookFn = Arc<dyn Fn(HookContext) -> PostHookFut>;
 
 /// Internal adapter that implements [`Hook`] from a pair of optional
@@ -570,6 +599,17 @@ pub struct FnHook {
     events: Vec<HookEvent>,
     pre: Option<PreHookFn>,
     post: Option<PostHookFn>,
+}
+
+impl std::fmt::Debug for FnHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnHook")
+            .field("name", &self.name)
+            .field("events", &self.events)
+            .field("has_pre", &self.pre.is_some())
+            .field("has_post", &self.post.is_some())
+            .finish()
+    }
 }
 
 impl FnHook {
@@ -627,8 +667,8 @@ impl FnHook {
     }
 }
 
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Hook for FnHook {
     fn name(&self) -> &str {
         &self.name
@@ -710,8 +750,8 @@ hook_chain_on_methods! {
     post on_post_terminate => PostTerminate,
 }
 
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl HookExecutor for HookChain {
     async fn execute_pre(&self, ctx: &HookContext) -> Result<PreHookResult> {
         let mut result = PreHookResult::proceed();
@@ -810,8 +850,8 @@ impl NoopHookExecutor {
     }
 }
 
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl HookExecutor for NoopHookExecutor {
     async fn execute_pre(&self, _ctx: &HookContext) -> Result<PreHookResult> {
         Ok(PreHookResult::proceed())
@@ -851,8 +891,8 @@ mod tests {
         }
     }
 
-    #[cfg_attr(not(feature = "local-futures"), async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl Hook for TestHook {
         fn name(&self) -> &str {
             &self.name
@@ -1018,29 +1058,6 @@ mod tests {
         let result = chain.execute_pre(&ctx).await.unwrap();
         assert!(!result.proceed);
         assert_eq!(result.reject_status, Some(418));
-    }
-
-    #[cfg(feature = "local-futures")]
-    #[tokio::test]
-    async fn hook_chain_accepts_non_send_closure_in_local_mode() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
-        let calls = Rc::new(Cell::new(0));
-        let calls_for_hook = calls.clone();
-        let chain = HookChain::new().on_pre_create(move |_| {
-            let calls_for_hook = calls_for_hook.clone();
-            async move {
-                calls_for_hook.set(calls_for_hook.get() + 1);
-                Ok(PreHookResult::proceed())
-            }
-        });
-
-        let ctx = make_context(HookEvent::PreCreate);
-        let result = chain.execute_pre(&ctx).await.unwrap();
-
-        assert!(result.proceed);
-        assert_eq!(calls.get(), 1);
     }
 
     #[tokio::test]

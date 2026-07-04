@@ -41,6 +41,17 @@ impl MemoryLocker {
             entry.notify.notify_waiters();
         }
     }
+
+    /// Reports whether an upload is currently locked.
+    ///
+    /// Monitoring/test helper; the answer may be stale as soon as it is
+    /// returned because other tasks can lock or release concurrently.
+    pub fn is_locked(&self, upload_id: &str) -> bool {
+        self.locks
+            .lock()
+            .map(|locks| locks.get(upload_id).is_some_and(|entry| entry.locked))
+            .unwrap_or(false)
+    }
 }
 
 impl Default for MemoryLocker {
@@ -123,26 +134,6 @@ impl Locker for MemoryLocker {
             Ok(None)
         }
     }
-
-    async fn unlock(&self, upload_id: &str) -> Result<()> {
-        let mut locks = self
-            .locks
-            .lock()
-            .map_err(|_| Error::LockTimeout(upload_id.to_string()))?;
-        if let Some(entry) = locks.get_mut(upload_id) {
-            entry.locked = false;
-            entry.notify.notify_waiters();
-        }
-        Ok(())
-    }
-
-    async fn is_locked(&self, upload_id: &str) -> Result<bool> {
-        let locks = self
-            .locks
-            .lock()
-            .map_err(|_| Error::LockTimeout(upload_id.to_string()))?;
-        Ok(locks.get(upload_id).map(|e| e.locked).unwrap_or(false))
-    }
 }
 
 /// Entry for a single upload's lock state.
@@ -179,14 +170,14 @@ mod tests {
     async fn test_lock_and_unlock() {
         let locker = MemoryLocker::new();
 
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test"));
 
         let guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        assert!(locker.is_locked("test").await.unwrap());
+        assert!(locker.is_locked("test"));
 
         drop(guard);
         // Lock should be automatically released when guard is dropped
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test"));
     }
 
     #[tokio::test]
@@ -196,15 +187,15 @@ mod tests {
         // Acquire lock in a scope
         {
             let _guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-            assert!(locker.is_locked("test").await.unwrap());
+            assert!(locker.is_locked("test"));
         }
 
         // Lock should be automatically released when guard goes out of scope
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test"));
 
         // Should be able to acquire the lock again immediately
         let _guard2 = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        assert!(locker.is_locked("test").await.unwrap());
+        assert!(locker.is_locked("test"));
     }
 
     #[tokio::test]
@@ -281,11 +272,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(locker.is_locked("upload-1").await.unwrap());
-        assert!(locker.is_locked("upload-2").await.unwrap());
+        assert!(locker.is_locked("upload-1"));
+        assert!(locker.is_locked("upload-2"));
 
         drop(guard1);
-        assert!(!locker.is_locked("upload-1").await.unwrap());
-        assert!(locker.is_locked("upload-2").await.unwrap());
+        assert!(!locker.is_locked("upload-1"));
+        assert!(locker.is_locked("upload-2"));
     }
 }

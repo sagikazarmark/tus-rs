@@ -28,7 +28,7 @@ mod wasm {
     where
         T: tus_client::Transport,
     {
-        let upload = client.upload(upload_url)?;
+        let upload = client.upload_at(upload_url)?;
         let custom_source = CustomUploadSource(Vec::new());
 
         upload.upload(Vec::new()).await?;

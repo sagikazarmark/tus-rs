@@ -9,8 +9,8 @@
 //! ```
 //!
 //! The suite covers exclusivity, waited acquisition, timeout behavior,
-//! release-on-drop or lease-timeout release expectations, explicit unlock, and
-//! isolation between independent upload IDs.
+//! release-on-drop or lease-timeout release expectations, and isolation
+//! between independent upload IDs.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -86,7 +86,6 @@ where
     lock_waits_until_current_guard_releases(locker, config).await;
     lock_times_out_while_guard_is_held(locker, config).await;
     dropped_guard_releases_or_expires(locker, config).await;
-    explicit_unlock_releases_lock(locker, config).await;
     independent_upload_ids_do_not_interfere(locker, config).await;
 }
 
@@ -101,13 +100,6 @@ where
         .await
         .expect("first try_lock should succeed")
         .expect("first try_lock should acquire an unlocked upload");
-    assert!(
-        locker
-            .is_locked(&id)
-            .await
-            .expect("is_locked should succeed"),
-        "is_locked should report a held lock"
-    );
 
     let second = locker
         .try_lock(&id)
@@ -204,45 +196,6 @@ async fn assert_released_or_expired<L>(
     }
 }
 
-async fn explicit_unlock_releases_lock<L>(locker: &L, config: LockerConformanceConfig)
-where
-    L: Locker + ?Sized,
-{
-    let id = upload_id("explicit-unlock");
-
-    locker
-        .unlock(&id)
-        .await
-        .expect("unlock should ignore a missing lock");
-
-    let mut guard = locker
-        .lock(&id, config.acquisition_timeout)
-        .await
-        .expect("initial lock should acquire an unlocked upload");
-    assert!(
-        locker
-            .is_locked(&id)
-            .await
-            .expect("is_locked should succeed"),
-        "is_locked should report a held lock before explicit unlock"
-    );
-
-    locker
-        .unlock(&id)
-        .await
-        .expect("explicit unlock should succeed for a held upload");
-    guard.disarm();
-
-    let reacquired = locker
-        .try_lock(&id)
-        .await
-        .expect("try_lock after explicit unlock should not error");
-    assert!(
-        reacquired.is_some(),
-        "explicit unlock followed by guard disarm should make the upload lockable again"
-    );
-}
-
 async fn independent_upload_ids_do_not_interfere<L>(locker: &L, config: LockerConformanceConfig)
 where
     L: Locker + ?Sized,
@@ -260,27 +213,13 @@ where
         .expect("try_lock for a different upload should not error")
         .expect("different upload ID should lock independently");
 
-    assert!(
-        locker
-            .is_locked(&first_id)
-            .await
-            .expect("is_locked for first upload should succeed"),
-        "first upload should be locked"
-    );
-    assert!(
-        locker
-            .is_locked(&second_id)
-            .await
-            .expect("is_locked for second upload should succeed"),
-        "second upload should be locked"
-    );
-
     drop(first);
+    let second_probe = locker
+        .try_lock(&second_id)
+        .await
+        .expect("try_lock probe for second upload should not error");
     assert!(
-        locker
-            .is_locked(&second_id)
-            .await
-            .expect("is_locked for second upload should still succeed"),
+        second_probe.is_none(),
         "releasing one upload ID must not release an independent upload ID"
     );
 

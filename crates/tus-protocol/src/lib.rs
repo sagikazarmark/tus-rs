@@ -60,6 +60,7 @@
 //! - Locking: `locking::memory`, `locking::file`
 //! - Distributed state+locking via first-party integration crates
 
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
@@ -72,7 +73,6 @@ pub mod hooks;
 mod lifecycle;
 pub mod locking;
 pub mod protocol;
-#[doc(hidden)]
 pub mod runtime;
 pub mod state;
 pub mod storage;
@@ -81,9 +81,14 @@ pub mod storage;
 #[cfg(feature = "checksum")]
 mod checksum;
 
+// Re-exported dependency crates whose types appear in this crate's public
+// API. Depend on these through the re-export so your version can never skew
+// from the one `tus-protocol` was built against.
+pub use {async_trait, bytes, chrono, futures, http};
+
 // Re-export main types at crate root
 #[cfg(feature = "checksum")]
-pub use checksum::calculate as calculate_checksum;
+pub use checksum::{Hasher as ChecksumHasher, calculate as calculate_checksum};
 pub use config::{ChecksumAlgorithm, Config, Extension, TUS_RESUMABLE, TUS_VERSION};
 pub use error::{Error, Result};
 pub use extensions::UploadConcat;
@@ -96,13 +101,15 @@ pub use lifecycle::{
 };
 pub use locking::{LockGuard, Locker, NoopLocker};
 pub use protocol::{
-    BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
-    ProtocolHandle, RequestBody, Response, TUS_SUCCESS_RESPONSE_HEADERS, UploadId,
+    BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, Protocol, ProtocolHandle,
+    RequestBody, Response, TUS_SUCCESS_RESPONSE_HEADERS, UploadId,
 };
-pub use state::{MetadataValue, StateStore, UploadInventory, UploadMetadata, UploadState};
-pub use storage::ByteStream;
+pub use state::{
+    MetadataValue, StateStore, UPLOAD_STATE_SCHEMA_VERSION, UploadInventory, UploadMetadata,
+    UploadState,
+};
 pub use storage::{
-    AppendRequest, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
+    AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
 };
 
 /// Prelude module for convenient imports.
@@ -117,7 +124,7 @@ pub mod prelude {
     };
     pub use crate::locking::Locker;
     pub use crate::protocol::{
-        BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, PatchBody, Protocol,
+        BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, Protocol,
         ProtocolHandle, RequestBody, Response, UploadId,
     };
     pub use crate::state::{StateStore, UploadInventory, UploadState};

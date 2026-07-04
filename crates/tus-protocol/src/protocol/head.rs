@@ -42,19 +42,19 @@ where
         let upload_id = upload_id.as_str();
         let _guard = self
             .locker
-            .lock(upload_id, self.config.lock_timeout_duration())
+            .lock(upload_id, self.config.lock_timeout())
             .await?;
 
         let mut upload_state = self
             .state_store
             .get(upload_id)
-            .await
-            .map_err(|e| Error::Internal(e.to_string()))?
+            .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
         let prepared = prepare_upload_observation_access(
             self.storage,
             self.state_store,
+            self.locker,
             self.hooks,
             self.config,
             hook_contexts.request_info(),
@@ -101,7 +101,7 @@ where
                     Some(parts) if !parts.is_empty() => {
                         let urls: Vec<String> = parts
                             .iter()
-                            .map(|id| format!("{}/{}", self.config.base_path_str(), id))
+                            .map(|id| format!("{}/{}", self.config.base_path(), id))
                             .collect();
                         format!("final;{}", urls.join(" "))
                     }
@@ -136,7 +136,7 @@ fn encode_upload_metadata(metadata: &UploadMetadata) -> String {
     test,
     feature = "state-memory",
     feature = "storage-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod tests {
     use super::*;
@@ -186,14 +186,6 @@ mod tests {
             self.lock_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Some(LockGuard::new(upload_id)))
         }
-
-        async fn unlock(&self, _upload_id: &str) -> Result<(), Error> {
-            Ok(())
-        }
-
-        async fn is_locked(&self, _upload_id: &str) -> Result<bool, Error> {
-            Ok(false)
-        }
     }
 
     async fn store_with(state: UploadState) -> MemoryStateStore {
@@ -241,7 +233,7 @@ mod tests {
 
     async fn body_bytes(storage: &MemoryStorage, state: &UploadState) -> Bytes {
         let body = storage
-            .get_stream(&state.require_storage_handle().unwrap())
+            .stream(&state.require_storage_handle().unwrap())
             .await
             .unwrap();
         let chunks = body.collect::<Vec<_>>().await;

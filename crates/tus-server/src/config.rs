@@ -12,6 +12,17 @@ use tus_protocol::{Config as TusConfig, Extension};
 pub(crate) const DEFAULT_STORAGE_URI: &str = "fs://";
 pub(crate) const DEFAULT_FS_ROOT: &str = "./uploads";
 
+/// Default cap on a single HTTP request body: 1 GiB. `0` is the
+/// explicit opt-out meaning "unlimited".
+pub(crate) const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024 * 1024;
+/// Default idle timeout between successive body frames: 60 seconds.
+/// `0` is the explicit opt-out meaning "disabled".
+pub(crate) const DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS: u64 = 60;
+/// Default cap on a single PATCH chunk: 256 MiB. Bounds per-request
+/// memory/staging on a stock server. `0` is the explicit opt-out
+/// meaning "unlimited".
+pub(crate) const DEFAULT_MAX_CHUNK_SIZE: u64 = 256 * 1024 * 1024;
+
 /// TUS Resumable Upload Server
 #[derive(Parser, Clone, Debug)]
 #[command(name = "tus-server")]
@@ -25,8 +36,22 @@ pub(crate) struct Cli {
 #[derive(Subcommand, Clone, Debug)]
 pub(crate) enum Command {
     /// Run the TUS HTTP server.
+    ///
+    /// Deployment constraints: upload locking uses a process-local
+    /// in-memory locker, so run only a single server instance per
+    /// storage bucket and state directory. Two replicas sharing a
+    /// bucket or state directory will race on concurrent PATCH,
+    /// termination, and expiration cleanup. File-based locking would
+    /// only help when every instance shares the same local
+    /// filesystem; it does not make object-storage backends safe for
+    /// multiple replicas.
     Serve(Box<ServeCli>),
     /// Remove expired upload data and state once, then exit.
+    ///
+    /// The cleanup command builds its own process-local memory
+    /// locker, so it cannot see locks held by a running serve
+    /// process. Only run it while the server is stopped, and pass
+    /// --force to acknowledge that.
     Cleanup(CleanupCli),
 }
 
@@ -47,6 +72,10 @@ pub(crate) struct ServeCli {
     /// Maximum upload size in bytes (0 = unlimited). Env: TUS_MAX_SIZE.
     #[arg(short, long)]
     pub(crate) max_size: Option<u64>,
+
+    /// Maximum bytes accepted per PATCH chunk (0 = unlimited, default 256 MiB). Env: TUS_MAX_CHUNK_SIZE.
+    #[arg(long)]
+    pub(crate) max_chunk_size: Option<u64>,
 
     /// Base path for TUS endpoints. Env: TUS_BASE_PATH.
     #[arg(long)]
@@ -73,8 +102,20 @@ pub(crate) struct ServeCli {
     pub(crate) disable_download: Option<bool>,
 
     /// Base URL for absolute Location headers. Env: TUS_BASE_URL.
+    ///
+    /// Behind a TLS-terminating proxy either this option or
+    /// --respect-forwarded-headers is required for correct absolute
+    /// Location URLs.
     #[arg(long)]
     pub(crate) base_url: Option<String>,
+
+    /// Trust Forwarded/X-Forwarded-* headers when building absolute URLs. Env: TUS_RESPECT_FORWARDED_HEADERS.
+    ///
+    /// Off by default. Behind a TLS-terminating proxy either this
+    /// flag or --base-url is required for correct absolute Location
+    /// URLs. Enable it only when a trusted proxy sets these headers.
+    #[arg(long, action = clap::ArgAction::Set, default_missing_value = "true", num_args = 0..=1, require_equals = true)]
+    pub(crate) respect_forwarded_headers: Option<bool>,
 
     /// Enable all TUS extensions. Env: TUS_ALL_EXTENSIONS.
     #[arg(long, action = clap::ArgAction::Set, default_missing_value = "true", num_args = 0..=1, require_equals = true)]
@@ -108,8 +149,12 @@ pub(crate) struct ServeCli {
     #[arg(long = "hook-timeout")]
     pub(crate) hook_timeout: Option<u64>,
 
-    /// Extra headers to send with each webhook. Env: TUS_HOOK_HEADER.
-    #[arg(long = "hook-header", value_delimiter = ',')]
+    /// Extra header to send with each webhook; repeat the flag for multiple headers. Env: TUS_HOOK_HEADER.
+    ///
+    /// Each occurrence is one `Name: Value` pair, so values may
+    /// contain commas. The TUS_HOOK_HEADER environment variable
+    /// holds newline-separated pairs for the same reason.
+    #[arg(long = "hook-header")]
     pub(crate) hook_header: Option<Vec<String>>,
 
     /// Retry webhook requests with exponential backoff. Env: TUS_HOOK_RETRY.
@@ -124,15 +169,19 @@ pub(crate) struct ServeCli {
     #[arg(long = "hook-signing-secret")]
     pub(crate) hook_signing_secret: Option<String>,
 
-    /// Maximum request body size in bytes. Env: TUS_MAX_REQUEST_BODY_BYTES.
+    /// Maximum request body size in bytes (0 = unlimited, default 1 GiB). Env: TUS_MAX_REQUEST_BODY_BYTES.
     #[arg(long)]
     pub(crate) max_request_body_bytes: Option<usize>,
 
-    /// Idle timeout in seconds between successive body frames. Env: TUS_REQUEST_BODY_READ_TIMEOUT.
+    /// Idle timeout in seconds between successive body frames (0 = disabled, default 60). Env: TUS_REQUEST_BODY_READ_TIMEOUT.
     #[arg(long)]
     pub(crate) request_body_read_timeout: Option<u64>,
 
     /// Require an Authorization: Bearer token on every TUS request. Env: TUS_AUTH_TOKEN.
+    ///
+    /// Warning: tokens passed on the command line are visible in
+    /// process listings (ps, /proc). Prefer the TUS_AUTH_TOKEN
+    /// environment variable or the auth_token config-file key.
     #[arg(long = "auth-token", value_delimiter = ',')]
     pub(crate) auth_token: Option<Vec<String>>,
 
@@ -157,6 +206,15 @@ pub(crate) struct CleanupCli {
 
     #[arg(long, value_enum)]
     pub(crate) log_format: Option<LogFormat>,
+
+    /// Acknowledge that cleanup must not run against a live server. Env: TUS_CLEANUP_FORCE.
+    ///
+    /// Cleanup builds its own process-local memory locker, so it
+    /// cannot see locks held by a running serve process and can
+    /// delete data mid-upload. Stop the server first, then pass this
+    /// flag.
+    #[arg(long, action = clap::ArgAction::Set, default_missing_value = "true", num_args = 0..=1, require_equals = true)]
+    pub(crate) force: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -165,6 +223,7 @@ pub(crate) struct Settings {
     pub(crate) storage: StorageConfig,
     pub(crate) state_dir: PathBuf,
     pub(crate) max_size: u64,
+    pub(crate) max_chunk_size: u64,
     pub(crate) base_path: String,
     pub(crate) cors: bool,
     pub(crate) cors_origins: Vec<String>,
@@ -172,6 +231,7 @@ pub(crate) struct Settings {
     pub(crate) expiration_scan_interval: DurationValue,
     pub(crate) disable_download: bool,
     pub(crate) base_url: Option<String>,
+    pub(crate) respect_forwarded_headers: bool,
     pub(crate) all_extensions: bool,
     pub(crate) disable_concatenation_unfinished: bool,
     pub(crate) disable_checksum_trailer: bool,
@@ -192,6 +252,7 @@ impl Default for Settings {
             storage: StorageConfig::default(),
             state_dir: PathBuf::from("./state"),
             max_size: 0,
+            max_chunk_size: DEFAULT_MAX_CHUNK_SIZE,
             base_path: "/files".to_string(),
             cors: false,
             cors_origins: Vec::new(),
@@ -199,14 +260,15 @@ impl Default for Settings {
             expiration_scan_interval: DurationValue(Duration::from_secs(60)),
             disable_download: false,
             base_url: None,
+            respect_forwarded_headers: false,
             all_extensions: false,
             disable_concatenation_unfinished: false,
             disable_checksum_trailer: false,
             shutdown_grace: 30,
             drain_delay: 0,
             hook: HookConfig::default(),
-            max_request_body_bytes: 0,
-            request_body_read_timeout: 0,
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+            request_body_read_timeout: DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
             auth_token: Vec::new(),
             log_format: LogFormat::Text,
             cleanup: false,
@@ -269,6 +331,8 @@ pub(crate) struct SettingsPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) max_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) max_chunk_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) base_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cors: Option<bool>,
@@ -282,6 +346,8 @@ pub(crate) struct SettingsPatch {
     pub(crate) disable_download: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) respect_forwarded_headers: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) all_extensions: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -338,6 +404,8 @@ struct CleanupSettingsPatch {
     state_dir: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     log_format: Option<LogFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    force: Option<bool>,
 }
 
 impl ServeCli {
@@ -350,6 +418,7 @@ impl ServeCli {
             }),
             state_dir: self.state_dir.clone(),
             max_size: self.max_size,
+            max_chunk_size: self.max_chunk_size,
             base_path: self.base_path.clone(),
             cors: self.cors,
             cors_origins: self.cors_origins.clone(),
@@ -357,6 +426,7 @@ impl ServeCli {
             expiration_scan_interval: self.expiration_scan_interval,
             disable_download: self.disable_download,
             base_url: self.base_url.clone(),
+            respect_forwarded_headers: self.respect_forwarded_headers,
             all_extensions: self.all_extensions,
             disable_concatenation_unfinished: self.disable_concatenation_unfinished,
             disable_checksum_trailer: self.disable_checksum_trailer,
@@ -381,6 +451,7 @@ impl CleanupCli {
             }),
             state_dir: self.state_dir.clone(),
             log_format: self.log_format,
+            force: self.force,
         }
     }
 }
@@ -570,6 +641,18 @@ pub(crate) fn split_csv(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Splits an env value on newlines. Used for TUS_HOOK_HEADER, whose
+/// `Name: Value` entries may legitimately contain commas, so CSV
+/// splitting would corrupt them.
+pub(crate) fn split_newlines(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub(crate) fn parse_env_value<T>(key: &str, value: &str) -> anyhow::Result<T>
 where
     T: FromStr,
@@ -595,33 +678,33 @@ where
     for (key, value) in vars {
         let key = key.as_ref();
         let value = value.as_ref();
+        // Empty env values are skipped rather than treated as
+        // overrides, so an empty TUS_* variable cannot reset a
+        // config-file value back to empty. Unset the variable and use
+        // a config file or CLI flag to express an empty value.
         if value.is_empty() {
             continue;
         }
 
-        if let Some(name) = key.strip_prefix("TUS_STORAGE_") {
+        if apply_storage_env_var(key, value, &mut storage) {
             has_storage = true;
-            if name == "URI" {
-                storage.uri = Some(value.to_string());
-            } else {
-                storage
-                    .settings
-                    .insert(name.to_ascii_lowercase(), value.to_string());
-            }
             continue;
         }
 
         if let Some(name) = key.strip_prefix("TUS_HOOK_") {
-            has_hook = true;
             match name {
                 "URL" => hook.url = Some(value.to_string()),
                 "TIMEOUT" => hook.timeout = Some(parse_env_value(key, value)?),
-                "HEADER" => hook.header = Some(split_csv(value)),
+                // Newline-separated: header values may contain commas.
+                "HEADER" => hook.header = Some(split_newlines(value)),
                 "RETRY" => hook.retry = Some(parse_env_value(key, value)?),
                 "MAX_RETRIES" => hook.max_retries = Some(parse_env_value(key, value)?),
                 "SIGNING_SECRET" => hook.signing_secret = Some(value.to_string()),
-                _ => {}
+                // Unknown TUS_HOOK_* keys are reported by
+                // unknown_tus_env_keys at startup.
+                _ => continue,
             }
+            has_hook = true;
             continue;
         }
 
@@ -629,6 +712,7 @@ where
             "TUS_ADDR" => patch.addr = Some(parse_env_value(key, value)?),
             "TUS_STATE_DIR" => patch.state_dir = Some(PathBuf::from(value)),
             "TUS_MAX_SIZE" => patch.max_size = Some(parse_env_value(key, value)?),
+            "TUS_MAX_CHUNK_SIZE" => patch.max_chunk_size = Some(parse_env_value(key, value)?),
             "TUS_BASE_PATH" => patch.base_path = Some(value.to_string()),
             "TUS_CORS" => patch.cors = Some(parse_env_value(key, value)?),
             "TUS_CORS_ORIGIN" => patch.cors_origins = Some(split_csv(value)),
@@ -638,6 +722,9 @@ where
             }
             "TUS_DISABLE_DOWNLOAD" => patch.disable_download = Some(parse_env_value(key, value)?),
             "TUS_BASE_URL" => patch.base_url = Some(value.to_string()),
+            "TUS_RESPECT_FORWARDED_HEADERS" => {
+                patch.respect_forwarded_headers = Some(parse_env_value(key, value)?);
+            }
             "TUS_ALL_EXTENSIONS" => patch.all_extensions = Some(parse_env_value(key, value)?),
             "TUS_DISABLE_CONCATENATION_UNFINISHED" => {
                 patch.disable_concatenation_unfinished = Some(parse_env_value(key, value)?);
@@ -674,6 +761,100 @@ pub(crate) fn env_settings_patch() -> anyhow::Result<SettingsPatch> {
     settings_patch_from_env_vars(std::env::vars())
 }
 
+/// Every exact TUS_* env key the server recognizes across commands.
+/// TUS_STORAGE_* is accepted with any suffix (forwarded to the
+/// storage backend), and TUS_HOOK_* only with the suffixes listed in
+/// KNOWN_TUS_HOOK_ENV_SUFFIXES.
+const KNOWN_TUS_ENV_KEYS: &[&str] = &[
+    "TUS_ADDR",
+    "TUS_ALL_EXTENSIONS",
+    "TUS_AUTH_TOKEN",
+    "TUS_BASE_PATH",
+    "TUS_BASE_URL",
+    "TUS_CLEANUP",
+    "TUS_CLEANUP_FORCE",
+    "TUS_CONFIG",
+    "TUS_CORS",
+    "TUS_CORS_ORIGIN",
+    "TUS_DISABLE_CHECKSUM_TRAILER",
+    "TUS_DISABLE_CONCATENATION_UNFINISHED",
+    "TUS_DISABLE_DOWNLOAD",
+    "TUS_DRAIN_DELAY",
+    "TUS_EXPIRATION",
+    "TUS_EXPIRATION_SCAN_INTERVAL",
+    "TUS_LOG_FORMAT",
+    "TUS_MAX_CHUNK_SIZE",
+    "TUS_MAX_REQUEST_BODY_BYTES",
+    "TUS_MAX_SIZE",
+    "TUS_REQUEST_BODY_READ_TIMEOUT",
+    "TUS_RESPECT_FORWARDED_HEADERS",
+    "TUS_SHUTDOWN_GRACE",
+    "TUS_STATE_DIR",
+];
+
+const KNOWN_TUS_HOOK_ENV_SUFFIXES: &[&str] = &[
+    "HEADER",
+    "MAX_RETRIES",
+    "RETRY",
+    "SIGNING_SECRET",
+    "TIMEOUT",
+    "URL",
+];
+
+/// Returns TUS_-prefixed env keys the server does not recognize, so
+/// startup can warn about typos (for example TUS_HOOK_HEADERS)
+/// instead of silently ignoring them.
+pub(crate) fn unknown_tus_env_keys<I, K, V>(vars: I) -> Vec<String>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
+    let mut unknown: Vec<String> = vars
+        .into_iter()
+        .filter_map(|(key, _)| {
+            let key = key.as_ref();
+            if !key.starts_with("TUS_") {
+                return None;
+            }
+            if key.starts_with("TUS_STORAGE_") {
+                return None;
+            }
+            if let Some(name) = key.strip_prefix("TUS_HOOK_") {
+                return (!KNOWN_TUS_HOOK_ENV_SUFFIXES.contains(&name)).then(|| key.to_string());
+            }
+            (!KNOWN_TUS_ENV_KEYS.contains(&key)).then(|| key.to_string())
+        })
+        .collect();
+    unknown.sort();
+    unknown
+}
+
+/// Applies a `TUS_STORAGE_*` environment variable to a storage patch.
+///
+/// Returns `true` when the variable was a storage key and has been consumed.
+fn apply_storage_env_var(key: &str, value: &str, storage: &mut StoragePatch) -> bool {
+    let Some(name) = key.strip_prefix("TUS_STORAGE_") else {
+        return false;
+    };
+
+    if name == "URI" {
+        storage.uri = Some(value.to_string());
+    } else {
+        storage
+            .settings
+            .insert(name.to_ascii_lowercase(), value.to_string());
+    }
+
+    true
+}
+
+pub(crate) fn warn_unknown_tus_env_keys() {
+    for key in unknown_tus_env_keys(std::env::vars()) {
+        tracing::warn!(key = %key, "ignoring unrecognized TUS_-prefixed environment variable");
+    }
+}
+
 fn cleanup_settings_patch_from_env_vars<I, K, V>(vars: I) -> anyhow::Result<CleanupSettingsPatch>
 where
     I: IntoIterator<Item = (K, V)>,
@@ -687,25 +868,21 @@ where
     for (key, value) in vars {
         let key = key.as_ref();
         let value = value.as_ref();
+        // Same empty-value skip as settings_patch_from_env_vars: empty env
+        // values cannot reset config-file values.
         if value.is_empty() {
             continue;
         }
 
-        if let Some(name) = key.strip_prefix("TUS_STORAGE_") {
+        if apply_storage_env_var(key, value, &mut storage) {
             has_storage = true;
-            if name == "URI" {
-                storage.uri = Some(value.to_string());
-            } else {
-                storage
-                    .settings
-                    .insert(name.to_ascii_lowercase(), value.to_string());
-            }
             continue;
         }
 
         match key {
             "TUS_STATE_DIR" => patch.state_dir = Some(PathBuf::from(value)),
             "TUS_LOG_FORMAT" => patch.log_format = Some(parse_env_value(key, value)?),
+            "TUS_CLEANUP_FORCE" => patch.force = Some(parse_env_value(key, value)?),
             _ => {}
         }
     }
@@ -774,6 +951,8 @@ pub(crate) struct CleanupSettings {
     pub(crate) storage: StorageConfig,
     pub(crate) state_dir: PathBuf,
     pub(crate) log_format: LogFormat,
+    #[serde(default)]
+    pub(crate) force: bool,
 }
 
 impl Default for CleanupSettings {
@@ -782,6 +961,7 @@ impl Default for CleanupSettings {
             storage: StorageConfig::default(),
             state_dir: PathBuf::from("./state"),
             log_format: LogFormat::Text,
+            force: false,
         }
     }
 }
@@ -858,28 +1038,30 @@ pub(crate) fn build_tus_config(settings: &Settings) -> TusConfig {
         TusConfig::default()
     };
 
-    config = config.base_path(&settings.base_path);
+    config = config.with_base_path(&settings.base_path);
 
     if let Some(base_url) = &settings.base_url {
-        config = config.base_url(base_url);
+        config = config.with_base_url(base_url);
     }
 
     if settings.max_size > 0 {
-        config = config.max_size(settings.max_size);
+        config = config.with_max_size(settings.max_size);
     }
 
-    if !settings.cors_origins.is_empty() {
-        config = config.cors(settings.cors_origins.clone());
-    } else if settings.cors {
-        config = config.cors_all();
+    if settings.max_chunk_size > 0 {
+        config = config.with_max_chunk_size(settings.max_chunk_size);
+    }
+
+    if settings.respect_forwarded_headers {
+        config = config.with_respect_forwarded_headers();
     }
 
     if !settings.expiration.as_duration().is_zero() {
-        config = config.expiration(settings.expiration.as_duration());
+        config = config.with_expiration(settings.expiration.as_duration());
     }
 
     if settings.disable_download {
-        config = config.disable_download();
+        config = config.without_download();
     }
 
     if settings.disable_concatenation_unfinished {
@@ -904,6 +1086,148 @@ mod tests {
             panic!("expected serve command");
         };
         *serve
+    }
+
+    #[test]
+    fn defaults_bound_request_bodies_and_chunks() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.max_request_body_bytes, 1024 * 1024 * 1024);
+        assert_eq!(settings.request_body_read_timeout, 60);
+        assert_eq!(settings.max_chunk_size, 256 * 1024 * 1024);
+        assert!(!settings.respect_forwarded_headers);
+    }
+
+    #[test]
+    fn zero_opts_out_of_body_and_chunk_bounds() {
+        let cli = parse_serve([
+            "tus-server",
+            "serve",
+            "--max-request-body-bytes",
+            "0",
+            "--request-body-read-timeout",
+            "0",
+            "--max-chunk-size",
+            "0",
+        ]);
+        let (settings, _) = load_serve_settings(&cli).unwrap();
+
+        assert_eq!(settings.max_request_body_bytes, 0);
+        assert_eq!(settings.request_body_read_timeout, 0);
+        assert_eq!(settings.max_chunk_size, 0);
+
+        let config = build_tus_config(&settings);
+        assert_eq!(config.max_chunk_size(), None);
+    }
+
+    #[test]
+    fn parses_max_chunk_size_flag_into_tus_config() {
+        let cli = parse_serve(["tus-server", "serve", "--max-chunk-size", "1048576"]);
+        let (settings, _) = load_serve_settings(&cli).unwrap();
+
+        assert_eq!(settings.max_chunk_size, 1048576);
+
+        let config = build_tus_config(&settings);
+        assert_eq!(config.max_chunk_size(), Some(1048576));
+    }
+
+    #[test]
+    fn max_chunk_size_reads_from_env_and_config_file() {
+        let patch = settings_patch_from_env_vars([("TUS_MAX_CHUNK_SIZE", "2048")]).unwrap();
+        assert_eq!(patch.max_chunk_size, Some(2048));
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "max_chunk_size = 4096\n").unwrap();
+
+        let settings = load_settings_from_sources(Some(&path), SettingsPatch::default()).unwrap();
+        assert_eq!(settings.max_chunk_size, 4096);
+    }
+
+    #[test]
+    fn parses_respect_forwarded_headers_flag_into_tus_config() {
+        let cli = parse_serve(["tus-server", "serve", "--respect-forwarded-headers"]);
+        let (settings, _) = load_serve_settings(&cli).unwrap();
+
+        assert!(settings.respect_forwarded_headers);
+
+        let config = build_tus_config(&settings);
+        assert!(config.respects_forwarded_headers());
+    }
+
+    #[test]
+    fn respect_forwarded_headers_reads_from_env_and_defaults_off() {
+        let patch =
+            settings_patch_from_env_vars([("TUS_RESPECT_FORWARDED_HEADERS", "true")]).unwrap();
+        assert_eq!(patch.respect_forwarded_headers, Some(true));
+
+        let config = build_tus_config(&Settings::default());
+        assert!(!config.respects_forwarded_headers());
+    }
+
+    #[test]
+    fn repeated_hook_header_flags_preserve_commas_in_values() {
+        let cli = parse_serve([
+            "tus-server",
+            "serve",
+            "--hook-header",
+            "Accept: application/json, text/plain",
+            "--hook-header",
+            "X-Extra: value",
+        ]);
+
+        assert_eq!(
+            cli.hook_header,
+            Some(vec![
+                "Accept: application/json, text/plain".to_string(),
+                "X-Extra: value".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn hook_header_env_splits_on_newlines_not_commas() {
+        let patch = settings_patch_from_env_vars([(
+            "TUS_HOOK_HEADER",
+            "Accept: application/json, text/plain\nX-Extra: value\n",
+        )])
+        .unwrap();
+        let hook = patch.hook.expect("hook env should produce a hook patch");
+
+        assert_eq!(
+            hook.header,
+            Some(vec![
+                "Accept: application/json, text/plain".to_string(),
+                "X-Extra: value".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn unknown_tus_env_keys_are_reported_without_failing() {
+        let unknown = unknown_tus_env_keys([
+            ("TUS_HOOK_HEADERS", "typo"),
+            ("TUS_HOOK_URL", "https://example.com"),
+            ("TUS_STORAGE_ANYTHING", "backend-specific"),
+            ("TUS_MAX_SIZE", "1"),
+            ("TUS_TYPO", "1"),
+            ("PATH", "/usr/bin"),
+        ]);
+
+        assert_eq!(unknown, vec!["TUS_HOOK_HEADERS", "TUS_TYPO"]);
+    }
+
+    #[test]
+    fn cleanup_force_parses_from_cli_env_and_defaults_off() {
+        let cli = CleanupCli::parse_from(["cleanup", "--force"]);
+        assert_eq!(cli.force, Some(true));
+
+        let patch = cleanup_settings_patch_from_env_vars([("TUS_CLEANUP_FORCE", "true")]).unwrap();
+        assert_eq!(patch.force, Some(true));
+
+        let cli = CleanupCli::parse_from(["cleanup"]);
+        let (settings, _) = load_cleanup_settings(&cli).unwrap();
+        assert!(!settings.force);
     }
 
     #[test]
@@ -952,22 +1276,7 @@ mod tests {
 
         let config = build_tus_config(&settings);
 
-        assert_eq!(
-            config.expiration_duration(),
-            Some(Duration::from_millis(500))
-        );
-    }
-
-    #[test]
-    fn tus_config_uses_resolved_settings_directly() {
-        let settings = Settings {
-            cors: true,
-            ..Settings::default()
-        };
-
-        let config = build_tus_config(&settings);
-
-        assert_eq!(config.cors_allowed_origins(), &["*".to_string()]);
+        assert_eq!(config.expiration(), Some(Duration::from_millis(500)));
     }
 
     #[test]

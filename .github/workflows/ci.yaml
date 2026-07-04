@@ -8,17 +8,10 @@ on:
 permissions:
   contents: read
 
-# `--all-features` is not usable in this workspace: `local-futures` (non-Send
-# futures for single-threaded runtimes like Cloudflare Workers) is mutually
-# exclusive with the `native` / `Send`-bound features used by tus-axum and
-# the memory backends. Each job below tests two configurations:
-#
-# - Native:        full workspace, every feature except `local-futures`.
-# - local-futures: tus-protocol only (tus-axum requires Send via axum).
-env:
-  NATIVE_FEATURES: tus-protocol/full-native,tus-protocol/storage-memory,tus-protocol/state-memory,tus-protocol/fuzzing
-  LOCAL_FEATURES: local-futures,storage-memory,state-memory,checksum
-
+# Non-Send futures for single-threaded runtimes (Cloudflare Workers and
+# similar) are selected automatically on wasm32 targets, so the full feature
+# set is additive and `--all-features` covers the native side. Dedicated
+# steps cover wasm32 and feature-combination probes.
 jobs:
   build:
     name: Build
@@ -32,16 +25,23 @@ jobs:
         uses: ./.github/actions/rust/
 
       - name: Build (native)
-        run: cargo build --workspace --all-targets --features "$NATIVE_FEATURES"
-
-      - name: Build (local-futures)
-        run: cargo build -p tus-protocol --all-targets --no-default-features --features "$LOCAL_FEATURES"
+        run: cargo build --workspace --all-targets --all-features
 
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
 
-      # - name: Check reqwest middleware (wasm)
-      #   run: cargo check -p tus-client --target wasm32-unknown-unknown --no-default-features --features transport-reqwest-middleware --example wasm_reqwest_middleware
+      - name: Check tus-protocol (wasm)
+        run: cargo check -p tus-protocol --target wasm32-unknown-unknown --no-default-features --features storage-memory,state-memory,checksum
+
+      - name: Check tus-client (wasm, default features)
+        run: cargo check -p tus-client --target wasm32-unknown-unknown
+
+      - name: Check feature combinations
+        run: |
+          cargo check -p tus-protocol --no-default-features
+          cargo check -p tus-client --no-default-features
+          cargo check -p tus-client --no-default-features --features transport-reqwest
+          cargo check -p tus-client --no-default-features --features checksum
 
   test:
     name: Test
@@ -55,10 +55,7 @@ jobs:
         uses: ./.github/actions/rust/
 
       - name: Run tests (native)
-        run: cargo test --workspace --features "$NATIVE_FEATURES"
-
-      - name: Run tests (local-futures)
-        run: cargo test -p tus-protocol --no-default-features --features "$LOCAL_FEATURES"
+        run: cargo test --workspace --all-features
 
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
@@ -67,7 +64,7 @@ jobs:
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
       - name: Run tests (wasm)
-        run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test -p tus-client --target wasm32-unknown-unknown --no-default-features --lib
+        run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test -p tus-client --target wasm32-unknown-unknown --lib
 
   docs:
     name: Docs
@@ -83,7 +80,7 @@ jobs:
         uses: ./.github/actions/rust/
 
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --features "$NATIVE_FEATURES"
+        run: cargo doc --workspace --no-deps --all-features
 
   lint:
     name: Lint
@@ -100,10 +97,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run clippy (native)
-        run: cargo clippy --workspace --all-targets --features "$NATIVE_FEATURES" -- -D warnings
-
-      - name: Run clippy (local-futures)
-        run: cargo clippy -p tus-protocol --all-targets --no-default-features --features "$LOCAL_FEATURES" -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   audit:
     name: Audit

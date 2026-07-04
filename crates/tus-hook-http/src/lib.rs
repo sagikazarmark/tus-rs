@@ -14,8 +14,15 @@
 //!     .with_timeout(Duration::from_secs(10))
 //!     .with_header("Authorization", "Bearer secret-token");
 //!
-//! let executor = HttpHookExecutor::new(config);
+//! let executor = HttpHookExecutor::new(config).expect("failed to build HTTP client");
 //! ```
+//!
+//! # TLS
+//!
+//! The crate's default features enable the bundled [`reqwest`] client's default
+//! TLS support. Disabling default features (`default-features = false`) drops
+//! TLS from the bundled `reqwest`, so `https://` webhook URLs will fail unless
+//! you supply your own TLS-capable client via [`HttpHookExecutor::with_client`].
 //!
 //! # Webhook Protocol
 //!
@@ -49,6 +56,17 @@
 //! Post-hooks are fire-and-forget. Any response is logged but does not affect
 //! the upload operation.
 
+#![warn(missing_docs)]
+
+/// Re-export of the `reqwest` crate used by this executor.
+///
+/// Types from `reqwest` (such as [`reqwest::Client`] and [`reqwest::Error`])
+/// appear in this crate's public API — for example in
+/// [`HttpHookExecutor::with_client`] and [`HttpHookExecutor::new`] — so this
+/// re-export lets downstream crates name the exact `reqwest` version without
+/// adding their own, possibly mismatched, dependency.
+pub use reqwest;
+
 use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{Client, StatusCode};
@@ -60,6 +78,8 @@ use tus_protocol::{Error, HookContext, HookExecutor, PreHookResult, Result, Uplo
 
 /// Default timeout for webhook requests.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound on the per-attempt webhook retry backoff.
+const MAX_RETRY_DELAY_MILLIS: u64 = 10_000;
 const SIGNATURE_HEADER: &str = "X-Tus-Signature-256";
 
 /// Configuration for the HTTP webhook executor.
@@ -194,13 +214,14 @@ pub struct HttpHookExecutor {
 
 impl HttpHookExecutor {
     /// Creates a new HTTP hook executor with the given configuration.
-    pub fn new(config: HttpHookConfig) -> Self {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .expect("failed to build HTTP client");
+    ///
+    /// Builds a [`reqwest::Client`] with the configured timeout. Returns an
+    /// error if the client cannot be constructed (for example when the TLS
+    /// backend fails to initialize).
+    pub fn new(config: HttpHookConfig) -> std::result::Result<Self, reqwest::Error> {
+        let client = Client::builder().timeout(config.timeout).build()?;
 
-        Self { client, config }
+        Ok(Self { client, config })
     }
 
     /// Creates a new HTTP hook executor with a custom reqwest client.
@@ -253,6 +274,15 @@ impl HttpHookExecutor {
         request.send().await
     }
 
+    /// Returns whether a webhook response status warrants a retry.
+    ///
+    /// Retries `429 Too Many Requests` and all 5xx server errors; other
+    /// statuses (including non-retryable client errors like 403) are returned
+    /// to the caller immediately.
+    fn is_retryable_status(status: StatusCode) -> bool {
+        status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+    }
+
     async fn send_webhook_with_retry(&self, ctx: &HookContext) -> Result<reqwest::Response> {
         let payload = Self::payload(ctx)?;
         let mut last_error = None;
@@ -263,8 +293,22 @@ impl HttpHookExecutor {
         };
 
         for attempt in 0..max_attempts {
+            let is_last_attempt = attempt + 1 >= max_attempts;
+
             match self.send_webhook(ctx.event.as_str(), &payload).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    let status = response.status();
+                    if is_last_attempt || !Self::is_retryable_status(status) {
+                        return Ok(response);
+                    }
+
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts = max_attempts,
+                        status = %status,
+                        "webhook returned retryable status"
+                    );
+                }
                 Err(e) => {
                     tracing::warn!(
                         attempt = attempt + 1,
@@ -274,12 +318,18 @@ impl HttpHookExecutor {
                     );
                     last_error = Some(e);
 
-                    if attempt + 1 < max_attempts {
-                        let delay = Duration::from_millis(100 * (1 << attempt));
-                        tokio::time::sleep(delay).await;
+                    if is_last_attempt {
+                        break;
                     }
                 }
             }
+
+            // Exponential backoff, capped: `max_retries` is user-configurable
+            // and this runs on the synchronous pre-hook path, so the delay
+            // must stay bounded (and the shift must not overflow).
+            let delay =
+                Duration::from_millis((100u64 << attempt.min(8)).min(MAX_RETRY_DELAY_MILLIS));
+            tokio::time::sleep(delay).await;
         }
 
         Err(Error::Hook(Box::new(
@@ -528,7 +578,8 @@ mod tests {
             r#"{"proceed":false,"reject_status":409,"reject_message":"blocked"}"#,
         )
         .await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_signing_secret(secret));
+        let executor =
+            HttpHookExecutor::new(HttpHookConfig::new(url).with_signing_secret(secret)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let request = request.await.unwrap();
@@ -554,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn execute_pre_treats_non_success_response_as_hook_error() {
         let (url, request) = serve_once(403, "forbidden").await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url));
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await;
         let _request = request.await.unwrap();
@@ -565,7 +616,7 @@ mod tests {
     #[tokio::test]
     async fn execute_pre_treats_invalid_success_body_as_hook_error() {
         let (url, request) = serve_once(200, "not-json").await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url));
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await;
         let _request = request.await.unwrap();
@@ -576,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn execute_pre_treats_empty_success_body_as_hook_error() {
         let (url, request) = serve_once(200, "").await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url));
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await;
         let _request = request.await.unwrap();
@@ -585,9 +636,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_pre_retries_retryable_statuses_until_success() {
+        let (url, requests) =
+            serve_sequence(vec![(503, ""), (429, ""), (200, r#"{"proceed":true}"#)]).await;
+        let executor = HttpHookExecutor::new(
+            HttpHookConfig::new(url)
+                .with_retry(true)
+                .with_max_retries(3),
+        )
+        .unwrap();
+
+        let result = executor.execute_pre(&hook_context()).await.unwrap();
+        let requests = requests.await.unwrap();
+
+        assert!(result.proceed);
+        assert_eq!(requests.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn execute_pre_returns_status_error_when_retries_are_exhausted() {
+        let (url, requests) =
+            serve_sequence(vec![(503, "unavailable"), (503, "unavailable")]).await;
+        let executor = HttpHookExecutor::new(
+            HttpHookConfig::new(url)
+                .with_retry(true)
+                .with_max_retries(1),
+        )
+        .unwrap();
+
+        let result = executor.execute_pre(&hook_context()).await;
+        let requests = requests.await.unwrap();
+
+        assert!(result.is_err());
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn execute_pre_does_not_retry_when_retry_is_disabled() {
+        // A second response is queued so that an unexpected retry would
+        // succeed and flip the assertion below.
+        let (url, requests) =
+            serve_sequence(vec![(503, "unavailable"), (200, r#"{"proceed":true}"#)]).await;
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
+
+        let result = executor.execute_pre(&hook_context()).await;
+
+        assert!(result.is_err());
+        requests.abort();
+    }
+
+    #[tokio::test]
+    async fn execute_pre_does_not_retry_non_retryable_client_errors() {
+        // A second response is queued so that an unexpected retry would
+        // succeed and flip the assertion below.
+        let (url, requests) =
+            serve_sequence(vec![(403, "forbidden"), (200, r#"{"proceed":true}"#)]).await;
+        let executor = HttpHookExecutor::new(
+            HttpHookConfig::new(url)
+                .with_retry(true)
+                .with_max_retries(3),
+        )
+        .unwrap();
+
+        let result = executor.execute_pre(&hook_context()).await;
+
+        assert!(result.is_err());
+        requests.abort();
+    }
+
+    #[tokio::test]
+    async fn execute_post_retries_retryable_statuses() {
+        let (url, requests) = serve_sequence(vec![(429, ""), (200, "{}")]).await;
+        let executor = HttpHookExecutor::new(
+            HttpHookConfig::new(url)
+                .with_retry(true)
+                .with_max_retries(3),
+        )
+        .unwrap();
+
+        executor.execute_post(&hook_context()).await.unwrap();
+        let requests = requests.await.unwrap();
+
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
     async fn execute_post_ignores_non_success_response() {
         let (url, request) = serve_once(500, "failed").await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url));
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
 
         executor.execute_post(&hook_context()).await.unwrap();
         let _request = request.await.unwrap();
@@ -622,6 +758,33 @@ mod tests {
         });
 
         (format!("http://{addr}/hook"), request)
+    }
+
+    /// Serves one response per incoming connection, in order, and returns the
+    /// raw requests once all responses have been served.
+    async fn serve_sequence(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (String, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let requests = tokio::spawn(async move {
+            let mut requests = Vec::new();
+
+            for (status, body) in responses {
+                let response = format!(
+                    "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let (mut stream, _) = listener.accept().await.unwrap();
+                requests.push(read_request(&mut stream).await);
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+
+            requests
+        });
+
+        (format!("http://{addr}/hook"), requests)
     }
 
     async fn read_request(stream: &mut TcpStream) -> String {

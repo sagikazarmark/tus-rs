@@ -34,8 +34,8 @@ use tus_protocol::{
 
 fn default_config() -> Config {
     Config::with_all_extensions()
-        .base_path("/files")
-        .max_size(10 * 1024 * 1024)
+        .with_base_path("/files")
+        .with_max_size(10 * 1024 * 1024)
 }
 
 fn build_router_with(config: Config) -> Router {
@@ -46,7 +46,7 @@ fn build_router_with(config: Config) -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state)
+    create_router(state).unwrap()
 }
 
 fn build_router() -> Router {
@@ -420,8 +420,8 @@ async fn patch_without_content_type_returns_415() {
 async fn post_exceeding_max_size_returns_413() {
     let router = build_router_with(
         Config::with_all_extensions()
-            .base_path("/files")
-            .max_size(100),
+            .with_base_path("/files")
+            .with_max_size(100),
     );
     let response = send(
         router,
@@ -730,7 +730,7 @@ async fn upload_metadata_round_trips_through_head() {
 #[tokio::test]
 async fn delete_rejected_when_termination_extension_is_disabled() {
     let config = Config::with_all_extensions()
-        .base_path("/files")
+        .with_base_path("/files")
         .without_extension(Extension::Termination);
     let router = build_router_with(config);
 
@@ -873,7 +873,7 @@ async fn patch_accepts_checksum_trailer_through_axum_body_frames() {
 
 #[tokio::test]
 async fn post_emits_upload_expires_header_when_configured() {
-    let config = default_config().expiration(std::time::Duration::from_secs(3600));
+    let config = default_config().with_expiration(std::time::Duration::from_secs(3600));
     let router = build_router_with(config);
 
     let response = send(
@@ -1138,7 +1138,7 @@ fn build_router_with_rejecting_hooks(status: u16, message: &str) -> Router {
             message: message.to_string(),
         },
     ));
-    create_router(state)
+    create_router(state).unwrap()
 }
 
 #[tokio::test]

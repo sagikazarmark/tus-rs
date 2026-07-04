@@ -1,7 +1,7 @@
 #![cfg(all(
     feature = "storage-memory",
     feature = "state-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 
 use bytes::Bytes;
@@ -183,8 +183,8 @@ async fn protocol_success_response_headers_are_covered_by_header_facts() {
     let config = Config::default()
         .with_extension(Extension::CreationWithUpload)
         .with_extension(Extension::Concatenation)
-        .expiration(StdDuration::from_secs(60))
-        .max_size(1024);
+        .with_expiration(StdDuration::from_secs(60))
+        .with_max_size(1024);
     #[cfg(feature = "checksum")]
     let config = config.with_extension(Extension::Checksum);
     let storage = MemoryStorage::new();
@@ -255,7 +255,7 @@ async fn protocol_success_response_headers_are_covered_by_header_facts() {
 
 #[tokio::test]
 async fn protocol_can_opt_into_rejecting_standard_empty_creation_requests() {
-    let config = Config::default().allow_empty_creation(false);
+    let config = Config::default().with_allow_empty_creation(false);
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -332,8 +332,10 @@ async fn protocol_pre_hook_rejections_use_default_status_and_message() {
         .unwrap_err();
 
     assert_default_hook_rejection(err);
+    // PreFinish runs after the completing bytes are durably committed; the
+    // rejection fails the response but the stored upload stays complete.
     let stored = state_store.get(upload_id.as_str()).await.unwrap().unwrap();
-    assert_eq!(stored.offset(), 0);
+    assert_eq!(stored.offset(), 5);
 
     let terminate_config = Config::default().with_extension(Extension::Termination);
     let terminate_hooks =
@@ -419,7 +421,7 @@ async fn protocol_pre_terminate_response_headers_are_returned() {
 async fn protocol_head_accepts_expired_completed_regular_upload() {
     let config = Config::default()
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -497,7 +499,7 @@ async fn protocol_head_recovers_expired_regular_upload_completed_in_storage() {
 async fn protocol_patch_completion_omits_upload_expires() {
     let config = Config::default()
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -529,7 +531,7 @@ async fn protocol_head_accepts_expired_completed_final_upload() {
     let config = Config::default()
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -641,7 +643,7 @@ async fn protocol_head_rejects_expired_completed_partial_upload() {
     let config = Config::default()
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -683,7 +685,7 @@ async fn protocol_head_rejects_expired_unfinished_final_upload() {
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::ConcatenationUnfinished)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -730,7 +732,7 @@ async fn protocol_head_rejects_planned_final_upload_with_expired_partial() {
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::ConcatenationUnfinished)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -775,7 +777,7 @@ async fn protocol_head_rejects_planned_final_upload_with_reclaimed_partial() {
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::ConcatenationUnfinished)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -824,7 +826,7 @@ async fn protocol_planned_final_upload_expires_with_earliest_partial() {
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::ConcatenationUnfinished)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(24 * 60 * 60));
+        .with_expiration(StdDuration::from_secs(24 * 60 * 60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
@@ -884,7 +886,7 @@ async fn protocol_head_accepts_materialized_final_upload_after_partial_reclamati
     let config = Config::default()
         .with_extension(Extension::Concatenation)
         .with_extension(Extension::Expiration)
-        .expiration(StdDuration::from_secs(60));
+        .with_expiration(StdDuration::from_secs(60));
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();

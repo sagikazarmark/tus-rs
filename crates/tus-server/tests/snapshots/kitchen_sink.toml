@@ -10,8 +10,10 @@
 addr = "unix:/tmp/tus-kitchen-sink.sock"
 state_dir = "./state-ks"
 max_size = 104857600
+max_chunk_size = 268435456
 base_path = "/files"
 base_url = "https://tus.example.com"
+respect_forwarded_headers = false
 
 # Extension toggles
 all_extensions = true
@@ -35,9 +37,9 @@ cors_origins = ["https://app.example.com", "https://admin.example.com"]
 # Auth
 auth_token = ["token-one", "token-two"]
 
-# HTTP body limits
-max_request_body_bytes = 0
-request_body_read_timeout = 0
+# HTTP body limits (0 = explicit opt-out; defaults are 1 GiB / 60 s)
+max_request_body_bytes = 1073741824
+request_body_read_timeout = 60
 
 # Logging
 log_format = "text"

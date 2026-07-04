@@ -51,7 +51,7 @@ where
 
         let _guard = self
             .locker
-            .lock(upload_id, self.config.lock_timeout_duration())
+            .lock(upload_id, self.config.lock_timeout())
             .await?;
 
         let state = self
@@ -81,7 +81,7 @@ where
     test,
     feature = "storage-memory",
     feature = "state-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod tests {
     use super::*;

@@ -149,38 +149,12 @@ pub(crate) fn validate_remote_for_resume(remote: &UploadInfo, file_length: u64) 
 pub(crate) fn validate_patch_advance(previous: u64, next: u64, source_len: u64) -> Result<()> {
     validate_offset_not_beyond_source(next, source_len)?;
     if next <= previous {
-        return Err(Error::Transport(format!(
-            "server offset {next} did not advance beyond previous offset {previous}"
-        )));
+        return Err(Error::OffsetDesync {
+            expected: previous + 1,
+            actual: next,
+        });
     }
     Ok(())
-}
-
-pub(crate) fn is_retryable_resume_error(error: &Error) -> bool {
-    let retryable = matches!(
-        error,
-        Error::UnexpectedResponse { status, .. }
-            if *status >= 500 || *status == 408 || *status == 409 || *status == 429,
-    ) || matches!(
-        error,
-        Error::Transport(message) if !message.starts_with("server offset "),
-    );
-
-    #[cfg(all(feature = "transport-reqwest", not(target_arch = "wasm32")))]
-    let retryable = retryable
-        || matches!(
-            error,
-            Error::Http(http_error) if http_error.is_connect() || http_error.is_timeout()
-        );
-
-    #[cfg(all(feature = "transport-reqwest", target_arch = "wasm32"))]
-    let retryable = retryable
-        || matches!(
-            error,
-            Error::Http(http_error) if http_error.is_timeout()
-        );
-
-    retryable
 }
 
 /// Splits a comma-separated TUS header value into trimmed, non-empty entries.
@@ -217,15 +191,7 @@ pub(crate) fn jittered_backoff_delay(base: Duration, attempt: usize) -> Duration
     let nanos = (js_sys::Math::random() * (max_nanos as f64 + 1.0)) as u64;
 
     #[cfg(not(target_arch = "wasm32"))]
-    let nanos = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64)
-            .unwrap_or(0)
-            % (max_nanos + 1)
-    };
+    let nanos = fastrand::u64(0..=max_nanos);
 
     Duration::from_nanos(nanos.min(max_nanos))
 }

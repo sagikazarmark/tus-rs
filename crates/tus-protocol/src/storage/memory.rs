@@ -168,7 +168,7 @@ impl Storage for MemoryStorage {
 
 #[async_trait]
 impl StorageReader for MemoryStorage {
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+    async fn stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
         let key = handle.key();
 
         let storage = self.data.read().unwrap();
@@ -181,7 +181,7 @@ impl StorageReader for MemoryStorage {
         Ok(Box::pin(futures::stream::once(async move { Ok(data) })))
     }
 
-    async fn get_range(
+    async fn stream_range(
         &self,
         handle: &StorageHandle,
         start: u64,
@@ -273,7 +273,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut stream = storage.get_stream(&handle).await.unwrap();
+        let mut stream = storage.stream(&handle).await.unwrap();
         let chunk = stream.next().await.unwrap().unwrap();
         assert_eq!(chunk.as_ref(), b"test data");
     }
@@ -374,7 +374,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(target.get_internal("target_fact"), Some("keep-me"));
+        assert_eq!(target.internal("target_fact"), Some("keep-me"));
     }
 
     /// Per-PATCH atomicity invariant: if the body stream errors before

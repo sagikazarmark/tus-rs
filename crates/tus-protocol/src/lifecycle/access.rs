@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::hooks::{HookExecutor, HookRequestInfo};
+use crate::locking::Locker;
 use crate::state::{StateStore, UploadState};
 use crate::storage::Storage;
 
@@ -59,9 +60,10 @@ where
     Ok(())
 }
 
-pub(crate) async fn prepare_upload_observation_access<S, I, H>(
+pub(crate) async fn prepare_upload_observation_access<S, I, L, H>(
     storage: &S,
     state_store: &I,
+    locker: &L,
     hooks: &H,
     config: &Config,
     request_info: &HookRequestInfo,
@@ -70,14 +72,25 @@ pub(crate) async fn prepare_upload_observation_access<S, I, H>(
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
-    prepare_upload_read_access(storage, state_store, hooks, config, request_info, state).await
+    prepare_upload_read_access(
+        storage,
+        state_store,
+        locker,
+        hooks,
+        config,
+        request_info,
+        state,
+    )
+    .await
 }
 
-pub(crate) async fn prepare_upload_download_access<S, I, H>(
+pub(crate) async fn prepare_upload_download_access<S, I, L, H>(
     storage: &S,
     state_store: &I,
+    locker: &L,
     hooks: &H,
     config: &Config,
     request_info: &HookRequestInfo,
@@ -86,11 +99,19 @@ pub(crate) async fn prepare_upload_download_access<S, I, H>(
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
-    let prepared =
-        prepare_upload_read_access(storage, state_store, hooks, config, request_info, state)
-            .await?;
+    let prepared = prepare_upload_read_access(
+        storage,
+        state_store,
+        locker,
+        hooks,
+        config,
+        request_info,
+        state,
+    )
+    .await?;
 
     if !state.is_complete() {
         return Err(Error::IncompleteUpload(state.id().to_string()));
@@ -113,9 +134,10 @@ where
     Ok(state.is_expired())
 }
 
-async fn prepare_upload_read_access<S, I, H>(
+async fn prepare_upload_read_access<S, I, L, H>(
     storage: &S,
     state_store: &I,
+    locker: &L,
     hooks: &H,
     config: &Config,
     request_info: &HookRequestInfo,
@@ -124,11 +146,12 @@ async fn prepare_upload_read_access<S, I, H>(
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
+    L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     if state.is_final() {
         let materializer =
-            FinalUploadMaterializer::new(storage, state_store, hooks, config, request_info);
+            FinalUploadMaterializer::new(storage, state_store, locker, hooks, config, request_info);
         let prepared = materializer.prepare_read(state).await?;
         debug_assert!(
             prepared,

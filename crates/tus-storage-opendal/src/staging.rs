@@ -1,12 +1,18 @@
-use bytes::Bytes;
 use futures::StreamExt;
 use opendal::Operator;
 
-use tus_protocol::{Error, Result, StorageHandle};
+use tus_protocol::{ChunkStream, Error, Result, StorageHandle};
 
 pub(crate) struct UploadObjects<'a> {
     operator: &'a Operator,
     key: &'a str,
+}
+
+/// Where the next PATCH body goes and how many bytes precede it.
+struct AppendPosition {
+    part_number: u64,
+    staged_size: u64,
+    offset: u64,
 }
 
 impl<'a> UploadObjects<'a> {
@@ -16,18 +22,39 @@ impl<'a> UploadObjects<'a> {
 
     pub(crate) fn initialize_handle(handle: &mut StorageHandle) {
         handle.set_internal(INTERNAL_NEXT_PART, "1");
+        handle.set_internal(INTERNAL_STAGED_SIZE, "0");
     }
 
-    pub(crate) async fn append_part(&self, handle: &mut StorageHandle, bytes: Bytes) -> Result<()> {
-        let part_number = self.next_part_for_append(handle).await?;
-        let part_key = self.part_key(part_number);
+    /// Validates the expected offset and stages the PATCH body as the next
+    /// part object.
+    ///
+    /// The body is streamed into the part writer chunk by chunk; nothing is
+    /// buffered beyond the caller-provided chunks. On any mid-stream error the
+    /// staged part is discarded (writer abort, falling back to best-effort
+    /// delete) so a failed PATCH leaves no partial part behind, mirroring the
+    /// per-PATCH atomicity of the file backend.
+    pub(crate) async fn append_part(
+        &self,
+        handle: &mut StorageHandle,
+        expected_offset: u64,
+        data: ChunkStream,
+    ) -> Result<()> {
+        let position = self.append_position(handle).await?;
+        if position.offset != expected_offset {
+            return Err(Error::Internal(format!(
+                "opendal storage size {} does not match expected offset {expected_offset} for key {}",
+                position.offset, self.key
+            )));
+        }
 
-        self.operator
-            .write(&part_key, bytes)
-            .await
-            .map_err(Error::storage)?;
+        let part_key = self.part_key(position.part_number);
+        let written = self.write_part(&part_key, data).await?;
 
-        handle.set_internal(INTERNAL_NEXT_PART, (part_number + 1).to_string());
+        handle.set_internal(INTERNAL_NEXT_PART, (position.part_number + 1).to_string());
+        handle.set_internal(
+            INTERNAL_STAGED_SIZE,
+            position.staged_size.saturating_add(written).to_string(),
+        );
 
         Ok(())
     }
@@ -77,25 +104,120 @@ impl<'a> UploadObjects<'a> {
         }
     }
 
-    async fn next_part_for_append(&self, handle: &StorageHandle) -> Result<u64> {
+    /// Determines the append position with one stat in the common case.
+    ///
+    /// The handle carries a part cursor and an accumulated staged size,
+    /// persisted together after every append. When the cursor is fresh (its
+    /// part object does not exist yet) the persisted size is trusted, so an
+    /// append costs a single stat instead of listing and stat-ing every
+    /// staged part. The listing-based recovery runs only when the internals
+    /// are stale (the cursor's part already exists, meaning the process
+    /// crashed after a PUT but before persisting the handle) or missing
+    /// (handles persisted before the size counter existed).
+    async fn append_position(&self, handle: &StorageHandle) -> Result<AppendPosition> {
         let candidate = next_part(handle);
         let candidate_key = self.part_key(candidate);
 
         match self.operator.stat(&candidate_key).await {
-            Ok(_) => {
-                let next_existing = self
-                    .list_parts()
-                    .await?
-                    .iter()
-                    .filter_map(|part_key| part_number(part_key))
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(1);
-
-                Ok(candidate.max(next_existing))
-            }
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(candidate),
+            Ok(_) => self.recovered_position(candidate).await,
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => match staged_size_fact(handle) {
+                Some(staged_size) => Ok(AppendPosition {
+                    part_number: candidate,
+                    staged_size,
+                    offset: staged_size,
+                }),
+                None => self.recovered_position(candidate).await,
+            },
             Err(e) => Err(Error::storage(e)),
+        }
+    }
+
+    /// Rebuilds the append position from staged objects when the handle
+    /// internals cannot be trusted.
+    async fn recovered_position(&self, candidate: u64) -> Result<AppendPosition> {
+        let part_keys = self.list_parts().await?;
+
+        let next_existing = part_keys
+            .iter()
+            .filter_map(|part_key| part_number(part_key))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let staged_size = self.sum_part_sizes(&part_keys).await?;
+
+        // A partial main object (from an old direct-to-main finalize failure)
+        // must not shrink the reported offset below the staged bytes.
+        let offset = match self.operator.stat(self.key).await {
+            Ok(stat) => staged_size.max(stat.content_length()),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => staged_size,
+            Err(e) => return Err(Error::storage(e)),
+        };
+
+        Ok(AppendPosition {
+            part_number: candidate.max(next_existing),
+            staged_size,
+            offset,
+        })
+    }
+
+    /// Writes a PATCH body to the part key, streaming chunk by chunk.
+    ///
+    /// Returns the number of bytes written. On failure the partially written
+    /// part is discarded before the error is returned.
+    async fn write_part(&self, part_key: &str, data: ChunkStream) -> Result<u64> {
+        match data {
+            // A buffered body is a single atomic PUT.
+            ChunkStream::Buffered(bytes) => {
+                let len = bytes.len() as u64;
+                self.operator
+                    .write(part_key, bytes)
+                    .await
+                    .map_err(Error::storage)?;
+                Ok(len)
+            }
+            ChunkStream::Stream(mut stream) => {
+                let mut writer = self
+                    .operator
+                    .writer(part_key)
+                    .await
+                    .map_err(Error::storage)?;
+                let mut written = 0_u64;
+
+                while let Some(chunk) = stream.next().await {
+                    let chunk = match chunk {
+                        Ok(chunk) => chunk,
+                        Err(error) => {
+                            self.discard_partial_part(&mut writer, part_key).await;
+                            return Err(Error::Io(error));
+                        }
+                    };
+
+                    written = written.saturating_add(chunk.len() as u64);
+                    if let Err(error) = writer.write(chunk).await {
+                        self.discard_partial_part(&mut writer, part_key).await;
+                        return Err(Error::storage(error));
+                    }
+                }
+
+                if let Err(error) = writer.close().await {
+                    self.discard_partial_part(&mut writer, part_key).await;
+                    return Err(Error::storage(error));
+                }
+
+                Ok(written)
+            }
+        }
+    }
+
+    /// Ensures a failed streamed part write leaves no object behind.
+    ///
+    /// `Writer::abort` discards in-flight multipart uploads. Backends without
+    /// abort support (for example `fs` without an atomic write dir) may have
+    /// already materialized partial bytes at the part key, so fall back to a
+    /// best-effort delete.
+    async fn discard_partial_part(&self, writer: &mut opendal::Writer, part_key: &str) {
+        if writer.abort().await.is_err() {
+            let _ = self.operator.delete(part_key).await;
         }
     }
 
@@ -105,17 +227,17 @@ impl<'a> UploadObjects<'a> {
             return Ok(None);
         }
 
+        Ok(Some(self.sum_part_sizes(&part_keys).await?))
+    }
+
+    async fn sum_part_sizes(&self, part_keys: &[String]) -> Result<u64> {
         let mut total = 0_u64;
         for part_key in part_keys {
-            let stat = self
-                .operator
-                .stat(&part_key)
-                .await
-                .map_err(Error::storage)?;
+            let stat = self.operator.stat(part_key).await.map_err(Error::storage)?;
             total = total.saturating_add(stat.content_length());
         }
 
-        Ok(Some(total))
+        Ok(total)
     }
 
     async fn list_parts(&self) -> Result<Vec<String>> {
@@ -273,12 +395,19 @@ impl<'a> UploadObjects<'a> {
 }
 
 pub(crate) const INTERNAL_NEXT_PART: &str = "opendal_next_part";
+pub(crate) const INTERNAL_STAGED_SIZE: &str = "opendal_staged_size";
 
 fn next_part(handle: &StorageHandle) -> u64 {
     handle
-        .get_internal(INTERNAL_NEXT_PART)
+        .internal(INTERNAL_NEXT_PART)
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(1)
+}
+
+fn staged_size_fact(handle: &StorageHandle) -> Option<u64> {
+    handle
+        .internal(INTERNAL_STAGED_SIZE)
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 fn part_number(part_key: &str) -> Option<u64> {
@@ -288,6 +417,7 @@ fn part_number(part_key: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use opendal::services::Fs;
 
     struct TestOperator {
@@ -315,7 +445,11 @@ mod tests {
         UploadObjects::initialize_handle(&mut handle);
 
         upload
-            .append_part(&mut handle, Bytes::from_static(b"hello"))
+            .append_part(
+                &mut handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+            )
             .await
             .unwrap();
         assert_eq!(upload.staged_size().await.unwrap(), Some(5));

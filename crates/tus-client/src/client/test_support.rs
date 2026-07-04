@@ -24,12 +24,9 @@ pub(super) struct MockTransport {
     pub(super) responses: Arc<Mutex<VecDeque<std::result::Result<TransportResponse, Error>>>>,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(
-    any(feature = "local-futures", target_arch = "wasm32"),
+    target_arch = "wasm32",
     async_trait(?Send)
 )]
 impl Transport for MockTransport {
@@ -49,12 +46,9 @@ pub(super) struct ShortReadSource {
     pub(super) max_read: usize,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(
-    all(not(feature = "local-futures"), not(target_arch = "wasm32")),
-    async_trait
-)]
-#[cfg_attr(
-    any(feature = "local-futures", target_arch = "wasm32"),
+    target_arch = "wasm32",
     async_trait(?Send)
 )]
 impl UploadSource for ShortReadSource {

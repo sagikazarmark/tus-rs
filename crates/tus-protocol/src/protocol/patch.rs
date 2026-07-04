@@ -54,7 +54,7 @@ where
 
         let _guard = self
             .locker
-            .lock(upload_id, self.config.lock_timeout_duration())
+            .lock(upload_id, self.config.lock_timeout())
             .await?;
 
         let mut state = self
@@ -106,7 +106,7 @@ where
     test,
     feature = "storage-memory",
     feature = "state-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod tests {
     use super::*;
@@ -769,7 +769,7 @@ mod tests {
     #[tokio::test]
     async fn actual_body_cannot_exceed_max_size_when_content_length_missing() {
         let (storage, store) = setup(UploadState::new("test-id")).await;
-        let config = Config::default().max_size(5);
+        let config = Config::default().with_max_size(5);
         let h = Headers {
             upload_offset: Some(0),
             content_type: Some("application/offset+octet-stream".to_string()),
@@ -788,7 +788,7 @@ mod tests {
     #[tokio::test]
     async fn actual_body_cannot_exceed_max_chunk_size_when_content_length_missing() {
         let (storage, store) = setup(UploadState::new("test-id").with_length(100)).await;
-        let config = Config::default().max_chunk_size(5);
+        let config = Config::default().with_max_chunk_size(5);
         let h = Headers {
             upload_offset: Some(0),
             content_type: Some("application/offset+octet-stream".to_string()),
@@ -918,7 +918,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pre_finish_rejection_blocks_completing_patch() {
+    async fn pre_finish_rejection_fails_completing_patch_response() {
         let (storage, store) = setup(UploadState::new("test-id").with_length(5)).await;
         let locker = NoopLocker::new();
         let hooks = HookChain::new()
@@ -941,9 +941,11 @@ mod tests {
                 ..
             }
         ));
+        // The completing bytes were already durable when the gate ran: the
+        // response fails, but the stored upload remains complete.
         let stored = store.get("test-id").await.unwrap().unwrap();
-        assert_eq!(stored.offset(), 0);
-        assert!(!stored.is_complete());
+        assert_eq!(stored.offset(), 5);
+        assert!(stored.is_complete());
     }
 
     #[tokio::test]
@@ -1017,7 +1019,7 @@ mod tests {
     #[tokio::test]
     async fn max_chunk_size_enforced() {
         let (storage, store) = setup(UploadState::new("test-id").with_length(1000)).await;
-        let config = Config::default().max_chunk_size(5);
+        let config = Config::default().with_max_chunk_size(5);
         let h = Headers {
             upload_offset: Some(0),
             content_type: Some("application/offset+octet-stream".to_string()),
@@ -1036,7 +1038,7 @@ mod tests {
         // the server-wide max. Must reject even though Upload-Length isn't
         // set on the state.
         let (storage, store) = setup(UploadState::new("test-id")).await;
-        let config = Config::default().max_size(10);
+        let config = Config::default().with_max_size(10);
         let h = Headers {
             upload_offset: Some(0),
             content_type: Some("application/offset+octet-stream".to_string()),
@@ -1060,7 +1062,7 @@ mod tests {
     async fn max_size_accumulates_across_patches() {
         // Two PATCHes, second exceeds max_size in aggregate.
         let (storage, store) = setup(UploadState::new("test-id")).await;
-        let config = Config::default().max_size(8);
+        let config = Config::default().with_max_size(8);
         let h = |offset: u64, cl: u64| Headers {
             upload_offset: Some(offset),
             content_type: Some("application/offset+octet-stream".to_string()),

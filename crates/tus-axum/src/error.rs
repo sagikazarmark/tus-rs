@@ -12,8 +12,45 @@ pub struct Error(pub tus_protocol::Error);
 
 impl From<tus_protocol::Error> for Error {
     fn from(err: tus_protocol::Error) -> Self {
-        Self(err)
+        Self(map_transport_body_error(err))
     }
+}
+
+/// Remaps transport-level body read failures that reach the protocol as
+/// opaque IO errors.
+///
+/// Body-limiting middleware such as `tower_http::limit::RequestBodyLimitLayer`
+/// enforces its byte cap inside the request body: a chunked upload that trips
+/// the cap mid-stream surfaces as an [`http_body_util::LengthLimitError`]
+/// buried in the body read error chain, which the protocol classifies as an
+/// internal error (500). The client sent too many bytes, so the correct
+/// answer is 413 ([`tus_protocol::Error::SizeExceeded`]).
+///
+/// The transport layer does not expose the configured limit or the observed
+/// size, so the remapped variant carries zeroes; the status code is the
+/// meaningful part. All other errors (including plain client-disconnect read
+/// errors, which arrive as [`tus_protocol::Error::Io`]) pass through
+/// unchanged.
+fn map_transport_body_error(err: tus_protocol::Error) -> tus_protocol::Error {
+    match err {
+        tus_protocol::Error::Io(io_err) if chain_contains_length_limit(&io_err) => {
+            tus_protocol::Error::SizeExceeded { size: 0, max: 0 }
+        }
+        other => other,
+    }
+}
+
+/// Returns whether the error's source chain contains an
+/// [`http_body_util::LengthLimitError`].
+fn chain_contains_length_limit(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(err) = current {
+        if err.is::<http_body_util::LengthLimitError>() {
+            return true;
+        }
+        current = err.source();
+    }
+    false
 }
 
 impl IntoResponse for Error {
@@ -44,6 +81,52 @@ mod tests {
     fn from_protocol_error_wraps_inner() {
         let err: Error = ProtocolError::NotFound("upload-7".into()).into();
         assert!(matches!(err.0, ProtocolError::NotFound(ref s) if s == "upload-7"));
+    }
+
+    #[test]
+    fn length_required_maps_to_411() {
+        let response =
+            <Error as From<ProtocolError>>::from(ProtocolError::LengthRequired).into_response();
+        assert_eq!(response.status(), StatusCode::LENGTH_REQUIRED);
+    }
+
+    /// Produces the `LengthLimitError` a limited transport body yields when
+    /// its byte cap trips. The error type is `#[non_exhaustive]`, so the only
+    /// way to obtain one is to actually poll an over-limit body.
+    async fn length_limit_error() -> Box<dyn std::error::Error + Send + Sync> {
+        use http_body_util::{BodyExt, Full, Limited};
+
+        let mut body = Limited::new(Full::new(bytes::Bytes::from_static(b"hello")), 1);
+        match body.frame().await {
+            Some(Err(err)) => err,
+            other => panic!("expected a length limit error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn io_error_wrapping_length_limit_maps_to_413() {
+        // Mirrors the exact chain the body bridge produces when
+        // tower_http::limit::RequestBodyLimitLayer trips mid-stream:
+        // io::Error -> axum::Error -> LengthLimitError.
+        let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
+
+        let err: Error = ProtocolError::Io(io_err).into();
+        assert!(matches!(
+            err.0,
+            ProtocolError::SizeExceeded { size: 0, max: 0 }
+        ));
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn plain_io_error_is_not_remapped() {
+        let err: Error = ProtocolError::Io(std::io::Error::other("connection reset")).into();
+        assert!(matches!(err.0, ProtocolError::Io(_)));
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     /// Constructors for every ProtocolError variant. Mirrors the helper in
@@ -93,6 +176,7 @@ mod tests {
                 status_code: 418,
                 message: "teapot".into(),
             }),
+            Box::new(|| ProtocolError::LengthRequired),
             Box::new(|| ProtocolError::Io(std::io::Error::other("x"))),
             Box::new(|| ProtocolError::Internal("x".into())),
             Box::new(|| ProtocolError::MethodNotAllowed("PATCH".into())),

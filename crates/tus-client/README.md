@@ -53,10 +53,14 @@ cargo run -p tus-client --example upload_file -- http://127.0.0.1:8080/files ./h
 |-----|---------|
 | `Client::upload_from(source, metadata)` | Create a new upload resource and upload a source to it. |
 | `Client::upload_from_with_progress(source, metadata, progress)` | Create and upload while reporting remote offset advances. |
-| `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. |
-| `Client::upload(upload_url)` | Resolve an existing upload URL reference and return an `Upload`. |
+| `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. Returns `(Upload, UploadInfo)` — the resource reference plus the state observed at creation. |
+| `Client::upload_at(upload_url)` | Resolve an existing upload URL reference and return an `Upload`. |
 | `Upload::info()` | Read the current remote offset, length, and metadata. |
 | `Upload::terminate()` | Terminate an upload when the server supports termination. |
+
+Server capabilities discovered via `Client::server_capabilities()` (the tus
+`OPTIONS` probe) are cached per client, so repeated uploads through the same
+client cost a single extra roundtrip.
 
 Existing upload references may be absolute URLs, absolute paths on the endpoint
 origin, or paths relative to the configured endpoint collection. For example,
@@ -71,18 +75,24 @@ resume and parallel uploads. Larger or platform-specific sources can implement
 
 ## Feature Flags
 
-The default feature set enables the reqwest transport and checksum support.
+The default feature set enables the reqwest transport (with reqwest's default
+features, including TLS) and checksum support.
 
 | Feature | Purpose |
 |---------|---------|
 | `checksum` | Enable per-chunk checksum support through `tus-protocol/checksum`. |
-| `source-file` | Expose native Tokio filesystem upload sources. |
+| `reqwest-native-tls` | Re-enable reqwest's `native-tls` backend when default features are disabled. |
+| `reqwest-rustls` | Re-enable reqwest's `rustls` backend when default features are disabled. |
+| `source-file` | Expose native Tokio filesystem upload sources (pulls in `tokio/fs`). |
 | `transport-reqwest` | Enable the default reqwest-backed transport and `Client::new`. |
 | `transport-reqwest-middleware` | Accept `reqwest_middleware::ClientWithMiddleware` as a reqwest transport client. |
-| `local-futures` | Relax `Send` bounds for single-threaded runtimes such as Worker-style environments. |
 
 Disable default features when providing a custom transport or when building for a
 runtime that should not pull in reqwest.
+
+> **Note:** `--no-default-features` also drops reqwest's default features, which
+> include TLS — plain `transport-reqwest` can then only speak `http://`. Add
+> `reqwest-rustls` or `reqwest-native-tls` to restore `https://` support.
 
 ## Protocol Support
 
@@ -95,7 +105,7 @@ runtime that should not pull in reqwest.
 | Creation-With-Upload | Supported | Small sources can be sent in the initial `POST` when the server advertises support. |
 | Termination | Supported | Terminate upload resources with `Upload::terminate`. |
 | Concatenation | Supported on native | `Client::upload_parallel` creates partial uploads and concatenates them. |
-| Checksum | Supported | Header checksums are supported; trailer checksums require native reqwest transport support. |
+| Checksum | Supported | Header checksums are supported everywhere; trailer checksums require the native reqwest transport and fail with a permanent error on `wasm32`. |
 
 ## Runtime Notes
 
@@ -109,8 +119,8 @@ reqwest transport uses the browser `fetch` backend, so request trailers and
 manually setting `Content-Length` are not available. Middleware can be used on
 wasm when the middleware implementation itself is wasm-compatible.
 
-Use `local-futures` for single-threaded runtimes that cannot require `Send`
-futures. Custom transports and upload sources should match the target runtime's
+On `wasm32` targets, trait bounds relax to non-`Send` futures automatically.
+Custom transports and upload sources should match the target runtime's
 concurrency model.
 
 ## License

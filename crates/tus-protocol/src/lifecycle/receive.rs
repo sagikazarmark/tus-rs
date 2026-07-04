@@ -1,8 +1,5 @@
 use std::collections::HashMap;
 
-use bytes::BytesMut;
-use futures::StreamExt;
-
 mod body;
 
 use crate::config::Config;
@@ -121,10 +118,17 @@ where
         )
         .await?;
         let response_headers = prepared.response_headers.clone();
+        let completes_upload = prepared.projection.completes_upload;
 
         commit_receive_body(self.storage, self.state_store, state, prepared).await?;
         self.run_post_event(HookEvent::PostReceive, state).await;
-        self.completion().after_commit_if_complete(state).await;
+        if completes_upload {
+            // The completing bytes are already durable; a PreFinish rejection
+            // fails this response and skips PostFinish, but cannot undo the
+            // stored upload.
+            self.completion().finish_gate(state.clone()).await?;
+            self.completion().after_commit(state).await;
+        }
 
         Ok(ReceiveOutcome { response_headers })
     }
@@ -159,10 +163,16 @@ where
         if let Err(err) =
             commit_receive_body(self.storage, self.state_store, &mut state, prepared).await
         {
-            if let Some(handle) = state.storage_handle() {
-                let _ = self.storage.delete(&handle).await;
-            }
-            let _ = self.state_store.delete(state.id()).await;
+            self.rollback_creation(&state).await;
+            return Err(err);
+        }
+
+        // The upload resource is new, so a PreFinish rejection can still roll
+        // the whole creation back instead of leaving a completed upload.
+        if state.is_complete()
+            && let Err(err) = self.completion().finish_gate(state.clone()).await
+        {
+            self.rollback_creation(&state).await;
             return Err(err);
         }
 
@@ -174,6 +184,13 @@ where
             state,
             response_headers,
         })
+    }
+
+    async fn rollback_creation(&self, state: &UploadState) {
+        if let Some(handle) = state.storage_handle() {
+            let _ = self.storage.delete(&handle).await;
+        }
+        let _ = self.state_store.delete(state.id()).await;
     }
 
     fn completion(&self) -> UploadCompletion<'_, H> {
@@ -224,7 +241,7 @@ fn prepare_receive(
                 });
             }
         } else {
-            if let Some(max_size) = config.max_size_limit()
+            if let Some(max_size) = config.max_size()
                 && length > max_size
             {
                 return Err(Error::SizeExceeded {
@@ -243,9 +260,9 @@ fn prepare_receive(
 #[must_use]
 fn receive_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
     [
-        config.max_chunk_size_limit(),
+        config.max_chunk_size(),
         config
-            .max_size_limit()
+            .max_size()
             .map(|max_size| max_size.saturating_sub(state.offset())),
         state
             .length()
@@ -262,7 +279,7 @@ fn validate_receive_body(
     state: &UploadState,
     body_len: u64,
 ) -> Result<ReceiveProjection> {
-    if let Some(max_chunk) = config.max_chunk_size_limit()
+    if let Some(max_chunk) = config.max_chunk_size()
         && body_len > max_chunk
     {
         return Err(Error::SizeExceeded {
@@ -273,7 +290,7 @@ fn validate_receive_body(
 
     let projected_offset = state.offset().saturating_add(body_len);
 
-    if let Some(max_size) = config.max_size_limit()
+    if let Some(max_size) = config.max_size()
         && projected_offset > max_size
     {
         return Err(Error::SizeExceeded {
@@ -327,46 +344,13 @@ where
     }
 
     let projection = validate_body_for_receive(config, state, collected.size, kind)?;
-    let mut data = collected.data;
-    let deferred_error = collected.deferred_error;
-    if projection.completes_upload {
-        data = validate_completion_body(data, &deferred_error).await?;
-        let mut completed_state = state.clone();
-        completed_state.set_offset(projection.projected_offset);
-        UploadCompletion::new(hooks, request_info)
-            .before_commit(completed_state)
-            .await?;
-    }
 
     Ok(PreparedReceiveBody {
-        data,
+        data: collected.data,
         projection,
         response_headers,
-        deferred_error,
+        deferred_error: collected.deferred_error,
     })
-}
-
-async fn validate_completion_body(
-    data: ChunkStream,
-    deferred_error: &body::DeferredBodyError,
-) -> Result<ChunkStream> {
-    let ChunkStream::Stream(mut stream) = data else {
-        return Ok(data);
-    };
-
-    let mut buffer = BytesMut::new();
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(bytes) => buffer.extend_from_slice(&bytes),
-            Err(error) => return Err(deferred_error.take().unwrap_or(Error::Io(error))),
-        }
-    }
-
-    if let Some(error) = deferred_error.take() {
-        return Err(error);
-    }
-
-    Ok(ChunkStream::Buffered(buffer.freeze()))
 }
 
 /// Commits accepted receive bytes to storage and persists the resulting upload state.
@@ -452,7 +436,7 @@ fn validate_body_for_receive(
 fn creation_with_upload_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
     [
         config
-            .max_size_limit()
+            .max_size()
             .map(|max_size| max_size.saturating_sub(state.offset())),
         state
             .length()
@@ -470,7 +454,7 @@ fn validate_creation_with_upload_body(
 ) -> Result<ReceiveProjection> {
     let projected_offset = state.offset().saturating_add(body_len);
 
-    if let Some(max_size) = config.max_size_limit()
+    if let Some(max_size) = config.max_size()
         && projected_offset > max_size
     {
         return Err(Error::SizeExceeded {

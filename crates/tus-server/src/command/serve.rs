@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::Router;
 use tus_protocol::{ProtocolHandle, locking::memory::MemoryLocker, state::file::FileStateStore};
-use tus_storage_opendal::Storage as ServerStorage;
+use tus_storage_opendal::OpendalStorage;
 
 use crate::{
     app,
@@ -15,7 +15,7 @@ use crate::{
 
 struct ServeCommandParts {
     app: Router,
-    cleanup_targets: Vec<ExpirationTarget<ServerStorage, FileStateStore, MemoryLocker>>,
+    cleanup_targets: Vec<ExpirationTarget<OpendalStorage, FileStateStore, MemoryLocker>>,
     draining: Arc<AtomicBool>,
 }
 
@@ -28,6 +28,7 @@ pub(super) async fn run(command: ServeCli) -> anyhow::Result<()> {
     let shutdown_notify = lifecycle::spawn_signal_listener()?;
 
     super::log_config_file(config_path.as_deref());
+    config::warn_unknown_tus_env_keys();
 
     tracing::info!("Starting TUS server");
     tracing::info!("State directory: {:?}", settings.state_dir);
@@ -91,15 +92,26 @@ async fn build_serve_command_parts(
     );
 
     let draining = Arc::new(AtomicBool::new(false));
+    let cors_origins = if !settings.cors_origins.is_empty() {
+        settings.cors_origins.clone()
+    } else if settings.cors {
+        vec!["*".to_string()]
+    } else {
+        Vec::new()
+    };
+    if !cors_origins.is_empty() {
+        tracing::info!("  CORS origins: {}", cors_origins.join(", "));
+    }
     let app = app::build_app(
         protocol,
         &app::AppSettings {
             auth_token: settings.auth_token.clone(),
             max_request_body_bytes: settings.max_request_body_bytes,
             request_body_read_timeout: settings.request_body_read_timeout,
+            cors_origins,
         },
         draining.clone(),
-    );
+    )?;
     let cleanup_targets = if settings.cleanup {
         vec![runtime.cleanup_target]
     } else {
@@ -115,19 +127,20 @@ async fn build_serve_command_parts(
 
 fn log_tus_config(config: &tus_protocol::Config) {
     tracing::info!("TUS configuration:");
-    tracing::info!("  Base path: {}", config.base_path_str());
-    if let Some(url) = config.base_url_str() {
+    tracing::info!("  Base path: {}", config.base_path());
+    if let Some(url) = config.base_url() {
         tracing::info!("  Base URL: {}", url);
     }
     tracing::info!("  Extensions: {}", config.extensions_string());
-    if let Some(max) = config.max_size_limit() {
+    if let Some(max) = config.max_size() {
         tracing::info!("  Max size: {} bytes", max);
     }
-    if !config.cors_allowed_origins().is_empty() {
-        tracing::info!(
-            "  CORS origins: {}",
-            config.cors_allowed_origins().join(", ")
-        );
+    match config.max_chunk_size() {
+        Some(max) => tracing::info!("  Max chunk size: {} bytes", max),
+        None => tracing::info!("  Max chunk size: unlimited"),
+    }
+    if config.respects_forwarded_headers() {
+        tracing::info!("  Respecting Forwarded/X-Forwarded-* headers");
     }
 }
 

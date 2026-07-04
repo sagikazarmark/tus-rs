@@ -35,7 +35,7 @@ where
             response = response.with_header("tus-extension", extensions);
         }
 
-        if let Some(max_size) = self.config.max_size_limit() {
+        if let Some(max_size) = self.config.max_size() {
             response = response.with_header("tus-max-size", max_size.to_string());
         }
 
@@ -65,8 +65,8 @@ mod tests {
 
     struct TestStorage;
 
-    #[cfg_attr(not(feature = "local-futures"), async_trait::async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl Storage for TestStorage {
         fn name(&self) -> &'static str {
             "test"
@@ -95,8 +95,8 @@ mod tests {
 
     struct TestStateStore;
 
-    #[cfg_attr(not(feature = "local-futures"), async_trait::async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl StateStore for TestStateStore {
         fn name(&self) -> &'static str {
             "test"
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn includes_max_size() {
-        let config = Config::default().max_size(1024 * 1024 * 100);
+        let config = Config::default().with_max_size(1024 * 1024 * 100);
         let response = options(&config);
         assert_eq!(response.headers.get("tus-max-size").unwrap(), "104857600");
     }

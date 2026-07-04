@@ -94,6 +94,25 @@ impl FileLocker {
     fn release_lock_file(file: File) {
         let _ = file.unlock();
     }
+
+    /// Reports whether an upload is currently locked.
+    ///
+    /// Monitoring/test helper; probes by taking and immediately releasing the
+    /// advisory lock on a fresh descriptor, so the answer may be stale as soon
+    /// as it is returned.
+    pub fn is_locked(&self, upload_id: &str) -> Result<bool> {
+        let path = self.lock_path(upload_id)?;
+        let file = Self::open_lock_file(&path)?;
+
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = file.unlock();
+                Ok(false)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
+            Err(error) => Err(Error::Io(error)),
+        }
+    }
 }
 
 impl std::fmt::Debug for FileLocker {
@@ -149,32 +168,6 @@ impl Locker for FileLocker {
             Err(error) => Err(Error::Io(error)),
         }
     }
-
-    async fn unlock(&self, upload_id: &str) -> Result<()> {
-        let path = self.lock_path(upload_id)?;
-        match Self::open_lock_file(&path) {
-            Ok(file) => {
-                let _ = file.unlock();
-                Ok(())
-            }
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn is_locked(&self, upload_id: &str) -> Result<bool> {
-        let path = self.lock_path(upload_id)?;
-        let file = Self::open_lock_file(&path)?;
-
-        match file.try_lock_exclusive() {
-            Ok(()) => {
-                let _ = file.unlock();
-                Ok(false)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
-            Err(error) => Err(Error::Io(error)),
-        }
-    }
 }
 
 fn validate_upload_id(id: &str) -> Result<()> {
@@ -215,13 +208,13 @@ mod tests {
     async fn test_lock_and_unlock() {
         let (locker, _dir) = create_test_locker().await;
 
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test").unwrap());
 
         let guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        assert!(locker.is_locked("test").await.unwrap());
+        assert!(locker.is_locked("test").unwrap());
 
         drop(guard);
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test").unwrap());
     }
 
     #[tokio::test]
@@ -230,13 +223,13 @@ mod tests {
 
         {
             let _guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-            assert!(locker.is_locked("test").await.unwrap());
+            assert!(locker.is_locked("test").unwrap());
         }
 
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test").unwrap());
 
         let _guard2 = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        assert!(locker.is_locked("test").await.unwrap());
+        assert!(locker.is_locked("test").unwrap());
     }
 
     #[tokio::test]
@@ -277,19 +270,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(locker.is_locked("upload-1").await.unwrap());
-        assert!(locker.is_locked("upload-2").await.unwrap());
+        assert!(locker.is_locked("upload-1").unwrap());
+        assert!(locker.is_locked("upload-2").unwrap());
 
         drop(guard1);
-        assert!(!locker.is_locked("upload-1").await.unwrap());
-        assert!(locker.is_locked("upload-2").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_unlock_nonexistent() {
-        let (locker, _dir) = create_test_locker().await;
-
-        locker.unlock("nonexistent").await.unwrap();
+        assert!(!locker.is_locked("upload-1").unwrap());
+        assert!(locker.is_locked("upload-2").unwrap());
     }
 
     #[tokio::test]
@@ -314,21 +300,6 @@ mod tests {
         let err = locker.try_lock(&"a".repeat(251)).await.unwrap_err();
 
         assert!(matches!(err, Error::InvalidUploadId(_)));
-    }
-
-    #[tokio::test]
-    async fn test_explicit_unlock_releases_held_guard_lock() {
-        let (locker, _dir) = create_test_locker().await;
-
-        let mut guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        assert!(locker.is_locked("test").await.unwrap());
-
-        locker.unlock("test").await.unwrap();
-        guard.disarm();
-
-        assert!(!locker.is_locked("test").await.unwrap());
-        let reacquired = locker.try_lock("test").await.unwrap();
-        assert!(reacquired.is_some());
     }
 
     #[tokio::test]
@@ -360,12 +331,12 @@ mod tests {
         let (locker, dir) = create_test_locker().await;
 
         std::fs::write(dir.path().join("test.lock"), "abandoned").unwrap();
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test").unwrap());
 
         let recovered = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        assert!(locker.is_locked("test").await.unwrap());
+        assert!(locker.is_locked("test").unwrap());
 
         drop(recovered);
-        assert!(!locker.is_locked("test").await.unwrap());
+        assert!(!locker.is_locked("test").unwrap());
     }
 }

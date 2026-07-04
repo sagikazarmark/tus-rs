@@ -9,11 +9,11 @@ use http::HeaderMap;
 use crate::storage::ChunkStream;
 
 /// A stream of request body frames supplied by framework adapters.
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub type BodyStream = Pin<Box<dyn Stream<Item = std::io::Result<BodyFrame>> + Send>>;
 
 /// A stream of request body frames supplied by framework adapters.
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 pub type BodyStream = Pin<Box<dyn Stream<Item = std::io::Result<BodyFrame>>>>;
 
 /// A request body frame observed by a framework adapter.

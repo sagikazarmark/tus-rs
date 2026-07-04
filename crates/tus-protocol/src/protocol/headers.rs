@@ -37,11 +37,11 @@ pub struct Headers {
     pub transfer_encoding: Option<String>,
     /// Host header (direct).
     pub host_header: Option<String>,
-    /// X-Forwarded-Host header (trusted only when
-    /// [`Config::respect_forwarded_headers`] is enabled).
+    /// X-Forwarded-Host header (trusted only when enabled via
+    /// [`Config::with_respect_forwarded_headers`]).
     pub forwarded_host: Option<String>,
-    /// X-Forwarded-Proto header (trusted only when
-    /// [`Config::respect_forwarded_headers`] is enabled).
+    /// X-Forwarded-Proto header (trusted only when enabled via
+    /// [`Config::with_respect_forwarded_headers`]).
     pub forwarded_proto: Option<String>,
 }
 
@@ -133,13 +133,13 @@ impl Headers {
     }
 
     /// Returns the base URL derived from scheme and host, honoring
-    /// [`Config::respect_forwarded_headers`].
+    /// [`Config::respects_forwarded_headers`].
     ///
     /// When forwarded headers are not trusted and no other scheme signal is
     /// available, returns `None`. Callers should fall back to a
     /// relative Location (spec-legal per RFC 7231).
     pub fn base_url(&self, config: &Config) -> Option<String> {
-        let (host, scheme) = if config.uses_forwarded_headers() {
+        let (host, scheme) = if config.respects_forwarded_headers() {
             let host = self
                 .forwarded_host
                 .as_deref()
@@ -262,8 +262,7 @@ pub(crate) fn parse_upload_checksum_value(
         });
     }
 
-    let algorithm = ChecksumAlgorithm::parse(parts[0])
-        .ok_or_else(|| Error::UnsupportedChecksum(parts[0].to_string()))?;
+    let algorithm: ChecksumAlgorithm = parts[0].parse()?;
 
     use base64::Engine;
     let checksum = base64::engine::general_purpose::STANDARD
@@ -488,7 +487,7 @@ mod tests {
             ("x-forwarded-proto", "https"),
         ]);
         let tus = Headers::from_headers(&headers).unwrap();
-        let config = Config::new().respect_forwarded_headers();
+        let config = Config::new().with_respect_forwarded_headers();
         assert_eq!(
             tus.base_url(&config),
             Some("https://public.example".to_string())
@@ -579,7 +578,7 @@ mod tests {
         let tus = Headers::from_headers(&headers).unwrap();
         // Even with forwarded headers trusted, no X-Forwarded-Proto means
         // we refuse to guess the scheme.
-        let config = Config::new().respect_forwarded_headers();
+        let config = Config::new().with_respect_forwarded_headers();
         assert_eq!(tus.base_url(&config), None);
     }
 }

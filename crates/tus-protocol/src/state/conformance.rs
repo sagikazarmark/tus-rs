@@ -386,13 +386,10 @@ where
         .expect("storage handle facts should persist with upload state");
     assert_eq!(retrieved_handle.key(), format!("objects/{partial_id}"));
     assert_eq!(
-        retrieved_handle.get_internal("multipart-upload-id"),
+        retrieved_handle.internal("multipart-upload-id"),
         Some("upload-session-1")
     );
-    assert_eq!(
-        retrieved_handle.get_internal("etag-1"),
-        Some("etag-value-1")
-    );
+    assert_eq!(retrieved_handle.internal("etag-1"), Some("etag-value-1"));
     assert_eq!(
         retrieved
             .metadata()

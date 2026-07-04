@@ -12,15 +12,19 @@ categories.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
-bytes = { workspace = true }
 futures = { workspace = true }
 opendal = { workspace = true }
 tus-protocol = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+bytes = { workspace = true }
 opendal = { workspace = true, features = ["services-fs"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tus-protocol = { workspace = true, features = ["conformance-storage"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

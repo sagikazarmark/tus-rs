@@ -483,8 +483,8 @@ mod tests {
         }
     }
 
-    #[cfg_attr(not(feature = "local-futures"), async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl Storage for TestStorage {
         fn name(&self) -> &'static str {
             "test"
@@ -570,8 +570,8 @@ mod tests {
         }
     }
 
-    #[cfg_attr(not(feature = "local-futures"), async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl StateStore for TestStateStore {
         fn name(&self) -> &'static str {
             "test"
@@ -633,8 +633,8 @@ mod tests {
         }
     }
 
-    #[cfg_attr(not(feature = "local-futures"), async_trait)]
-    #[cfg_attr(feature = "local-futures", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl Locker for TestLocker {
         fn name(&self) -> &'static str {
             "test"
@@ -651,14 +651,6 @@ mod tests {
             }
 
             Ok(Some(LockGuard::new(upload_id)))
-        }
-
-        async fn unlock(&self, _upload_id: &str) -> Result<()> {
-            Ok(())
-        }
-
-        async fn is_locked(&self, upload_id: &str) -> Result<bool> {
-            Ok(self.locked.lock().unwrap().contains(upload_id))
         }
     }
 }

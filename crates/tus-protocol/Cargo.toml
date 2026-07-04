@@ -15,12 +15,12 @@ async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-futures = { workspace = true }
 fs2 = { version = "0.4", optional = true }
+futures = { workspace = true }
 http = { workspace = true }
+percent-encoding = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sync_wrapper = "1"
 thiserror = { workspace = true }
 tracing = "0.1"
 uuid = { workspace = true, features = ["v4"] }
@@ -42,19 +42,14 @@ sha2 = { version = "0.11", optional = true }
 uuid = { workspace = true, features = ["v4", "js"] }
 
 [dev-dependencies]
-proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-tokio-test = { workspace = true }
 
 [features]
 default = []
 
 # Platform features
 native = ["tokio", "tokio-util"]
-# Allows local/single-threaded async runtimes to use non-Send futures and
-# trait implementations. Intended for Cloudflare Workers and similar platforms.
-local-futures = []
 
 # Conformance suites
 conformance-lock = ["tokio/time"]
@@ -91,5 +86,5 @@ full-native = [
 ]
 
 [package.metadata.docs.rs]
-features = ["full-native"]
-no-default-features = true
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
