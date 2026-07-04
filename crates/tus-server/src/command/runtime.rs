@@ -21,9 +21,10 @@ pub(in crate::command) struct CommandRuntime {
 
 // Wraps the two hook executors so TusState's concrete type stays
 // monomorphic regardless of whether the operator configured webhooks.
+// The HTTP executor is boxed because it dwarfs the no-op variant.
 pub(in crate::command) enum ServerHooks {
     Noop(NoopHookExecutor),
-    Http(HttpHookExecutor),
+    Http(Box<HttpHookExecutor>),
 }
 
 #[async_trait]
@@ -100,7 +101,7 @@ pub(in crate::command) fn build_hooks(config: &HookConfig) -> anyhow::Result<Ser
     let executor =
         HttpHookExecutor::new(cfg).context("failed to build HTTP client for hook webhooks")?;
 
-    Ok(ServerHooks::Http(executor))
+    Ok(ServerHooks::Http(Box::new(executor)))
 }
 
 async fn build_backends(

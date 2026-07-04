@@ -1,9 +1,12 @@
 //! File-based locking implementation.
 //!
 //! This locker uses OS advisory locks on per-upload lock files for
-//! coordination between processes on the same filesystem. The lock file may
-//! remain after a process exits, but the OS releases the advisory lock when the
-//! owning file descriptor is closed or the process dies.
+//! coordination between processes on the same filesystem. Lock files are
+//! removed on release (while still holding the advisory lock), so the lock
+//! directory is bounded by in-flight lock activity rather than by every upload
+//! ID ever requested. A release racing with a concurrent contender can leave a
+//! freshly recreated lock file behind; such residue is bounded by concurrent
+//! contention and is reused or removed by the next lock cycle for that ID.
 
 use async_trait::async_trait;
 use fs2::FileExt;
@@ -22,14 +25,11 @@ use crate::error::{Error, Result};
 /// Creates `.lock` files in a specified directory to coordinate access between
 /// multiple processes. The lock file is only a rendezvous point; advisory lock
 /// ownership is held by an open file descriptor captured by [`LockGuard`].
+/// Lock files are unlinked on release while the advisory lock is still held.
 pub struct FileLocker {
     directory: Arc<PathBuf>,
     /// How long to wait between lock attempts.
     retry_interval: Duration,
-    /// Retained for API compatibility. OS advisory locks are released by the
-    /// operating system when the owning process exits, so this implementation
-    /// does not steal locks based on file age.
-    lease_ttl: Duration,
 }
 
 impl FileLocker {
@@ -41,7 +41,6 @@ impl FileLocker {
         Ok(Self {
             directory: Arc::new(directory),
             retry_interval: Duration::from_millis(50),
-            lease_ttl: Duration::from_secs(60),
         })
     }
 
@@ -53,7 +52,6 @@ impl FileLocker {
         Ok(Self {
             directory: Arc::new(directory),
             retry_interval: Duration::from_millis(50),
-            lease_ttl: Duration::from_secs(60),
         })
     }
 
@@ -61,17 +59,6 @@ impl FileLocker {
     #[must_use]
     pub fn with_retry_interval(mut self, interval: Duration) -> Self {
         self.retry_interval = interval;
-        self
-    }
-
-    /// Sets the retained lease TTL value.
-    ///
-    /// OS advisory locks are released when the owning process exits, so this
-    /// implementation does not steal locks based on file age. The setter is
-    /// retained for callers that already configure it.
-    #[must_use]
-    pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
-        self.lease_ttl = ttl;
         self
     }
 
@@ -91,22 +78,91 @@ impl FileLocker {
             .map_err(Error::Io)
     }
 
-    fn release_lock_file(file: File) {
-        let _ = file.unlock();
+    /// Attempts a single non-blocking exclusive acquisition on the lock file.
+    ///
+    /// Returns the locked file on success and `None` while another holder owns
+    /// the advisory lock. Because releases unlink the lock file, a successful
+    /// flock may land on an inode that was already unlinked (or replaced) by a
+    /// concurrent release; such stale acquisitions are detected and retried so
+    /// two holders can never coexist on different inodes of the same path.
+    fn try_acquire(path: &Path) -> Result<Option<File>> {
+        loop {
+            let file = Self::open_lock_file(path)?;
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    if Self::is_current_lock_file(path, &file)? {
+                        return Ok(Some(file));
+                    }
+                    // Stale inode: the file was unlinked/replaced between our
+                    // open and flock. Drop it and race again on the fresh path.
+                    let _ = fs2::FileExt::unlock(&file);
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+                Err(error) => return Err(Error::Io(error)),
+            }
+        }
+    }
+
+    /// Returns whether the locked descriptor still refers to the file at
+    /// `path`.
+    #[cfg(unix)]
+    fn is_current_lock_file(path: &Path, file: &File) -> Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+
+        let held = file.metadata().map_err(Error::Io)?;
+        match std::fs::metadata(path) {
+            Ok(current) => Ok(current.dev() == held.dev() && current.ino() == held.ino()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(Error::Io(error)),
+        }
+    }
+
+    /// Non-unix fallback: inode identity is not portably observable, so
+    /// acquisitions are accepted as-is (releases there also skip the unlink,
+    /// keeping the single-inode invariant).
+    #[cfg(not(unix))]
+    fn is_current_lock_file(_path: &Path, _file: &File) -> Result<bool> {
+        Ok(true)
+    }
+
+    /// Releases a held lock: best-effort unlink of the lock file while the
+    /// exclusive advisory lock is still held, then unlock.
+    ///
+    /// Unlinking under the exclusive lock means a concurrent contender either
+    /// still races on this inode (and then detects the unlink and retries) or
+    /// recreates the file fresh; at worst an empty lock file is recreated,
+    /// which the next cycle reuses or removes.
+    fn release_lock_file(path: &Path, file: File) {
+        #[cfg(unix)]
+        if let Err(error) = std::fs::remove_file(path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(path = %path.display(), %error, "failed to remove lock file on release");
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+
+        let _ = fs2::FileExt::unlock(&file);
     }
 
     /// Reports whether an upload is currently locked.
     ///
-    /// Monitoring/test helper; probes by taking and immediately releasing the
-    /// advisory lock on a fresh descriptor, so the answer may be stale as soon
-    /// as it is returned.
+    /// Monitoring/test helper; probes by attempting to take (and immediately
+    /// releasing) the advisory lock, so the answer may be stale as soon as it
+    /// is returned. A missing lock file means unlocked; the probe never
+    /// creates lock files.
     pub fn is_locked(&self, upload_id: &str) -> Result<bool> {
         let path = self.lock_path(upload_id)?;
-        let file = Self::open_lock_file(&path)?;
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(Error::Io(error)),
+        };
 
         match file.try_lock_exclusive() {
             Ok(()) => {
-                let _ = file.unlock();
+                let _ = fs2::FileExt::unlock(&file);
                 Ok(false)
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
@@ -119,7 +175,6 @@ impl std::fmt::Debug for FileLocker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileLocker")
             .field("directory", &self.directory)
-            .field("lease_ttl", &self.lease_ttl)
             .finish()
     }
 }
@@ -135,15 +190,11 @@ impl Locker for FileLocker {
         let deadline = Instant::now() + timeout;
 
         loop {
-            let file = Self::open_lock_file(&path)?;
-            match file.try_lock_exclusive() {
-                Ok(()) => {
-                    return Ok(LockGuard::with_release(upload_id, move || {
-                        Self::release_lock_file(file);
-                    }));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(Error::Io(error)),
+            if let Some(file) = Self::try_acquire(&path)? {
+                let release_path = path.clone();
+                return Ok(LockGuard::with_release(upload_id, move || {
+                    Self::release_lock_file(&release_path, file);
+                }));
             }
 
             if Instant::now() >= deadline {
@@ -158,14 +209,15 @@ impl Locker for FileLocker {
 
     async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>> {
         let path = self.lock_path(upload_id)?;
-        let file = Self::open_lock_file(&path)?;
 
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(Some(LockGuard::with_release(upload_id, move || {
-                Self::release_lock_file(file);
-            }))),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(Error::Io(error)),
+        match Self::try_acquire(&path)? {
+            Some(file) => {
+                let release_path = path.clone();
+                Ok(Some(LockGuard::with_release(upload_id, move || {
+                    Self::release_lock_file(&release_path, file);
+                })))
+            }
+            None => Ok(None),
         }
     }
 }
@@ -189,7 +241,6 @@ const MAX_LOCK_FILE_NAME_LEN: usize = 255;
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use tokio::time::sleep;
 
     async fn create_test_locker() -> (FileLocker, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -302,28 +353,44 @@ mod tests {
         assert!(matches!(err, Error::InvalidUploadId(_)));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn test_active_lock_is_not_stolen_before_ttl() {
-        let (locker, _dir) = create_test_locker().await;
-        let locker = locker.with_lease_ttl(Duration::from_secs(1));
+    async fn release_removes_lock_file() {
+        let (locker, dir) = create_test_locker().await;
+        let lock_path = dir.path().join("test.lock");
 
-        let _guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        sleep(Duration::from_millis(25)).await;
+        let guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
+        assert!(lock_path.exists());
 
-        let guard = locker.try_lock("test").await.unwrap();
-        assert!(guard.is_none());
+        drop(guard);
+        assert!(!lock_path.exists());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn test_active_lock_is_not_stolen_after_ttl() {
-        let (locker, _dir) = create_test_locker().await;
-        let locker = locker.with_lease_ttl(Duration::from_millis(50));
+    async fn probing_never_creates_lock_files() {
+        let (locker, dir) = create_test_locker().await;
 
-        let _guard = locker.lock("test", Duration::from_secs(1)).await.unwrap();
-        sleep(Duration::from_millis(125)).await;
+        assert!(!locker.is_locked("probe-only").unwrap());
+        assert!(!dir.path().join("probe-only.lock").exists());
+    }
 
-        let guard = locker.try_lock("test").await.unwrap();
-        assert!(guard.is_none());
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lock_release_cycles_leave_directory_empty() {
+        let (locker, dir) = create_test_locker().await;
+
+        for i in 0..32 {
+            let id = format!("upload-{i}");
+            let guard = locker.lock(&id, Duration::from_secs(1)).await.unwrap();
+            drop(guard);
+        }
+
+        let residue: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(residue.is_empty(), "leftover lock files: {residue:?}");
     }
 
     #[tokio::test]

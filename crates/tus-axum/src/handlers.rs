@@ -16,11 +16,11 @@ use crate::extractors::{Headers, TusBody, UploadId};
 use crate::response::TusResponse;
 use crate::state::TusProtocol;
 
-pub use get::handle_get;
-pub use method_override::handle_post_with_override;
+pub(crate) use get::handle_get;
+pub(crate) use method_override::handle_post_with_override;
 
 /// Handles OPTIONS requests.
-pub async fn handle_options<S, I, L, H>(
+pub(crate) async fn handle_options<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
 ) -> TusResponse
 where
@@ -29,11 +29,11 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    TusResponse(protocol.options())
+    TusResponse(protocol.handle().options())
 }
 
 /// Handles POST requests to create new uploads.
-pub async fn handle_post<S, I, L, H>(
+pub(crate) async fn handle_post<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     Headers(headers): Headers,
     body: TusBody,
@@ -44,12 +44,16 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    Ok(protocol.post(headers, body.into_body()).await?.into())
+    Ok(protocol
+        .handle()
+        .post(headers, body.into_body())
+        .await?
+        .into())
 }
 
 /// Handles HEAD requests. The `Headers` extractor validates the
 /// `Tus-Resumable` header; its value is otherwise unused here.
-pub async fn handle_head<S, I, L, H>(
+pub(crate) async fn handle_head<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     Headers(_): Headers,
     UploadId(upload_id): UploadId,
@@ -60,11 +64,11 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    Ok(protocol.head(&upload_id).await?.into())
+    Ok(protocol.handle().head(&upload_id).await?.into())
 }
 
 /// Handles PATCH requests to upload data.
-pub async fn handle_patch<S, I, L, H>(
+pub(crate) async fn handle_patch<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     Headers(headers): Headers,
     UploadId(upload_id): UploadId,
@@ -77,6 +81,7 @@ where
     H: HookExecutor + Send + Sync + 'static,
 {
     let response = protocol
+        .handle()
         .patch(headers, &upload_id, body.into_body())
         .await?;
 
@@ -84,7 +89,7 @@ where
 }
 
 /// Handles DELETE requests to terminate uploads.
-pub async fn handle_delete<S, I, L, H>(
+pub(crate) async fn handle_delete<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     Headers(headers): Headers,
     UploadId(upload_id): UploadId,
@@ -95,5 +100,5 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    Ok(protocol.delete(&headers, &upload_id).await?.into())
+    Ok(protocol.handle().delete(headers, &upload_id).await?.into())
 }

@@ -43,6 +43,11 @@ impl<'a> DownloadRequest<'a> {
 }
 
 /// Streaming response produced by the non-standard download helper.
+///
+/// Construct with [`DownloadResponse::new`]. The struct is
+/// `#[non_exhaustive]` so future response facts can be added without breaking
+/// adapters; fields stay public for reading and destructuring with `..`.
+#[non_exhaustive]
 pub struct DownloadResponse {
     /// HTTP status code.
     pub status: StatusCode,
@@ -50,6 +55,28 @@ pub struct DownloadResponse {
     pub headers: HeaderMap,
     /// Streaming response body.
     pub body: ByteStream,
+}
+
+impl DownloadResponse {
+    /// Creates a download response from its parts.
+    #[must_use]
+    pub fn new(status: StatusCode, headers: HeaderMap, body: ByteStream) -> Self {
+        Self {
+            status,
+            headers,
+            body,
+        }
+    }
+}
+
+impl std::fmt::Debug for DownloadResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DownloadResponse")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field("body", &"ByteStream(..)")
+            .finish()
+    }
 }
 
 impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
@@ -78,6 +105,15 @@ where
         let hook_contexts =
             HookContextBuilder::new(self.config, HookRequestFacts::get(request.upload_id));
         let upload_id = request.upload_id.as_str();
+
+        // Cheap unlocked existence pre-check (DoS guard, not authoritative):
+        // requests for unknown IDs must not exercise the locker, which may
+        // allocate per-ID resources. The authoritative state load below still
+        // happens under the lock.
+        if self.state_store.get(upload_id).await?.is_none() {
+            return Err(Error::NotFound(upload_id.to_string()));
+        }
+
         let _guard = self
             .locker
             .lock(upload_id, self.config.lock_timeout())
@@ -132,11 +168,7 @@ where
             (StatusCode::OK, self.storage.stream(&handle).await?)
         };
 
-        Ok(DownloadResponse {
-            status,
-            headers,
-            body,
-        })
+        Ok(DownloadResponse::new(status, headers, body))
     }
 }
 
@@ -267,12 +299,12 @@ mod tests {
         let handle = storage.create(state.id()).await.unwrap();
         state.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle().unwrap(),
-                expected_offset: state.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(bytes)),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                state.require_storage_handle().unwrap(),
+                state.offset(),
+                ChunkStream::from_bytes(Bytes::from_static(bytes)),
+                true,
+            ))
             .await
             .unwrap();
         state.set_storage_handle(handle);
@@ -288,12 +320,12 @@ mod tests {
             .length()
             .is_some_and(|length| projected_offset == length);
         let handle = storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle().unwrap(),
-                expected_offset: state.offset(),
-                data: ChunkStream::from_bytes(bytes),
+            .append(AppendRequest::new(
+                state.require_storage_handle().unwrap(),
+                state.offset(),
+                ChunkStream::from_bytes(bytes),
                 completes_upload,
-            })
+            ))
             .await
             .unwrap();
         state.set_storage_handle(handle);
@@ -307,6 +339,57 @@ mod tests {
             body.extend_from_slice(&chunk.expect("download stream should succeed"));
         }
         Bytes::from(body)
+    }
+
+    /// Locker that fails every call; used to prove handlers do not exercise
+    /// the locker for unknown upload IDs.
+    struct RejectingLocker;
+
+    #[async_trait::async_trait]
+    impl crate::locking::Locker for RejectingLocker {
+        fn name(&self) -> &'static str {
+            "rejecting"
+        }
+
+        async fn lock(
+            &self,
+            _upload_id: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<crate::locking::LockGuard, crate::Error> {
+            Err(crate::Error::Internal(
+                "locker must not be exercised".to_string(),
+            ))
+        }
+
+        async fn try_lock(
+            &self,
+            _upload_id: &str,
+        ) -> Result<Option<crate::locking::LockGuard>, crate::Error> {
+            Err(crate::Error::Internal(
+                "locker must not be exercised".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn download_of_unknown_upload_does_not_touch_locker() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id = "missing".parse().unwrap();
+
+        let err = Protocol::new(
+            &Config::default(),
+            &storage,
+            &store,
+            &RejectingLocker,
+            &hooks,
+        )
+        .download(DownloadRequest::new(&upload_id))
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, crate::Error::NotFound(_)));
     }
 
     #[tokio::test]

@@ -111,13 +111,19 @@ impl Drop for ServerProcess {
 /// `--request-body-read-timeout` value; `0` is the documented
 /// opt-out that disables the timeout entirely.
 fn spawn_server(timeout_secs: u64) -> ServerProcess {
+    spawn_server_with(timeout_secs, None)
+}
+
+/// Like [`spawn_server`], additionally passing
+/// `--request-header-read-timeout` when `header_timeout_secs` is set.
+fn spawn_server_with(timeout_secs: u64, header_timeout_secs: Option<u64>) -> ServerProcess {
     let root = tempfile::tempdir().unwrap();
     let state_dir: PathBuf = root.path().join("state");
 
     for _ in 0..10 {
         let reserved_port = reserve_port();
         let addr = format!("127.0.0.1:{reserved_port}");
-        let args = vec![
+        let mut args = vec![
             "serve".to_string(),
             "--addr".to_string(),
             addr.clone(),
@@ -130,6 +136,10 @@ fn spawn_server(timeout_secs: u64) -> ServerProcess {
             "--request-body-read-timeout".into(),
             timeout_secs.to_string(),
         ];
+        if let Some(header_timeout_secs) = header_timeout_secs {
+            args.push("--request-header-read-timeout".into());
+            args.push(header_timeout_secs.to_string());
+        }
 
         let port_token = reserved_port.into_token();
         let mut child = Command::new(server_bin())
@@ -333,6 +343,66 @@ async fn slow_body_times_out_when_request_body_read_timeout_is_set() {
         elapsed < Duration::from_secs(10),
         "server eventually closed the connection but took {elapsed:?} — \
          expected close within ~5 s of the timeout firing"
+    );
+}
+
+/// Header-phase slowloris: a client that connects and then trickles
+/// (or never finishes) the request *headers* must be torn down by the
+/// server's header-read timeout. This is enforced by hyper's
+/// `header_read_timeout`, which only works because the serve loop
+/// installs a `TokioTimer` — without a timer hyper silently disables
+/// the timeout.
+#[tokio::test]
+async fn slow_headers_time_out_when_header_read_timeout_is_set() {
+    let server = spawn_server_with(60, Some(1));
+    wait_for_ready(&server).await;
+
+    let stream = TcpStream::connect(&server.addr).await.unwrap();
+    let (mut read_half, mut write_half) = stream.into_split();
+
+    // Send an incomplete header section, then dribble one byte at a
+    // time slower than the 1 s header timeout.
+    write_half
+        .write_all(b"PATCH /files/whatever HTTP/1.1\r\nHost: localhost\r\nX-Slow: ")
+        .await
+        .unwrap();
+    write_half.flush().await.unwrap();
+
+    let start = Instant::now();
+    let closed = tokio::time::timeout(Duration::from_secs(10), async move {
+        let mut buf = [0u8; 256];
+        loop {
+            // Keep the header section forever unterminated.
+            tokio::select! {
+                read = read_half.read(&mut buf) => {
+                    match read {
+                        Ok(0) | Err(_) => return true,
+                        Ok(_) => continue,
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                    if write_half.write_all(b"x").await.is_err()
+                        || write_half.flush().await.is_err()
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    let elapsed = start.elapsed();
+
+    assert!(
+        closed,
+        "server did not close the header-trickling connection within 10 s — \
+         --request-header-read-timeout=1 failed to enforce"
+    );
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "server eventually closed the connection but took {elapsed:?} — \
+         expected close within a few seconds of the 1 s header timeout firing"
     );
 }
 

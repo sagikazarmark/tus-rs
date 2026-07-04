@@ -1,26 +1,29 @@
 //! In-memory locking implementation.
 //!
-//! This locker uses in-process mutexes for coordination. Suitable for
+//! This locker uses in-process synchronization for coordination. Suitable for
 //! single-process use but does not work across multiple processes.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::Notify;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 
 use super::{LockGuard, Locker};
 use crate::error::{Error, Result};
 
 /// In-memory locker using tokio synchronization primitives.
 ///
-/// Provides upload-level locking within a single process. Uses async
-/// notification to efficiently wait for locks without busy-polling.
+/// Provides upload-level locking within a single process. Each upload ID maps
+/// to a single-permit [`Semaphore`], so waiters are queued (FIFO) inside the
+/// semaphore itself and a release always wakes the next waiter — there is no
+/// wakeup window to lose between checking the lock and starting to wait.
 ///
-/// This implementation uses a `std::sync::Mutex` internally so that locks
-/// can be released synchronously when the `LockGuard` is dropped.
+/// Entries are removed from the internal map as soon as an upload ID has no
+/// holder and no waiters, so the map does not grow with the set of requested
+/// IDs.
 pub struct MemoryLocker {
-    locks: Arc<std::sync::Mutex<HashMap<String, LockEntry>>>,
+    locks: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
 }
 
 impl MemoryLocker {
@@ -31,17 +34,6 @@ impl MemoryLocker {
         }
     }
 
-    /// Internal method to release a lock synchronously.
-    /// This is called from the LockGuard's Drop implementation.
-    fn release_lock(locks: &std::sync::Mutex<HashMap<String, LockEntry>>, upload_id: &str) {
-        if let Ok(mut guard) = locks.lock()
-            && let Some(entry) = guard.get_mut(upload_id)
-        {
-            entry.locked = false;
-            entry.notify.notify_waiters();
-        }
-    }
-
     /// Reports whether an upload is currently locked.
     ///
     /// Monitoring/test helper; the answer may be stale as soon as it is
@@ -49,8 +41,43 @@ impl MemoryLocker {
     pub fn is_locked(&self, upload_id: &str) -> bool {
         self.locks
             .lock()
-            .map(|locks| locks.get(upload_id).is_some_and(|entry| entry.locked))
+            .map(|locks| {
+                locks
+                    .get(upload_id)
+                    .is_some_and(|semaphore| semaphore.available_permits() == 0)
+            })
             .unwrap_or(false)
+    }
+
+    /// Returns the semaphore for an upload ID, creating the entry on demand.
+    fn entry(&self, upload_id: &str) -> Result<Arc<Semaphore>> {
+        let mut locks = self
+            .locks
+            .lock()
+            .map_err(|_| Error::Internal("memory locker mutex poisoned".to_string()))?;
+
+        Ok(Arc::clone(
+            locks
+                .entry(upload_id.to_string())
+                .or_insert_with(|| Arc::new(Semaphore::new(1))),
+        ))
+    }
+
+    /// Removes the map entry for an upload ID when it is idle.
+    ///
+    /// The caller must have dropped every `Arc<Semaphore>` clone it held for
+    /// this ID before calling. Under the map mutex, a strong count of one means
+    /// the map holds the only reference (no holder, no waiters), so removal
+    /// cannot strand anyone: new interest can only be registered through the
+    /// map, which requires the same mutex.
+    fn remove_if_idle(locks: &std::sync::Mutex<HashMap<String, Arc<Semaphore>>>, upload_id: &str) {
+        if let Ok(mut locks) = locks.lock()
+            && let Some(entry) = locks.get(upload_id)
+            && Arc::strong_count(entry) == 1
+            && entry.available_permits() == 1
+        {
+            locks.remove(upload_id);
+        }
     }
 }
 
@@ -73,82 +100,58 @@ impl Locker for MemoryLocker {
     }
 
     async fn lock(&self, upload_id: &str, timeout: Duration) -> Result<LockGuard> {
-        let deadline = Instant::now() + timeout;
+        let semaphore = self.entry(upload_id)?;
 
-        loop {
-            // Try to acquire the lock
-            let notify = {
-                let mut locks = self
-                    .locks
-                    .lock()
-                    .map_err(|_| Error::LockTimeout(upload_id.to_string()))?;
-                let entry = locks.entry(upload_id.to_string()).or_default();
-
-                if !entry.locked {
-                    entry.locked = true;
-                    // Create guard with release callback that will unlock when dropped
-                    let locks_clone = Arc::clone(&self.locks);
-                    let id = upload_id.to_string();
-
-                    return Ok(LockGuard::with_release(upload_id, move || {
-                        Self::release_lock(&locks_clone, &id);
-                    }));
+        // `acquire_owned` registers the waiter inside the semaphore before any
+        // release can happen, so a concurrent release is never lost: it either
+        // hands the permit to this waiter or leaves the permit available for
+        // the acquire to take immediately.
+        let permit =
+            match tokio::time::timeout(timeout, Arc::clone(&semaphore).acquire_owned()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_closed)) => {
+                    drop(semaphore);
+                    Self::remove_if_idle(&self.locks, upload_id);
+                    return Err(Error::Internal(format!(
+                        "memory locker semaphore closed for upload: {upload_id}"
+                    )));
                 }
-
-                // Lock is held, get notify handle for waiting
-                Arc::clone(&entry.notify)
+                Err(_elapsed) => {
+                    drop(semaphore);
+                    Self::remove_if_idle(&self.locks, upload_id);
+                    return Err(Error::LockTimeout(upload_id.to_string()));
+                }
             };
+        drop(semaphore);
 
-            // Check timeout
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::LockTimeout(upload_id.to_string()));
-            }
-
-            // Wait for notification or timeout
-            let wait_result = tokio::time::timeout(remaining, notify.notified()).await;
-            if wait_result.is_err() {
-                return Err(Error::LockTimeout(upload_id.to_string()));
-            }
-            // Loop and try again
-        }
+        let locks = Arc::clone(&self.locks);
+        let id = upload_id.to_string();
+        Ok(LockGuard::with_release(upload_id, move || {
+            // Dropping the permit releases the lock (and drops the permit's
+            // own semaphore reference); then the idle entry can be reaped.
+            drop(permit);
+            Self::remove_if_idle(&locks, &id);
+        }))
     }
 
     async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>> {
-        let mut locks = self
-            .locks
-            .lock()
-            .map_err(|_| Error::LockTimeout(upload_id.to_string()))?;
-        let entry = locks.entry(upload_id.to_string()).or_default();
+        let semaphore = self.entry(upload_id)?;
 
-        if !entry.locked {
-            entry.locked = true;
-            // Create guard with release callback
-            let locks_clone = Arc::clone(&self.locks);
-            let id = upload_id.to_string();
-
-            Ok(Some(LockGuard::with_release(upload_id, move || {
-                Self::release_lock(&locks_clone, &id);
-            })))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
-/// Entry for a single upload's lock state.
-struct LockEntry {
-    /// Whether the lock is currently held.
-    locked: bool,
-    /// Notification for waiters when the lock is released.
-    notify: Arc<Notify>,
-}
-
-impl Default for LockEntry {
-    fn default() -> Self {
-        Self {
-            locked: false,
-            notify: Arc::new(Notify::new()),
+        match Arc::clone(&semaphore).try_acquire_owned() {
+            Ok(permit) => {
+                drop(semaphore);
+                let locks = Arc::clone(&self.locks);
+                let id = upload_id.to_string();
+                Ok(Some(LockGuard::with_release(upload_id, move || {
+                    drop(permit);
+                    Self::remove_if_idle(&locks, &id);
+                })))
+            }
+            Err(_) => {
+                drop(semaphore);
+                Self::remove_if_idle(&self.locks, upload_id);
+                Ok(None)
+            }
         }
     }
 }
@@ -158,6 +161,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::time::sleep;
+
+    fn entry_count(locker: &MemoryLocker) -> usize {
+        locker.locks.lock().unwrap().len()
+    }
 
     #[tokio::test]
     async fn locker_conformance() {
@@ -278,5 +285,92 @@ mod tests {
         drop(guard1);
         assert!(!locker.is_locked("upload-1"));
         assert!(locker.is_locked("upload-2"));
+    }
+
+    /// Regression test for the lost-wakeup race in the old Notify-based
+    /// implementation: a release between a waiter registering interest and
+    /// starting to wait was dropped, leaving the waiter to sleep until the
+    /// full lock timeout and then fail with `LockTimeout` even though the
+    /// lock was free.
+    ///
+    /// With heavy contention and short hold times, every acquisition must
+    /// succeed well within the (generous) timeout. Under the old
+    /// implementation this test failed within a few hundred iterations.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn contended_lock_release_cycles_never_time_out_while_lock_is_free() {
+        const TASKS: usize = 8;
+        const ITERATIONS: usize = 500;
+
+        let locker = Arc::new(MemoryLocker::new());
+
+        let handles: Vec<_> = (0..TASKS)
+            .map(|_| {
+                let locker = Arc::clone(&locker);
+                tokio::spawn(async move {
+                    for _ in 0..ITERATIONS {
+                        // Locks are only ever held momentarily, so a timeout
+                        // here means a wakeup was lost, not real contention.
+                        let guard = locker
+                            .lock("contended", Duration::from_secs(5))
+                            .await
+                            .expect("lock must not time out while locks are only held briefly");
+                        drop(guard);
+                        tokio::task::yield_now().await;
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert!(!locker.is_locked("contended"));
+        assert_eq!(entry_count(&locker), 0);
+    }
+
+    #[tokio::test]
+    async fn lock_release_removes_map_entries() {
+        let locker = MemoryLocker::new();
+
+        for i in 0..64 {
+            let id = format!("upload-{i}-{}", uuid::Uuid::new_v4().simple());
+            let guard = locker.lock(&id, Duration::from_secs(1)).await.unwrap();
+            drop(guard);
+        }
+
+        assert_eq!(entry_count(&locker), 0);
+    }
+
+    #[tokio::test]
+    async fn try_lock_of_missing_id_leaves_no_map_entry_behind() {
+        let locker = MemoryLocker::new();
+
+        let guard = locker.try_lock("probe").await.unwrap();
+        assert_eq!(entry_count(&locker), 1);
+        drop(guard);
+        assert_eq!(entry_count(&locker), 0);
+
+        // A failed try_lock against a held lock must not leak either.
+        let _held = locker.lock("held", Duration::from_secs(1)).await.unwrap();
+        let missed = locker.try_lock("held").await.unwrap();
+        assert!(missed.is_none());
+        drop(_held);
+        assert_eq!(entry_count(&locker), 0);
+    }
+
+    #[tokio::test]
+    async fn timed_out_waiter_does_not_remove_entry_held_by_owner() {
+        let locker = MemoryLocker::new();
+
+        let guard = locker.lock("test", Duration::from_secs(10)).await.unwrap();
+        let result = locker.lock("test", Duration::from_millis(20)).await;
+        assert!(matches!(result, Err(Error::LockTimeout(_))));
+
+        // The holder is unaffected and the entry is reaped on its release.
+        assert!(locker.is_locked("test"));
+        drop(guard);
+        assert!(!locker.is_locked("test"));
+        assert_eq!(entry_count(&locker), 0);
     }
 }

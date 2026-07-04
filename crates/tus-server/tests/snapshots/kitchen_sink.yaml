@@ -35,6 +35,7 @@ auth_token:
 
 max_request_body_bytes: 1073741824
 request_body_read_timeout: 60
+request_header_read_timeout: 30
 
 log_format: "text"
 

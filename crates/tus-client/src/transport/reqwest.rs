@@ -93,7 +93,7 @@ impl Transport for ReqwestTransport {
                 trailers.insert(
                     trailer_name.clone(),
                     HeaderValue::from_str(&trailer_value).map_err(|_| {
-                        Error::Transport(format!(
+                        Error::transport_permanent(format!(
                             "invalid trailer value for {}",
                             trailer_name.as_str()
                         ))
@@ -108,8 +108,8 @@ impl Transport for ReqwestTransport {
             }
             #[cfg(target_arch = "wasm32")]
             TransportBody::BytesWithTrailer { .. } => {
-                return Err(Error::TransportPermanent(
-                    "reqwest transport does not support request trailers on wasm32".to_string(),
+                return Err(Error::transport_permanent(
+                    "reqwest transport does not support request trailers on wasm32",
                 ));
             }
         };
@@ -117,14 +117,35 @@ impl Transport for ReqwestTransport {
         let response = send_request(builder).await?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
-        let body = response.bytes().await?.to_vec();
+        let body = response.bytes().await.map_err(reqwest_error)?.to_vec();
 
         let mut response = http::Response::builder()
             .status(status)
             .body(body)
-            .map_err(|err| Error::Transport(format!("failed to build response: {err}")))?;
+            .map_err(|err| Error::transport(format!("failed to build response: {err}")))?;
         *response.headers_mut() = headers;
         Ok(response)
+    }
+}
+
+/// Maps a reqwest error into [`Error::Transport`], preserving the error as
+/// the source and classifying its retryability.
+///
+/// Mid-transfer connection resets surface as request/body errors, not
+/// `is_connect()` failures, so anything short of a deterministic
+/// request-construction (builder) or redirect-policy error is worth
+/// retrying for a resumable upload. Browser `fetch` reports dropped
+/// connections as generic request errors, so on wasm anything short of a
+/// builder bug is retryable.
+fn reqwest_error(error: ::reqwest::Error) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    let retryable = !(error.is_builder() || error.is_redirect());
+    #[cfg(target_arch = "wasm32")]
+    let retryable = !error.is_builder();
+
+    Error::Transport {
+        source: Box::new(error),
+        retryable,
     }
 }
 
@@ -155,16 +176,17 @@ async fn send_request(builder: reqwest_middleware::RequestBuilder) -> Result<::r
 
 #[cfg(not(feature = "transport-reqwest-middleware"))]
 async fn send_request(builder: ::reqwest::RequestBuilder) -> Result<::reqwest::Response> {
-    Ok(builder.send().await?)
+    builder.send().await.map_err(reqwest_error)
 }
 
 #[cfg(feature = "transport-reqwest-middleware")]
 fn reqwest_middleware_error(error: reqwest_middleware::Error) -> Error {
     match error {
-        reqwest_middleware::Error::Reqwest(error) => Error::Reqwest(error),
-        reqwest_middleware::Error::Middleware(error) => {
-            Error::Transport(format!("reqwest middleware failed: {error}"))
-        }
+        reqwest_middleware::Error::Reqwest(error) => reqwest_error(error),
+        // Middleware failures are opaque (`anyhow::Error`), so they get the
+        // benefit of the doubt: retryable, like other generic transport
+        // failures.
+        reqwest_middleware::Error::Middleware(error) => Error::transport(error),
     }
 }
 

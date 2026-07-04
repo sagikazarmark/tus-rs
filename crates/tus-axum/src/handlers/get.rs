@@ -1,19 +1,20 @@
 //! Axum adapter for download GET requests.
 
-use axum::{body::Body, extract::State, response::Response};
-use http::{HeaderMap, header};
+use axum::{body::Body, extract::State, response::IntoResponse, response::Response};
+use http::{HeaderMap, HeaderValue, header};
 
 use tus_protocol::{DownloadRequest, HookExecutor, Locker, StateStore, Storage, StorageReader};
 
 use crate::error::Error;
 use crate::extractors::UploadId;
+use crate::router::UPLOAD_ALLOW;
 use crate::state::TusProtocol;
 
 /// Handles GET requests that download an uploaded file.
 ///
 /// This is a native-server convenience endpoint, not part of the core tus
 /// upload protocol. It is available unless disabled in [`tus_protocol::Config`].
-pub async fn handle_get<S, I, L, H>(
+pub(crate) async fn handle_get<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     headers: HeaderMap,
     UploadId(upload_id): UploadId,
@@ -36,14 +37,30 @@ where
         })
         .transpose()?;
 
-    let response = protocol
+    let response = match protocol
+        .handle()
         .download(DownloadRequest::new(&upload_id).with_range(range))
-        .await?;
+        .await
+    {
+        Ok(response) => response,
+        // Downloads disabled in config: RFC 9110 requires 405 responses to
+        // carry an `Allow` header. GET is excluded because the config
+        // rejects it even though the route is registered.
+        Err(err @ tus_protocol::Error::MethodNotAllowed(_)) => {
+            let mut response = Error::from(err).into_response();
+            response
+                .headers_mut()
+                .insert(header::ALLOW, HeaderValue::from_static(UPLOAD_ALLOW));
+            return Ok(response);
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     let tus_protocol::DownloadResponse {
         status,
         headers,
         body,
+        ..
     } = response;
 
     let mut builder = Response::builder().status(status);

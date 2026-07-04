@@ -390,12 +390,6 @@ impl UploadState {
     }
 }
 
-impl Default for UploadState {
-    fn default() -> Self {
-        Self::new_random()
-    }
-}
-
 /// User-provided upload metadata keyed by TUS metadata name.
 ///
 /// This type intentionally hides its internal map representation so the crate

@@ -60,7 +60,20 @@ where
 
     /// Returns the configuration.
     pub fn config(&self) -> &Config {
-        self.protocol.config()
+        self.protocol.handle().config()
+    }
+}
+
+// Manual Debug implementation - the backend type parameters need not be Debug.
+impl<S, I, L, H> std::fmt::Debug for TusState<S, I, L, H>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TusState").finish_non_exhaustive()
     }
 }
 
@@ -104,19 +117,27 @@ where
     pub fn new(handle: ProtocolHandle<S, I, L, H>) -> Self {
         Self { handle }
     }
+
+    /// Returns the wrapped [`ProtocolHandle`].
+    ///
+    /// This is an explicit accessor rather than a `Deref` impl so that
+    /// `TusProtocol` does not masquerade as a `ProtocolHandle`; call protocol
+    /// operations as `protocol.handle().patch(...)`.
+    pub fn handle(&self) -> &ProtocolHandle<S, I, L, H> {
+        &self.handle
+    }
 }
 
-impl<S, I, L, H> std::ops::Deref for TusProtocol<S, I, L, H>
+// Manual Debug implementation - the backend type parameters need not be Debug.
+impl<S, I, L, H> std::fmt::Debug for TusProtocol<S, I, L, H>
 where
     S: Storage,
     I: StateStore,
     L: Locker,
     H: HookExecutor,
 {
-    type Target = ProtocolHandle<S, I, L, H>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.handle
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TusProtocol").finish_non_exhaustive()
     }
 }
 
@@ -204,24 +225,24 @@ mod tests {
         let clone_protocol = TusProtocol::from_ref(&clone);
 
         assert!(Arc::ptr_eq(
-            &protocol.config_arc(),
-            &clone_protocol.config_arc()
+            &protocol.handle().config_arc(),
+            &clone_protocol.handle().config_arc()
         ));
         assert!(Arc::ptr_eq(
-            &protocol.storage_arc(),
-            &clone_protocol.storage_arc()
+            &protocol.handle().storage_arc(),
+            &clone_protocol.handle().storage_arc()
         ));
         assert!(Arc::ptr_eq(
-            &protocol.state_store_arc(),
-            &clone_protocol.state_store_arc()
+            &protocol.handle().state_store_arc(),
+            &clone_protocol.handle().state_store_arc()
         ));
         assert!(Arc::ptr_eq(
-            &protocol.locker_arc(),
-            &clone_protocol.locker_arc()
+            &protocol.handle().locker_arc(),
+            &clone_protocol.handle().locker_arc()
         ));
         assert!(Arc::ptr_eq(
-            &protocol.hooks_arc(),
-            &clone_protocol.hooks_arc()
+            &protocol.handle().hooks_arc(),
+            &clone_protocol.handle().hooks_arc()
         ));
     }
 
@@ -232,14 +253,26 @@ mod tests {
         let protocol = TusProtocol::from_ref(&state);
         let clone = TusProtocol::from_ref(&state);
 
-        assert!(Arc::ptr_eq(&protocol.config_arc(), &clone.config_arc()));
-        assert!(Arc::ptr_eq(&protocol.storage_arc(), &clone.storage_arc()));
         assert!(Arc::ptr_eq(
-            &protocol.state_store_arc(),
-            &clone.state_store_arc()
+            &protocol.handle().config_arc(),
+            &clone.handle().config_arc()
         ));
-        assert!(Arc::ptr_eq(&protocol.locker_arc(), &clone.locker_arc()));
-        assert!(Arc::ptr_eq(&protocol.hooks_arc(), &clone.hooks_arc()));
+        assert!(Arc::ptr_eq(
+            &protocol.handle().storage_arc(),
+            &clone.handle().storage_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &protocol.handle().state_store_arc(),
+            &clone.handle().state_store_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &protocol.handle().locker_arc(),
+            &clone.handle().locker_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &protocol.handle().hooks_arc(),
+            &clone.handle().hooks_arc()
+        ));
     }
 
     #[test]
@@ -254,7 +287,7 @@ mod tests {
             Arc::new(NoopHookExecutor::new()),
         );
         let state = TusState::new(handle);
-        let state_config = TusProtocol::from_ref(&state).config_arc();
+        let state_config = TusProtocol::from_ref(&state).handle().config_arc();
         assert!(Arc::ptr_eq(&state_config, &outside));
     }
 }

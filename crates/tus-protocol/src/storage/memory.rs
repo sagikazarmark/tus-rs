@@ -231,24 +231,14 @@ mod tests {
         // Append
         let data = ChunkStream::from_bytes(Bytes::from("hello "));
         handle = storage
-            .append(AppendRequest {
-                handle,
-                expected_offset: 0,
-                data,
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(handle, 0, data, false))
             .await
             .unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), Some(6));
 
         let data2 = ChunkStream::from_bytes(Bytes::from("world"));
         handle = storage
-            .append(AppendRequest {
-                handle,
-                expected_offset: 6,
-                data: data2,
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(handle, 6, data2, true))
             .await
             .unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
@@ -264,12 +254,12 @@ mod tests {
 
         let handle = storage.create("test-2").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("test data")),
-                completes_upload: true,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("test data")),
+                true,
+            ))
             .await
             .unwrap();
 
@@ -285,33 +275,30 @@ mod tests {
         // Create parts
         let part1 = storage.create("part-1").await.unwrap();
         let part1 = storage
-            .append(AppendRequest {
-                handle: part1,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("Hello ")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part1,
+                0,
+                ChunkStream::from_bytes(Bytes::from("Hello ")),
+                true,
+            ))
             .await
             .unwrap();
 
         let part2 = storage.create("part-2").await.unwrap();
         let part2 = storage
-            .append(AppendRequest {
-                handle: part2,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("World")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part2,
+                0,
+                ChunkStream::from_bytes(Bytes::from("World")),
+                true,
+            ))
             .await
             .unwrap();
 
         // Create target and concat
         let target = storage.create("final").await.unwrap();
         let target = storage
-            .concat(ConcatRequest {
-                target,
-                parts: vec![part1, part2],
-            })
+            .concat(ConcatRequest::new(target, vec![part1, part2]))
             .await
             .unwrap();
 
@@ -339,12 +326,12 @@ mod tests {
         assert_eq!(storage.size(&handle).await.unwrap(), Some(0));
 
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("12345")),
-                completes_upload: true,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("12345")),
+                true,
+            ))
             .await
             .unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
@@ -355,22 +342,19 @@ mod tests {
         let storage = MemoryStorage::new();
         let part = storage.create("part-internals").await.unwrap();
         let part = storage
-            .append(AppendRequest {
-                handle: part,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("part")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part,
+                0,
+                ChunkStream::from_bytes(Bytes::from("part")),
+                true,
+            ))
             .await
             .unwrap();
         let mut target = storage.create("target-internals").await.unwrap();
         target.set_internal("target_fact", "keep-me");
 
         let target = storage
-            .concat(ConcatRequest {
-                target,
-                parts: vec![part],
-            })
+            .concat(ConcatRequest::new(target, vec![part]))
             .await
             .unwrap();
 
@@ -399,12 +383,12 @@ mod tests {
 
         // First PATCH commits cleanly.
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("intact ")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("intact ")),
+                false,
+            ))
             .await
             .unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), Some(7));
@@ -424,12 +408,12 @@ mod tests {
             Ok(Bytes::from("...trailer-that-must-not-commit")),
         ]));
         let err = storage
-            .append(AppendRequest {
-                handle: handle.clone(),
-                expected_offset: 7,
-                data: ChunkStream::from_stream(stream),
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(
+                handle.clone(),
+                7,
+                ChunkStream::from_stream(stream),
+                false,
+            ))
             .await
             .unwrap_err();
         assert!(
@@ -449,12 +433,12 @@ mod tests {
         let storage = MemoryStorage::new();
         let handle = storage.create("test-stale-offset").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("seed")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("seed")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -465,12 +449,12 @@ mod tests {
         }));
 
         let error = storage
-            .append(AppendRequest {
-                handle: handle.clone(),
-                expected_offset: 0,
-                data: ChunkStream::from_stream(stream),
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(
+                handle.clone(),
+                0,
+                ChunkStream::from_stream(stream),
+                false,
+            ))
             .await
             .unwrap_err();
 

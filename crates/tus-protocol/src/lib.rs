@@ -62,6 +62,8 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![warn(unreachable_pub)]
 #![warn(clippy::all)]
 
 // Core modules (always available)
@@ -102,7 +104,7 @@ pub use lifecycle::{
 pub use locking::{LockGuard, Locker, NoopLocker};
 pub use protocol::{
     BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, Protocol, ProtocolHandle,
-    RequestBody, Response, TUS_SUCCESS_RESPONSE_HEADERS, UploadId,
+    RequestBody, Response, TUS_SUCCESS_RESPONSE_HEADERS, UploadChecksum, UploadId,
 };
 pub use state::{
     MetadataValue, StateStore, UPLOAD_STATE_SCHEMA_VERSION, UploadInventory, UploadMetadata,
@@ -125,7 +127,7 @@ pub mod prelude {
     pub use crate::locking::Locker;
     pub use crate::protocol::{
         BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, Protocol,
-        ProtocolHandle, RequestBody, Response, UploadId,
+        ProtocolHandle, RequestBody, Response, UploadChecksum, UploadId,
     };
     pub use crate::state::{StateStore, UploadInventory, UploadState};
     pub use crate::storage::{AppendRequest, ConcatRequest, Storage, StorageHandle, StorageReader};

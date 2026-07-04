@@ -95,20 +95,30 @@ fn log_reclamation_outcomes(scope: &str, report: &ExpiredUploadReclamationReport
     for outcome in report.outcomes() {
         match outcome {
             ExpiredUploadReclamationOutcome::Removed { .. } => {}
-            ExpiredUploadReclamationOutcome::Locked { upload_id } => {
+            ExpiredUploadReclamationOutcome::Locked { upload_id, .. } => {
                 tracing::debug!(scope = %scope, upload_id = %upload_id, "skipping cleanup for locked expired upload");
             }
-            ExpiredUploadReclamationOutcome::MissingState { upload_id } => {
+            ExpiredUploadReclamationOutcome::MissingState { upload_id, .. } => {
                 tracing::debug!(scope = %scope, upload_id = %upload_id, "skipping cleanup for missing expired upload state");
             }
-            ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id } => {
+            ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id, .. } => {
                 tracing::debug!(scope = %scope, upload_id = %upload_id, "skipping cleanup for upload that is no longer expired");
             }
-            ExpiredUploadReclamationOutcome::StorageDeleteFailed { upload_id, error } => {
+            ExpiredUploadReclamationOutcome::StorageDeleteFailed {
+                upload_id, error, ..
+            } => {
                 tracing::warn!(scope = %scope, upload_id = %upload_id, error = %error, "failed to delete expired upload data");
             }
-            ExpiredUploadReclamationOutcome::StateDeleteFailed { upload_id, error } => {
+            ExpiredUploadReclamationOutcome::StateDeleteFailed {
+                upload_id, error, ..
+            } => {
                 tracing::warn!(scope = %scope, upload_id = %upload_id, error = %error, "failed to delete expired upload state");
+            }
+            // ExpiredUploadReclamationOutcome is #[non_exhaustive]:
+            // future outcome kinds are surfaced generically until a
+            // dedicated log line exists for them.
+            outcome => {
+                tracing::debug!(scope = %scope, ?outcome, "unrecognized expired upload reclamation outcome");
             }
         }
     }
@@ -180,12 +190,12 @@ mod tests {
         let handle = storage.create(state.id()).await.unwrap();
         state.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: state.storage_handle().unwrap(),
-                expected_offset: state.offset(),
-                data: ChunkStream::from_bytes(b"hello".to_vec().into()),
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(
+                state.storage_handle().unwrap(),
+                state.offset(),
+                ChunkStream::from_bytes(b"hello".to_vec().into()),
+                false,
+            ))
             .await
             .unwrap();
         state.set_storage_handle(handle);

@@ -36,7 +36,7 @@ impl Transport for MockTransport {
             .lock()
             .unwrap()
             .pop_front()
-            .unwrap_or_else(|| Err(Error::Transport("missing mock response".to_string())))
+            .unwrap_or_else(|| Err(Error::transport("missing mock response")))
     }
 }
 

@@ -149,12 +149,12 @@ async fn protocol_head_uses_bundled_dependencies() {
     let mut state = UploadState::new("test-id").with_length(42);
     let handle = storage.create(state.id()).await.unwrap();
     let handle = storage
-        .append(AppendRequest {
+        .append(AppendRequest::new(
             handle,
-            expected_offset: 0,
-            data: ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-            completes_upload: false,
-        })
+            0,
+            ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+            false,
+        ))
         .await
         .unwrap();
     state.set_storage_handle(handle);
@@ -347,7 +347,7 @@ async fn protocol_pre_hook_rejections_use_default_status_and_message() {
         &locker,
         &terminate_hooks,
     )
-    .delete(&Headers::default(), &upload_id)
+    .delete(Headers::default(), &upload_id)
     .await
     .unwrap_err();
 
@@ -408,7 +408,7 @@ async fn protocol_pre_terminate_response_headers_are_returned() {
         .on_pre_terminate(|_| async { Ok(PreHookResult::proceed().with_header("x-delete", "ok")) });
 
     let response = Protocol::new(&config, &storage, &state_store, &locker, &hooks)
-        .delete(&Headers::default(), &upload_id)
+        .delete(Headers::default(), &upload_id)
         .await
         .unwrap();
 
@@ -471,12 +471,12 @@ async fn protocol_head_recovers_expired_regular_upload_completed_in_storage() {
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
     let handle = storage.create(state.id()).await.unwrap();
     let handle = storage
-        .append(AppendRequest {
+        .append(AppendRequest::new(
             handle,
-            expected_offset: 0,
-            data: ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-            completes_upload: true,
-        })
+            0,
+            ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+            true,
+        ))
         .await
         .unwrap();
     state.set_storage_handle(handle);

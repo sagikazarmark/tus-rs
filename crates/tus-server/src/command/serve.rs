@@ -65,6 +65,7 @@ pub(super) async fn run(command: ServeCli) -> anyhow::Result<()> {
             addr: settings.addr.clone(),
             shutdown_grace: Duration::from_secs(settings.shutdown_grace),
             drain_delay: Duration::from_secs(settings.drain_delay),
+            header_read_timeout: Duration::from_secs(settings.request_header_read_timeout),
         },
         shutdown_notify,
         draining,

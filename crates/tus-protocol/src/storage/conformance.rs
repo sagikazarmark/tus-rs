@@ -142,12 +142,12 @@ where
     }));
 
     let result = storage
-        .append(AppendRequest {
-            handle: handle.clone(),
-            expected_offset: 0,
-            data: ChunkStream::from_stream(stream),
-            completes_upload: false,
-        })
+        .append(AppendRequest::new(
+            handle.clone(),
+            0,
+            ChunkStream::from_stream(stream),
+            false,
+        ))
         .await;
 
     assert!(
@@ -183,12 +183,12 @@ where
     ]));
 
     let result = storage
-        .append(AppendRequest {
-            handle: handle.clone(),
-            expected_offset: 7,
-            data: ChunkStream::from_stream(stream),
-            completes_upload: false,
-        })
+        .append(AppendRequest::new(
+            handle.clone(),
+            7,
+            ChunkStream::from_stream(stream),
+            false,
+        ))
         .await;
 
     assert!(
@@ -274,10 +274,7 @@ where
         .expect("target size should be readable before concat");
 
     let result = storage
-        .concat(ConcatRequest {
-            target: target.clone(),
-            parts: vec![part, missing_part],
-        })
+        .concat(ConcatRequest::new(target.clone(), vec![part, missing_part]))
         .await;
 
     assert!(result.is_err(), "concat should fail when a part is missing");
@@ -445,10 +442,7 @@ where
         .expect("target create should succeed");
 
     let target = storage
-        .concat(ConcatRequest {
-            target,
-            parts: vec![part1, part2, part3],
-        })
+        .concat(ConcatRequest::new(target, vec![part1, part2, part3]))
         .await
         .expect("concat should succeed");
 
@@ -486,10 +480,7 @@ where
     .await;
 
     let result = storage
-        .concat(ConcatRequest {
-            target: target.clone(),
-            parts: vec![part, missing_part],
-        })
+        .concat(ConcatRequest::new(target.clone(), vec![part, missing_part]))
         .await;
 
     assert!(result.is_err(), "concat should fail when a part is missing");
@@ -533,12 +524,12 @@ where
     S: Storage + ?Sized,
 {
     storage
-        .append(AppendRequest {
+        .append(AppendRequest::new(
             handle,
             expected_offset,
-            data: ChunkStream::from_bytes(bytes),
+            ChunkStream::from_bytes(bytes),
             completes_upload,
-        })
+        ))
         .await
         .expect("append should succeed")
 }

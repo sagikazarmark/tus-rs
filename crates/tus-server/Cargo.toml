@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [features]
 default = ["opendal-fs"]
-opendal-fs = ["opendal/services-fs"]
-opendal-s3 = ["opendal/services-s3"]
+opendal-fs = ["tus-storage-opendal/services-fs"]
+opendal-s3 = ["tus-storage-opendal/services-s3"]
 
 [dependencies]
 tus-axum = { workspace = true }
@@ -33,8 +33,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 figment = { workspace = true, features = ["toml", "yaml"] }
 http-body-util = { workspace = true }
 humantime = { workspace = true }
-hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2"] }
-opendal = { workspace = true }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server", "server-auto", "server-graceful", "tokio"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower = { workspace = true, features = ["util"] }

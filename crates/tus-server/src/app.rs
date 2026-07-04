@@ -43,7 +43,10 @@ where
             "enabling bearer-token auth on TUS routes"
         );
         tus_router = tus_router.layer(axum::middleware::from_fn_with_state(
-            Arc::new(settings.auth_token.clone()),
+            Arc::new(BearerAuthConfig {
+                tokens: settings.auth_token.clone(),
+                cors_enabled: !settings.cors_origins.is_empty(),
+            }),
             bearer_auth,
         ));
     }
@@ -94,9 +97,11 @@ async fn body_read_timeout(State(timeout): State<Duration>, req: Request, next: 
     next.run(Request::from_parts(parts, body)).await
 }
 
-// Constant-time byte-slice equality. Prevents the tiny amount of
-// timing signal an attacker could use to learn a token's length or
-// leading bytes via a naive `==` comparison.
+// Constant-time equality for equal-length byte slices. The upfront
+// length check returns early and therefore leaks token length via
+// timing, which is standard and acceptable; what this prevents is
+// learning a token's bytes through early-exit comparison timing in a
+// naive `==`.
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -108,16 +113,25 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-async fn bearer_auth(State(tokens): State<Arc<Vec<String>>>, req: Request, next: Next) -> Response {
-    let is_cors_preflight = req.method() == Method::OPTIONS
-        && req.headers().contains_key(header::ORIGIN)
-        && req
-            .headers()
-            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+// Bearer-auth middleware state: the accepted tokens plus whether CORS
+// is configured, which decides if preflights may bypass auth.
+struct BearerAuthConfig {
+    tokens: Vec<String>,
+    cors_enabled: bool,
+}
 
-    // Browser CORS preflights are sent without credentials, but plain
-    // OPTIONS requests should still authenticate like other TUS routes.
-    if is_cors_preflight {
+async fn bearer_auth(
+    State(config): State<Arc<BearerAuthConfig>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    // Browser CORS preflights are sent without credentials, so when
+    // CORS is enabled they must bypass auth for the CorsLayer inside
+    // the TUS router to answer them. When CORS is disabled no
+    // legitimate preflight can succeed anyway, and letting a forged
+    // one through would hand unauthenticated clients the TUS OPTIONS
+    // capability disclosure.
+    if config.cors_enabled && is_cors_preflight(&req) {
         return next.run(req).await;
     }
 
@@ -125,11 +139,12 @@ async fn bearer_auth(State(tokens): State<Arc<Vec<String>>>, req: Request, next:
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
+        .and_then(strip_bearer_scheme)
         .unwrap_or("");
 
     if !presented.is_empty()
-        && tokens
+        && config
+            .tokens
             .iter()
             .any(|t| ct_eq(t.as_bytes(), presented.as_bytes()))
     {
@@ -137,6 +152,24 @@ async fn bearer_auth(State(tokens): State<Arc<Vec<String>>>, req: Request, next:
     } else {
         unauthorized_response()
     }
+}
+
+fn is_cors_preflight(req: &Request) -> bool {
+    req.method() == Method::OPTIONS
+        && req.headers().contains_key(header::ORIGIN)
+        && req
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
+}
+
+// RFC 7235: the auth-scheme is case-insensitive and separated from
+// its credentials by one or more spaces. Only the scheme is matched
+// loosely; the token comparison itself stays exact.
+fn strip_bearer_scheme(header: &str) -> Option<&str> {
+    let (scheme, rest) = header.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("Bearer")
+        .then(|| rest.trim_start_matches(' '))
 }
 
 // RFC 6750: a 401 to a bearer-protected resource must advertise the
@@ -173,13 +206,30 @@ mod tests {
     use axum::routing::options;
     use tower::ServiceExt;
 
-    fn authenticated_test_router() -> Router {
+    fn authenticated_test_router(cors_enabled: bool) -> Router {
         Router::new()
             .route("/files", options(|| async { StatusCode::NO_CONTENT }))
             .layer(axum::middleware::from_fn_with_state(
-                Arc::new(vec!["secret".to_string()]),
+                Arc::new(BearerAuthConfig {
+                    tokens: vec!["secret".to_string()],
+                    cors_enabled,
+                }),
                 bearer_auth,
             ))
+    }
+
+    fn preflight_request() -> Request<Body> {
+        Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/files")
+            .header(header::ORIGIN, "https://example.com")
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PATCH")
+            .header(
+                header::ACCESS_CONTROL_REQUEST_HEADERS,
+                "authorization, tus-resumable, upload-offset",
+            )
+            .body(Body::empty())
+            .unwrap()
     }
 
     #[tokio::test]
@@ -202,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn plain_options_requires_bearer_when_auth_is_enabled() {
-        let response = authenticated_test_router()
+        let response = authenticated_test_router(true)
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
@@ -218,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn unauthorized_response_advertises_bearer_scheme() {
-        let response = authenticated_test_router()
+        let response = authenticated_test_router(true)
             .oneshot(
                 Request::builder()
                     .method(Method::OPTIONS)
@@ -240,24 +290,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cors_preflight_bypasses_bearer_when_auth_is_enabled() {
-        let response = authenticated_test_router()
-            .oneshot(
-                Request::builder()
-                    .method(Method::OPTIONS)
-                    .uri("/files")
-                    .header(header::ORIGIN, "https://example.com")
-                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "PATCH")
-                    .header(
-                        header::ACCESS_CONTROL_REQUEST_HEADERS,
-                        "authorization, tus-resumable, upload-offset",
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+    async fn cors_preflight_bypasses_bearer_when_cors_is_enabled() {
+        let response = authenticated_test_router(true)
+            .oneshot(preflight_request())
             .await
             .unwrap();
 
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn forged_cors_preflight_requires_bearer_when_cors_is_disabled() {
+        let response = authenticated_test_router(false)
+            .oneshot(preflight_request())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bearer_scheme_is_matched_case_insensitively() {
+        for scheme in ["Bearer", "bearer", "BEARER", "BeArEr"] {
+            let response = authenticated_test_router(false)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::OPTIONS)
+                        .uri("/files")
+                        .header(header::AUTHORIZATION, format!("{scheme} secret"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::NO_CONTENT,
+                "scheme `{scheme}` must authenticate"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bearer_token_comparison_stays_exact() {
+        for value in [
+            "Bearer SECRET",
+            "Bearer secre",
+            "Bearersecret",
+            "Basic secret",
+        ] {
+            let response = authenticated_test_router(false)
+                .oneshot(
+                    Request::builder()
+                        .method(Method::OPTIONS)
+                        .uri("/files")
+                        .header(header::AUTHORIZATION, value)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "authorization `{value}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_bearer_scheme_allows_multiple_separating_spaces() {
+        assert_eq!(strip_bearer_scheme("Bearer  token"), Some("token"));
+        assert_eq!(strip_bearer_scheme("bearer token"), Some("token"));
+        assert_eq!(strip_bearer_scheme("Basic token"), None);
+        assert_eq!(strip_bearer_scheme("Bearertoken"), None);
     }
 }

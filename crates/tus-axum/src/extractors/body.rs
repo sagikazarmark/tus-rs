@@ -53,6 +53,13 @@ impl TusBody {
     }
 }
 
+// Manual Debug implementation - the wrapped body may be an opaque stream.
+impl std::fmt::Debug for TusBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TusBody").finish_non_exhaustive()
+    }
+}
+
 impl<S> FromRequest<S> for TusBody
 where
     S: Send + Sync,

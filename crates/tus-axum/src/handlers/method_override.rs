@@ -12,7 +12,8 @@
 
 use axum::{
     extract::{FromRequest, Path, Request, State},
-    http::Method,
+    http::{HeaderValue, Method, header},
+    response::{IntoResponse, Response},
 };
 
 use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
@@ -20,7 +21,7 @@ use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
 use crate::error::Error;
 use crate::extractors::{Headers, TusBody, UploadId};
 use crate::handlers::{handle_delete, handle_patch};
-use crate::response::TusResponse;
+use crate::router::UPLOAD_ALLOW;
 use crate::state::TusProtocol;
 
 /// POST handler at `/<base>/:upload_id` that honors `X-HTTP-Method-Override`.
@@ -28,12 +29,17 @@ use crate::state::TusProtocol;
 /// Behavior:
 /// - `X-HTTP-Method-Override: PATCH` → dispatch to the PATCH handler.
 /// - `X-HTTP-Method-Override: DELETE` → dispatch to the DELETE handler.
-/// - Missing or unrecognized value → 405 Method Not Allowed.
-pub async fn handle_post_with_override<S, I, L, H>(
+/// - Missing or unrecognized value → 405 Method Not Allowed with an `Allow`
+///   header listing the methods the upload resource accepts.
+///
+/// The override value is matched case-insensitively (`patch` and `PATCH` are
+/// equivalent), as HTTP method names from constrained clients are not
+/// reliably uppercased.
+pub(crate) async fn handle_post_with_override<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     Path(upload_id): Path<String>,
     req: Request,
-) -> Result<TusResponse, Error>
+) -> Result<Response, Error>
 where
     S: Storage + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
@@ -44,7 +50,9 @@ where
         .headers()
         .get("x-http-method-override")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<Method>().ok());
+        // Method parsing is case-sensitive ("patch" parses as an extension
+        // method distinct from `Method::PATCH`), so normalize first.
+        .and_then(|s| s.to_ascii_uppercase().parse::<Method>().ok());
 
     match override_method {
         Some(m) if m == Method::PATCH => {
@@ -52,16 +60,31 @@ where
             let body = TusBody::from_request(req, &()).await?;
             let upload_id = UploadId::from_string(upload_id)?;
 
-            handle_patch(State(protocol), headers, upload_id, body).await
+            handle_patch(State(protocol), headers, upload_id, body)
+                .await
+                .map(IntoResponse::into_response)
         }
         Some(m) if m == Method::DELETE => {
             let headers = Headers::from_header_map(req.headers())?;
             let upload_id = UploadId::from_string(upload_id)?;
 
-            handle_delete(State(protocol), headers, upload_id).await
+            handle_delete(State(protocol), headers, upload_id)
+                .await
+                .map(IntoResponse::into_response)
         }
-        _ => Err(Error(tus_protocol::Error::MethodNotAllowed(
-            "POST is not allowed on upload resources without X-HTTP-Method-Override".to_string(),
-        ))),
+        _ => {
+            // RFC 9110 requires 405 responses to carry an `Allow` header.
+            // The protocol error mapping does not know the route table, so
+            // the header is attached here on the axum side.
+            let mut response = Error::from(tus_protocol::Error::MethodNotAllowed(
+                "POST is not allowed on upload resources without X-HTTP-Method-Override"
+                    .to_string(),
+            ))
+            .into_response();
+            response
+                .headers_mut()
+                .insert(header::ALLOW, HeaderValue::from_static(UPLOAD_ALLOW));
+            Ok(response)
+        }
     }
 }

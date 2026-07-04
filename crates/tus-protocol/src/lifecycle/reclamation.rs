@@ -44,28 +44,34 @@ impl ExpiredUploadReclamationReport {
 
 /// Reclamation outcome for a single expired upload candidate.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ExpiredUploadReclamationOutcome {
     /// The upload data and state were removed.
+    #[non_exhaustive]
     Removed {
         /// Candidate upload ID.
         upload_id: String,
     },
     /// The upload was locked by another operation and was not reclaimed.
+    #[non_exhaustive]
     Locked {
         /// Candidate upload ID.
         upload_id: String,
     },
     /// The upload state disappeared after the candidate was listed.
+    #[non_exhaustive]
     MissingState {
         /// Candidate upload ID.
         upload_id: String,
     },
     /// The upload state was no longer expired after locking and reloading it.
+    #[non_exhaustive]
     NoLongerExpired {
         /// Candidate upload ID.
         upload_id: String,
     },
     /// Upload data deletion failed, so state deletion was not attempted.
+    #[non_exhaustive]
     StorageDeleteFailed {
         /// Candidate upload ID.
         upload_id: String,
@@ -73,6 +79,7 @@ pub enum ExpiredUploadReclamationOutcome {
         error: Error,
     },
     /// Upload state deletion failed after upload data was deleted.
+    #[non_exhaustive]
     StateDeleteFailed {
         /// Candidate upload ID.
         upload_id: String,
