@@ -17,7 +17,7 @@
 //!     --data-binary "hello world"
 //! ```
 
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::{
     Config, NoopHookExecutor, ProtocolHandle, locking::memory::MemoryLocker,
     state::memory::MemoryStateStore, storage::memory::MemoryStorage,
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         NoopHookExecutor::new(),
     ));
 
-    let router = create_router(state)?;
+    let router = create_router(state, &RouterOptions::default())?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
     println!("listening on http://{}", listener.local_addr()?);

@@ -12,7 +12,7 @@ use proptest::{
     test_runner::{Config as ProptestConfig, TestRunner},
 };
 use tower::ServiceExt;
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::{
     Config, NoopHookExecutor, ProtocolHandle, TUS_RESUMABLE, locking::memory::MemoryLocker,
     state::memory::MemoryStateStore, storage::memory::MemoryStorage,
@@ -27,7 +27,7 @@ fn build_router() -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state).unwrap()
+    create_router(state, &RouterOptions::default()).unwrap()
 }
 
 fn tus_request(method: Method, uri: &str) -> axum::http::request::Builder {

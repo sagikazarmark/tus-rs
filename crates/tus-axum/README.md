@@ -37,7 +37,7 @@ tus-protocol = { version = "0.0.1", features = ["storage-file", "state-file", "l
 ## Quick Start
 
 ```rust,no_run
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::{
     Config, NoopHookExecutor, ProtocolHandle,
     locking::memory::MemoryLocker,
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let state = TusState::new(protocol);
-    let router = create_router(state)?;
+    let router = create_router(state, &RouterOptions::default())?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
     axum::serve(listener, router).await?;

@@ -27,7 +27,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use tokio::runtime::Runtime;
 use tower::ServiceExt;
 
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
@@ -99,7 +99,7 @@ async fn axum_setup() -> (Router, String) {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let router = create_router(state).unwrap();
+    let router = create_router(state, &RouterOptions::default()).unwrap();
 
     let response = router
         .clone()
@@ -257,7 +257,7 @@ fn bench_lifecycle(c: &mut Criterion) {
                     MemoryLocker::new(),
                     NoopHookExecutor::new(),
                 ));
-                (create_router(state).unwrap(), payload_template.clone())
+                (create_router(state, &RouterOptions::default()).unwrap(), payload_template.clone())
             },
             |(router, payload)| async move {
                 // POST

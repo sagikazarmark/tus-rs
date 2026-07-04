@@ -36,7 +36,7 @@ where
     let state = TusState::new(protocol);
     let options = tus_axum::RouterOptions::new()
         .with_cors_allowed_origins(settings.cors_origins.iter().cloned());
-    let mut tus_router = tus_axum::create_router_with_download_and_options(state, &options)?;
+    let mut tus_router = tus_axum::create_router_with_download(state, &options)?;
     if !settings.auth_token.is_empty() {
         tracing::info!(
             tokens = settings.auth_token.len(),

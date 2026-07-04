@@ -208,7 +208,7 @@ async fn spawn_recording_server(
         NoopHookExecutor::new(),
     ));
     let patch_requests = PatchRequestLog::default();
-    let app: Router = tus_axum::create_router(state)
+    let app: Router = tus_axum::create_router(state, &tus_axum::RouterOptions::default())
         .unwrap()
         .layer(from_fn_with_state(
             patch_requests.clone(),
@@ -233,7 +233,7 @@ async fn spawn_head_rewrite_server(
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let app: Router = tus_axum::create_router_with_download(state)
+    let app: Router = tus_axum::create_router_with_download(state, &tus_axum::RouterOptions::default())
         .unwrap()
         .layer(from_fn_with_state(rewrite, rewrite_file_on_head));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -255,7 +255,7 @@ async fn spawn_server_with_bearer(
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let app: Router = tus_axum::create_router(state).unwrap();
+    let app: Router = tus_axum::create_router(state, &tus_axum::RouterOptions::default()).unwrap();
     let app = match bearer_token {
         Some(token) => app.layer(from_fn_with_state(token.to_string(), bearer_auth)),
         None => app,
@@ -388,7 +388,7 @@ async fn upload_failure_still_prints_created_upload_url() {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let app: Router = tus_axum::create_router(state)
+    let app: Router = tus_axum::create_router(state, &tus_axum::RouterOptions::default())
         .unwrap()
         .layer(axum::middleware::from_fn(reject_patch));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
