@@ -66,6 +66,7 @@
 //! with `tus-protocol` is not sufficient.
 
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -95,6 +96,9 @@ const FINALIZE_RETRIES: u32 = 2;
 ///
 /// The caller provides the configured OpenDAL operator. This crate only maps
 /// the TUS storage operations onto OpenDAL object operations.
+///
+/// Cloning is cheap: `opendal::Operator` is itself a shared handle.
+#[derive(Clone)]
 pub struct OpendalStorage {
     operator: Operator,
     prefix: String,

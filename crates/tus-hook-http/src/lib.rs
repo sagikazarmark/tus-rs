@@ -78,6 +78,7 @@
 //! [`HttpHookConfig::with_post_hook_retry`].
 
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
 
 /// Re-export of the `reqwest` crate used by this executor.
 ///
@@ -320,6 +321,9 @@ impl From<PreHookResponse> for PreHookResult {
 /// This executor sends webhook requests to a configured endpoint for each hook
 /// event. Pre-hooks can reject operations, add response headers, or replace
 /// user metadata based on the webhook response.
+///
+/// Cloning is cheap: `reqwest::Client` is itself a shared handle.
+#[derive(Clone)]
 pub struct HttpHookExecutor {
     client: Client,
     url: Url,
