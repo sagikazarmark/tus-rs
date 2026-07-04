@@ -28,7 +28,7 @@ For a native server with the bundled filesystem backends and checksum support:
 
 ```toml
 [dependencies]
-tus-protocol = { version = "0.0.1", features = ["full-native"] }
+tus-protocol = { version = "0.0.1", features = ["storage-file", "state-file", "lock-memory", "checksum"] }
 ```
 
 The quick start below also uses `http` and `tokio` directly:
@@ -53,7 +53,6 @@ The default feature set is empty.
 | `lock-file` | Native filesystem-backed upload locks. |
 | `checksum` | Checksum validation algorithms. |
 | `native` | Native async runtime support used by file and lock backends. |
-| `full-native` | Convenience set for native servers: `native`, file storage/state, memory locks, and checksums. |
 
 On `wasm32` targets (such as Cloudflare Workers), trait bounds automatically
 relax to non-`Send` futures; no feature flag is needed. The built-in memory and

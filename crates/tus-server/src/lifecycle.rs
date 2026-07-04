@@ -1,4 +1,4 @@
-use std::future::IntoFuture;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -8,12 +8,11 @@ use std::time::Duration;
 use anyhow::Context;
 use axum::Router;
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
-    server::conn::auto::Builder as HyperBuilder,
+    rt::{TokioExecutor, TokioIo, TokioTimer},
+    server::{conn::auto::Builder as HyperBuilder, graceful::GracefulShutdown},
     service::TowerToHyperService,
 };
 use tokio::net::TcpListener;
-use tokio::sync::Notify;
 
 use crate::config::BindTarget;
 
@@ -21,6 +20,9 @@ pub(crate) struct ServeOptions {
     pub(crate) addr: BindTarget,
     pub(crate) shutdown_grace: Duration,
     pub(crate) drain_delay: Duration,
+    /// Maximum time a connection may spend sending its request
+    /// headers before it is torn down; zero disables the limit.
+    pub(crate) header_read_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -81,7 +83,7 @@ impl Drop for UnixSocketGuard {
 
 // Installs signal handlers on a spawned task so the tokio signal driver
 // is active from the first scheduling tick, avoiding the race where a
-// signal arrives before the `with_graceful_shutdown` future has been
+// signal arrives before the serve loop's shutdown branch has been
 // polled for the first time.
 pub(crate) fn spawn_signal_listener() -> anyhow::Result<ShutdownSignal> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -136,16 +138,11 @@ pub(crate) async fn serve_app(
     shutdown_signal: ShutdownSignal,
     draining: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let grace = options.shutdown_grace;
-    let drain_delay = options.drain_delay;
-    let drain_started = Arc::new(Notify::new());
-    let shutdown = wait_for_shutdown_signal(
-        shutdown_signal.clone(),
-        drain_started.clone(),
-        draining.clone(),
-        drain_delay,
-        grace,
-    );
+    let loop_options = ServeLoopOptions {
+        drain_delay: options.drain_delay,
+        grace: options.shutdown_grace,
+        header_read_timeout: options.header_read_timeout,
+    };
 
     match &options.addr {
         BindTarget::Tcp(bind) => {
@@ -154,54 +151,16 @@ pub(crate) async fn serve_app(
                 .with_context(|| format!("failed to bind TCP listener at {bind}"))?;
             tracing::info!("Listening on http://{}", bind);
 
-            let serve = axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown)
-                .into_future();
-
-            if grace.is_zero() {
-                tokio::pin!(serve);
-                tokio::select! {
-                    result = &mut serve => result?,
-                    _ = drain_started.notified() => {}
-                }
-            } else {
-                // The grace timer must only bound the drain phase,
-                // after any lame-duck delay has elapsed.
-                tokio::pin!(serve);
-                tokio::select! {
-                    result = &mut serve => result?,
-                    _ = drain_started.notified() => {
-                        match tokio::time::timeout(grace, &mut serve).await {
-                            Ok(result) => result?,
-                            Err(_) => {
-                                tracing::warn!(
-                                    grace_secs = grace.as_secs(),
-                                    "shutdown grace period elapsed, forcing exit"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            serve_connections(listener, app, shutdown_signal, draining, loop_options).await
         }
         #[cfg(unix)]
         BindTarget::Unix(path) => {
             let (listener, _guard) = bind_unix_listener(path).await?;
             tracing::info!("Listening on unix:{}", path.display());
 
-            serve_unix(
-                listener,
-                app,
-                shutdown_signal.clone(),
-                draining.clone(),
-                drain_delay,
-                grace,
-            )
-            .await?;
+            serve_connections(listener, app, shutdown_signal, draining, loop_options).await
         }
     }
-
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -247,15 +206,85 @@ async fn bind_unix_listener(
     ))
 }
 
+#[derive(Clone, Copy)]
+struct ServeLoopOptions {
+    drain_delay: Duration,
+    grace: Duration,
+    header_read_timeout: Duration,
+}
+
+/// Accept source abstraction so TCP and Unix sockets share one
+/// connection-serving loop (and therefore the same header timeout,
+/// accept-error, and graceful-shutdown behavior).
+trait Listener {
+    type Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static;
+
+    async fn accept(&self) -> io::Result<Self::Io>;
+
+    /// Transport label for log messages.
+    fn transport(&self) -> &'static str;
+}
+
+impl Listener for TcpListener {
+    type Io = tokio::net::TcpStream;
+
+    async fn accept(&self) -> io::Result<Self::Io> {
+        TcpListener::accept(self).await.map(|(stream, _)| stream)
+    }
+
+    fn transport(&self) -> &'static str {
+        "tcp"
+    }
+}
+
 #[cfg(unix)]
-async fn serve_unix(
-    listener: tokio::net::UnixListener,
+impl Listener for tokio::net::UnixListener {
+    type Io = tokio::net::UnixStream;
+
+    async fn accept(&self) -> io::Result<Self::Io> {
+        tokio::net::UnixListener::accept(self)
+            .await
+            .map(|(stream, _)| stream)
+    }
+
+    fn transport(&self) -> &'static str {
+        "unix"
+    }
+}
+
+async fn serve_connections<L>(
+    listener: L,
     app: Router,
     shutdown_signal: ShutdownSignal,
     draining: Arc<AtomicBool>,
-    drain_delay: Duration,
-    grace: Duration,
-) -> anyhow::Result<()> {
+    options: ServeLoopOptions,
+) -> anyhow::Result<()>
+where
+    L: Listener,
+{
+    let ServeLoopOptions {
+        drain_delay,
+        grace,
+        header_read_timeout,
+    } = options;
+
+    // hyper 1.x only enforces its header-read timeout when a timer is
+    // installed; without one the advertised 30 s default is silently
+    // disabled, leaving the header phase open to slowloris clients.
+    // (`axum::serve` never installs a timer, which is why this loop
+    // exists for TCP as well.)
+    let mut builder = HyperBuilder::new(TokioExecutor::new());
+    builder.http1().timer(TokioTimer::new());
+    builder.http2().timer(TokioTimer::new());
+    if header_read_timeout.is_zero() {
+        // 0 is the documented opt-out; hyper would otherwise apply
+        // its own 30 s default now that a timer is present.
+        builder.http1().header_read_timeout(None);
+    } else {
+        builder.http1().header_read_timeout(header_read_timeout);
+    }
+
+    let graceful = GracefulShutdown::new();
     let mut tasks = tokio::task::JoinSet::new();
     let mut shutdown = shutdown_signal.clone();
     let mut drain_sleep = None::<Pin<Box<tokio::time::Sleep>>>;
@@ -269,7 +298,6 @@ async fn serve_unix(
                     "shutdown signal received, entering lame-duck state"
                 );
                 if drain_delay.is_zero() {
-                    tracing::info!(grace_secs = grace.as_secs(), "draining in-flight requests");
                     break;
                 }
                 drain_sleep = Some(Box::pin(tokio::time::sleep(drain_delay)));
@@ -281,33 +309,65 @@ async fn serve_unix(
                     .as_mut()
                     .await;
             }, if drain_sleep.is_some() => {
-                tracing::info!(grace_secs = grace.as_secs(), "draining in-flight requests");
                 break;
             }
+            // Reap finished connection tasks as they complete; JoinSet buffers
+            // results until joined, so skipping this would grow memory with
+            // every connection served.
+            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
             accepted = listener.accept() => {
-                let (stream, _) = accepted.context("failed to accept unix socket connection")?;
+                let stream = match accepted {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            transport = listener.transport(),
+                            "accept error, retrying"
+                        );
+                        let backoff = accept_retry_backoff(&error);
+                        if !backoff.is_zero() {
+                            tokio::time::sleep(backoff).await;
+                        }
+                        continue;
+                    }
+                };
+
                 let service = TowerToHyperService::new(app.clone());
+                let connection = graceful.watch(
+                    builder
+                        .serve_connection_with_upgrades(TokioIo::new(stream), service)
+                        .into_owned(),
+                );
+                let transport = listener.transport();
                 tasks.spawn(async move {
-                    let io = TokioIo::new(stream);
-                    if let Err(error) = HyperBuilder::new(TokioExecutor::new())
-                        .serve_connection_with_upgrades(io, service)
-                        .await
-                    {
-                        tracing::warn!(error = %error, "unix socket connection error");
+                    if let Err(error) = connection.await {
+                        tracing::warn!(error = %error, transport = transport, "connection error");
                     }
                 });
             }
         }
     }
 
+    // Close the listener before draining so the kernel stops completing
+    // handshakes into the backlog; mid-drain clients get an immediate
+    // refusal instead of an established-but-never-served connection.
+    drop(listener);
+
+    tracing::info!(grace_secs = grace.as_secs(), "draining in-flight requests");
+
     if grace.is_zero() {
         tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
         return Ok(());
     }
 
-    match tokio::time::timeout(grace, async { while tasks.join_next().await.is_some() {} }).await {
-        Ok(_) => Ok(()),
-        Err(_) => {
+    // Tell every watched connection to shut down gracefully (close
+    // after the in-flight response on HTTP/1, GOAWAY on HTTP/2) so
+    // idle keep-alive connections drain promptly instead of burning
+    // the whole grace window.
+    tokio::select! {
+        _ = graceful.shutdown() => Ok(()),
+        _ = tokio::time::sleep(grace) => {
             tracing::warn!(
                 grace_secs = grace.as_secs(),
                 "shutdown grace period elapsed, forcing exit"
@@ -319,42 +379,94 @@ async fn serve_unix(
     }
 }
 
-async fn wait_for_shutdown_signal(
-    mut shutdown_signal: ShutdownSignal,
-    drain_started: Arc<Notify>,
-    draining: Arc<AtomicBool>,
-    drain_delay: Duration,
-    grace: Duration,
-) {
-    shutdown_signal.cancelled().await;
-    draining.store(true, Ordering::Relaxed);
-    if !drain_delay.is_zero() {
-        tracing::info!(
-            delay_secs = drain_delay.as_secs(),
-            "shutdown signal received, entering lame-duck state"
-        );
-        tokio::time::sleep(drain_delay).await;
+// Backoff before retrying `accept()` after resource exhaustion, so an
+// EMFILE/ENFILE storm cannot spin the accept loop hot.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Returns how long to wait before retrying a failed `accept()`.
+///
+/// Accept errors never stop the server: accept(2) documents that
+/// already-pending network errors (ENETDOWN, ENOBUFS, EHOSTUNREACH, ...)
+/// surface through `accept` and should be treated like EAGAIN, and axum's
+/// own serve loop likewise retries everything. Connection-level errors
+/// (the peer vanished between arrival and accept — attacker-inducible)
+/// are retried immediately; anything else, including fd or memory
+/// exhaustion, backs off briefly so an error storm cannot spin the loop
+/// hot.
+fn accept_retry_backoff(error: &io::Error) -> Duration {
+    match error.kind() {
+        io::ErrorKind::ConnectionRefused
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::Interrupted => Duration::ZERO,
+        _ => ACCEPT_ERROR_BACKOFF,
     }
-    drain_started.notify_one();
-    tracing::info!(grace_secs = grace.as_secs(), "draining in-flight requests");
 }
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     use super::*;
+
+    fn test_loop_options(drain_delay: Duration, grace: Duration) -> ServeLoopOptions {
+        ServeLoopOptions {
+            drain_delay,
+            grace,
+            header_read_timeout: Duration::from_secs(30),
+        }
+    }
+
+    fn test_shutdown_channel() -> (tokio::sync::watch::Sender<bool>, ShutdownSignal) {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        (
+            shutdown_tx,
+            ShutdownSignal {
+                receiver: shutdown_rx,
+            },
+        )
+    }
+
+    fn ok_router() -> Router {
+        Router::new().route("/", axum::routing::get(|| async { "ok" }))
+    }
 
     #[tokio::test]
     async fn shutdown_signal_is_observed_by_late_subscribers() {
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (shutdown_tx, mut shutdown) = test_shutdown_channel();
         shutdown_tx.send(true).unwrap();
-
-        let mut shutdown = ShutdownSignal {
-            receiver: shutdown_rx,
-        };
 
         tokio::time::timeout(Duration::from_millis(100), shutdown.cancelled())
             .await
             .expect("late subscriber should observe sticky shutdown");
+    }
+
+    #[test]
+    fn accept_errors_are_classified_for_retry() {
+        // Connection-level errors: retry immediately.
+        assert_eq!(
+            accept_retry_backoff(&io::Error::from(io::ErrorKind::ConnectionAborted)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            accept_retry_backoff(&io::Error::from(io::ErrorKind::Interrupted)),
+            Duration::ZERO
+        );
+
+        // Everything else — resource exhaustion, pending network errors,
+        // unknown kinds — retries after a backoff; accept errors never
+        // stop the server.
+        #[cfg(unix)]
+        {
+            let emfile = io::Error::from_raw_os_error(24);
+            let enfile = io::Error::from_raw_os_error(23);
+            assert_eq!(accept_retry_backoff(&emfile), ACCEPT_ERROR_BACKOFF);
+            assert_eq!(accept_retry_backoff(&enfile), ACCEPT_ERROR_BACKOFF);
+        }
+        assert_eq!(
+            accept_retry_backoff(&io::Error::from(io::ErrorKind::InvalidInput)),
+            ACCEPT_ERROR_BACKOFF
+        );
     }
 
     #[cfg(unix)]
@@ -378,24 +490,17 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn unix_serving_accepts_connections_during_drain_delay() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("server.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let shutdown_signal = ShutdownSignal {
-            receiver: shutdown_rx,
-        };
+        let (shutdown_tx, shutdown_signal) = test_shutdown_channel();
         let draining = Arc::new(AtomicBool::new(false));
-        let app = Router::new().route("/", axum::routing::get(|| async { "ok" }));
-        let server = tokio::spawn(serve_unix(
+        let server = tokio::spawn(serve_connections(
             listener,
-            app,
+            ok_router(),
             shutdown_signal,
             draining.clone(),
-            Duration::from_millis(500),
-            Duration::from_secs(1),
+            test_loop_options(Duration::from_millis(500), Duration::from_secs(1)),
         ));
 
         shutdown_tx.send(true).unwrap();
@@ -425,5 +530,110 @@ mod tests {
         );
 
         server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_promptly_closes_idle_keepalive_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_signal) = test_shutdown_channel();
+        let draining = Arc::new(AtomicBool::new(false));
+        // A grace window far longer than the test budget: if drain
+        // waited out idle keep-alive connections, the timeout below
+        // would trip.
+        let server = tokio::spawn(serve_connections(
+            listener,
+            ok_router(),
+            shutdown_signal,
+            draining,
+            test_loop_options(Duration::ZERO, Duration::from_secs(600)),
+        ));
+
+        // Complete one request on a keep-alive connection, then leave
+        // the connection idle.
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+                .await
+                .expect("first response must arrive")
+                .unwrap();
+            assert_ne!(n, 0, "connection closed before first response completed");
+            response.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&response).ends_with("ok") {
+                break;
+            }
+        }
+
+        shutdown_tx.send(true).unwrap();
+
+        // Drain must complete promptly because the idle connection is
+        // told to shut down instead of being waited out.
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("drain must not wait out idle keep-alive connections")
+            .unwrap()
+            .unwrap();
+
+        // The idle connection observes the server-initiated close.
+        let n = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+            .await
+            .expect("idle connection must be closed by the server")
+            .unwrap();
+        assert_eq!(n, 0, "expected EOF on the idle keep-alive connection");
+    }
+
+    #[tokio::test]
+    async fn in_flight_requests_complete_during_graceful_drain() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_signal) = test_shutdown_channel();
+        let draining = Arc::new(AtomicBool::new(false));
+        let app = Router::new().route(
+            "/slow",
+            axum::routing::get(|| async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                "slow-ok"
+            }),
+        );
+        let server = tokio::spawn(serve_connections(
+            listener,
+            app,
+            shutdown_signal,
+            draining,
+            test_loop_options(Duration::ZERO, Duration::from_secs(600)),
+        ));
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        // Give the server a moment to start handling the request,
+        // then signal shutdown mid-response.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        shutdown_tx.send(true).unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+            .await
+            .expect("in-flight response must complete during drain")
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&response).contains("slow-ok"),
+            "unexpected response: {}",
+            String::from_utf8_lossy(&response)
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server must stop after the in-flight request completes")
+            .unwrap()
+            .unwrap();
     }
 }

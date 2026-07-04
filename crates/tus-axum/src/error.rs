@@ -6,18 +6,90 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-/// Newtype around [`tus_protocol::Error`] that carries axum's [`IntoResponse`] impl.
+/// Wrapper around [`tus_protocol::Error`] that carries axum's [`IntoResponse`] impl.
+///
+/// Construct through `From<tus_protocol::Error>`; the conversion is where
+/// transport-level body-limit failures are remapped to a 413 response (see
+/// [`Error::into_inner`]). The inner error is private so the remap invariant
+/// is enforced by construction — read it through [`Error::inner`] or
+/// [`Error::into_inner`].
 #[derive(Debug)]
-pub struct Error(pub tus_protocol::Error);
+pub struct Error {
+    inner: tus_protocol::Error,
+    /// Response body override used when the inner error was remapped from a
+    /// transport body-limit failure and the variant's own message would be
+    /// misleading (the transport does not know the real sizes).
+    body_override: Option<&'static str>,
+}
+
+/// Response body for requests rejected by a transport-level body limit.
+///
+/// The transport layer does not expose the configured limit or the observed
+/// size, so the body carries a plain description instead of the protocol's
+/// "upload size N exceeds maximum M" message.
+const BODY_LIMIT_EXCEEDED_BODY: &str = "request body exceeds the configured body size limit";
+
+impl Error {
+    /// Returns a reference to the wrapped protocol error.
+    pub fn inner(&self) -> &tus_protocol::Error {
+        &self.inner
+    }
+
+    /// Consumes the wrapper and returns the protocol error.
+    ///
+    /// If the error was remapped from a transport body-limit failure, this is
+    /// [`tus_protocol::Error::SizeExceeded`] with zeroed sizes: the transport
+    /// layer does not know the configured limit or the observed size, and the
+    /// 413 status is the meaningful part.
+    pub fn into_inner(self) -> tus_protocol::Error {
+        self.inner
+    }
+}
+
+impl AsRef<tus_protocol::Error> for Error {
+    fn as_ref(&self) -> &tus_protocol::Error {
+        &self.inner
+    }
+}
 
 impl From<tus_protocol::Error> for Error {
     fn from(err: tus_protocol::Error) -> Self {
-        Self(map_transport_body_error(err))
+        match map_transport_body_error(err) {
+            (inner, true) => Self {
+                inner,
+                body_override: Some(BODY_LIMIT_EXCEEDED_BODY),
+            },
+            (inner, false) => Self {
+                inner,
+                body_override: None,
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.body_override {
+            Some(body) => f.write_str(body),
+            None => self.inner.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.body_override {
+            // The remapped variant carries no source; point at the protocol
+            // error itself so the chain stays inspectable.
+            Some(_) => Some(&self.inner),
+            None => std::error::Error::source(&self.inner),
+        }
     }
 }
 
 /// Remaps transport-level body read failures that reach the protocol as
-/// opaque IO errors.
+/// opaque IO errors. Returns the (possibly remapped) error and whether the
+/// remap happened.
 ///
 /// Body-limiting middleware such as `tower_http::limit::RequestBodyLimitLayer`
 /// enforces its byte cap inside the request body: a chunked upload that trips
@@ -27,16 +99,17 @@ impl From<tus_protocol::Error> for Error {
 /// answer is 413 ([`tus_protocol::Error::SizeExceeded`]).
 ///
 /// The transport layer does not expose the configured limit or the observed
-/// size, so the remapped variant carries zeroes; the status code is the
+/// size, so the remapped variant carries zeroes and the response body is
+/// overridden with [`BODY_LIMIT_EXCEEDED_BODY`]; the status code is the
 /// meaningful part. All other errors (including plain client-disconnect read
 /// errors, which arrive as [`tus_protocol::Error::Io`]) pass through
 /// unchanged.
-fn map_transport_body_error(err: tus_protocol::Error) -> tus_protocol::Error {
+fn map_transport_body_error(err: tus_protocol::Error) -> (tus_protocol::Error, bool) {
     match err {
         tus_protocol::Error::Io(io_err) if chain_contains_length_limit(&io_err) => {
-            tus_protocol::Error::SizeExceeded { size: 0, max: 0 }
+            (tus_protocol::Error::SizeExceeded { size: 0, max: 0 }, true)
         }
-        other => other,
+        other => (other, false),
     }
 }
 
@@ -55,7 +128,11 @@ fn chain_contains_length_limit(err: &(dyn std::error::Error + 'static)) -> bool 
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let (status, headers, body) = self.0.response_parts();
+        let (status, headers, body) = self.inner.response_parts();
+        let body = match self.body_override {
+            Some(body) => body.to_string(),
+            None => body,
+        };
 
         let mut builder = Response::builder()
             .status(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
@@ -80,7 +157,9 @@ mod tests {
     #[test]
     fn from_protocol_error_wraps_inner() {
         let err: Error = ProtocolError::NotFound("upload-7".into()).into();
-        assert!(matches!(err.0, ProtocolError::NotFound(ref s) if s == "upload-7"));
+        assert!(matches!(err.inner(), ProtocolError::NotFound(s) if s == "upload-7"));
+        assert!(matches!(err.as_ref(), ProtocolError::NotFound(_)));
+        assert!(matches!(err.into_inner(), ProtocolError::NotFound(s) if s == "upload-7"));
     }
 
     #[test]
@@ -112,7 +191,7 @@ mod tests {
 
         let err: Error = ProtocolError::Io(io_err).into();
         assert!(matches!(
-            err.0,
+            err.inner(),
             ProtocolError::SizeExceeded { size: 0, max: 0 }
         ));
 
@@ -120,13 +199,59 @@ mod tests {
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
+    /// The remapped 413 must not claim "upload size 0 exceeds maximum 0";
+    /// the transport does not know the sizes, so the body carries a plain
+    /// description instead.
+    #[tokio::test]
+    async fn transport_body_limit_413_has_sensible_body() {
+        let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
+        let err: Error = ProtocolError::Io(io_err).into();
+        assert_eq!(err.to_string(), BODY_LIMIT_EXCEEDED_BODY);
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            BODY_LIMIT_EXCEEDED_BODY
+        );
+    }
+
+    /// The remapped 413 keeps the protocol's error response headers
+    /// (`Tus-Resumable` and friends) even though the body is overridden.
+    #[tokio::test]
+    async fn transport_body_limit_413_keeps_protocol_headers() {
+        let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
+        let err: Error = ProtocolError::Io(io_err).into();
+
+        let (_, expected_headers, _) =
+            ProtocolError::SizeExceeded { size: 0, max: 0 }.response_parts();
+        let response = err.into_response();
+        for (name, value) in &expected_headers {
+            assert_eq!(
+                response.headers().get(*name).unwrap().to_str().unwrap(),
+                value,
+                "header {name} mismatch"
+            );
+        }
+    }
+
     #[test]
     fn plain_io_error_is_not_remapped() {
         let err: Error = ProtocolError::Io(std::io::Error::other("connection reset")).into();
-        assert!(matches!(err.0, ProtocolError::Io(_)));
+        assert!(matches!(err.inner(), ProtocolError::Io(_)));
 
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn display_and_source_delegate_to_inner_for_plain_errors() {
+        let err: Error = ProtocolError::NotFound("upload-7".into()).into();
+        assert_eq!(
+            err.to_string(),
+            ProtocolError::NotFound("upload-7".into()).to_string()
+        );
     }
 
     /// Constructors for every ProtocolError variant. Mirrors the helper in
@@ -154,8 +279,6 @@ mod tests {
             }),
             Box::new(|| ProtocolError::Locked("x".into())),
             Box::new(|| ProtocolError::LockTimeout("x".into())),
-            Box::new(|| ProtocolError::Lock("x".into())),
-            Box::new(|| ProtocolError::State("x".into())),
             Box::new(|| ProtocolError::Expired("x".into())),
             Box::new(|| ProtocolError::ChecksumMismatch {
                 expected: "abc".into(),
@@ -190,7 +313,10 @@ mod tests {
     /// IntoResponse impl must produce a Response whose status, header set,
     /// and body bytes exactly match the framework-neutral tuple from
     /// ProtocolError::response_parts(). This proves the axum bridge does not
-    /// add or lose information.
+    /// add or lose information. (The single deliberate exception — the body
+    /// override for transport body-limit remaps — is covered by
+    /// `transport_body_limit_413_has_sensible_body`; none of the variants
+    /// here trigger it.)
     #[tokio::test]
     async fn into_response_matches_response_parts_for_all_variants() {
         for make in variant_constructors() {

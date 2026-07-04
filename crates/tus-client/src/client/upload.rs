@@ -120,29 +120,84 @@ impl UploadSource for FileSource {
 }
 
 /// Parameters for parallel concatenation uploads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The fields are private so invalid configurations are unrepresentable:
+/// every setter clamps its value to at least 1 (a zero part size would
+/// otherwise divide by zero when computing the part count).
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct ParallelUpload {
-    /// Number of bytes to place into each partial upload.
-    pub part_size: usize,
-    /// Maximum number of partial uploads to run at once.
-    pub max_concurrency: usize,
+    part_size: usize,
+    max_concurrency: usize,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    progress: Option<std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>>,
 }
 
 impl ParallelUpload {
     /// Creates a new parallel-upload configuration.
+    ///
+    /// `part_size` is the number of bytes placed into each partial upload,
+    /// clamped to at least 1.
     pub fn new(part_size: usize) -> Self {
         Self {
             part_size: part_size.max(1),
             max_concurrency: 4,
+            progress: None,
         }
     }
 
-    /// Sets the maximum number of partial uploads to run at once.
+    /// Sets the number of bytes to place into each partial upload,
+    /// clamped to at least 1.
+    #[must_use]
+    pub fn with_part_size(mut self, part_size: usize) -> Self {
+        self.part_size = part_size.max(1);
+        self
+    }
+
+    /// Sets the maximum number of partial uploads to run at once,
+    /// clamped to at least 1.
     #[must_use]
     pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
         self.max_concurrency = max_concurrency.max(1);
         self
+    }
+
+    /// Sets a progress callback invoked as `(uploaded, total)` while the
+    /// parallel upload runs.
+    ///
+    /// Progress is aggregated across all parts: `uploaded` is the total
+    /// number of bytes acknowledged by the server across every partial
+    /// upload so far and is monotonically non-decreasing between
+    /// invocations; `total` is the size of the whole source. Because parts
+    /// upload concurrently the callback must be `Fn + Send + Sync`; it may
+    /// be called from multiple tasks, but invocations are serialized.
+    #[must_use]
+    pub fn with_progress<F>(mut self, progress: F) -> Self
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
+        self.progress = Some(std::sync::Arc::new(progress));
+        self
+    }
+
+    /// Returns the number of bytes placed into each partial upload.
+    pub fn part_size(&self) -> usize {
+        self.part_size
+    }
+
+    /// Returns the maximum number of partial uploads run at once.
+    pub fn max_concurrency(&self) -> usize {
+        self.max_concurrency
+    }
+}
+
+impl std::fmt::Debug for ParallelUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelUpload")
+            .field("part_size", &self.part_size)
+            .field("max_concurrency", &self.max_concurrency)
+            .field("progress", &self.progress.as_ref().map(|_| ".."))
+            .finish()
     }
 }
 
@@ -165,6 +220,70 @@ pub(crate) struct NoopProgress;
 
 impl UploadProgress for NoopProgress {
     fn on_progress(&mut self, _uploaded: u64, _total: u64) {}
+}
+
+/// Aggregates progress across concurrently uploading parts.
+///
+/// Parts report byte *deltas*; the shared atomic accumulates the total and
+/// the `reported` mutex both serializes callback invocations and enforces
+/// monotonic reporting under concurrency.
+#[cfg(not(target_arch = "wasm32"))]
+struct ParallelProgressState {
+    callback: std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>,
+    total: u64,
+    uploaded: std::sync::atomic::AtomicU64,
+    reported: std::sync::Mutex<u64>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ParallelProgressState {
+    fn advance(&self, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        let uploaded = self
+            .uploaded
+            .fetch_add(delta, std::sync::atomic::Ordering::Relaxed)
+            + delta;
+        let mut reported = self.reported.lock().unwrap();
+        if uploaded > *reported {
+            *reported = uploaded;
+            (self.callback)(uploaded, self.total);
+        }
+    }
+}
+
+/// The outcome of a single parallel part task.
+///
+/// `created_url` records the partial upload's URL as soon as creation
+/// succeeds, so a failure in a *later* step (resume/PATCH) can still be
+/// cleaned up. It equals the final URL on success.
+#[cfg(not(target_arch = "wasm32"))]
+struct PartOutcome {
+    index: usize,
+    created_url: Option<String>,
+    result: Result<String>,
+}
+
+/// Per-part adapter translating part-local offsets into shared byte deltas.
+#[cfg(not(target_arch = "wasm32"))]
+struct PartProgress {
+    shared: Option<std::sync::Arc<ParallelProgressState>>,
+    last: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl UploadProgress for PartProgress {
+    fn on_progress(&mut self, uploaded: u64, _total: u64) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        if uploaded > self.last {
+            let delta = uploaded - self.last;
+            self.last = uploaded;
+            shared.advance(delta);
+        }
+    }
 }
 
 impl<T> Client<T>
@@ -224,6 +343,16 @@ where
     /// any partial uploads otherwise. If a part fails mid-flight, partial
     /// uploads that were already created are terminated on a best-effort
     /// basis before the error is returned.
+    ///
+    /// Progress can be observed through
+    /// [`ParallelUpload::with_progress`], which aggregates uploaded bytes
+    /// across all parts.
+    ///
+    /// # Async runtime
+    ///
+    /// Parts are spawned as tokio tasks, so this method must run inside a
+    /// tokio runtime (as must every retrying client operation on native
+    /// targets — see [`Client`]). It is not available on `wasm32`.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload_parallel<S>(
         &self,
@@ -247,22 +376,34 @@ where
         let capabilities = Some(capabilities);
         let part_count = source_length.div_ceil(options.part_size as u64) as usize;
         let max_concurrency = options.max_concurrency.min(part_count).max(1);
+        let progress = options.progress.clone().map(|callback| {
+            std::sync::Arc::new(ParallelProgressState {
+                callback,
+                total: source_length,
+                uploaded: std::sync::atomic::AtomicU64::new(0),
+                reported: std::sync::Mutex::new(0),
+            })
+        });
 
-        let mut join_set: JoinSet<Result<(usize, String)>> = JoinSet::new();
+        let mut join_set: JoinSet<PartOutcome> = JoinSet::new();
+        // Final partial URLs used for concatenation; set only on success.
         let mut part_urls: Vec<Option<String>> = vec![None; part_count];
+        // Every partial URL that was created, so cleanup can terminate a
+        // partial whose creation succeeded but whose later resume failed.
+        let mut created_urls: Vec<Option<String>> = vec![None; part_count];
         let mut next_index = 0;
         let mut failure: Option<Error> = None;
 
-        let spawn_part =
-            |join_set: &mut JoinSet<Result<(usize, String)>>, index: usize, bytes: Vec<u8>| {
-                let client = self.clone();
-                let capabilities = capabilities.clone();
-                join_set.spawn(async move {
-                    client
-                        .upload_parallel_part(index, bytes, capabilities)
-                        .await
-                });
-            };
+        let spawn_part = |join_set: &mut JoinSet<PartOutcome>, index: usize, bytes: Vec<u8>| {
+            let client = self.clone();
+            let capabilities = capabilities.clone();
+            let progress = progress.clone();
+            join_set.spawn(async move {
+                client
+                    .upload_parallel_part(index, bytes, capabilities, progress)
+                    .await
+            });
+        };
 
         while next_index < part_count && join_set.len() < max_concurrency {
             match Self::read_parallel_part(
@@ -292,24 +433,31 @@ where
                         "parallel upload task failed: {join_error}"
                     )));
                 }
-                Some(Ok(Err(error))) => failure = Some(error),
-                Some(Ok(Ok((index, url)))) => {
-                    part_urls[index] = Some(url);
+                Some(Ok(outcome)) => {
+                    if let Some(url) = &outcome.created_url {
+                        created_urls[outcome.index] = Some(url.clone());
+                    }
+                    match outcome.result {
+                        Err(error) => failure = Some(error),
+                        Ok(url) => {
+                            part_urls[outcome.index] = Some(url);
 
-                    if next_index < part_count {
-                        match Self::read_parallel_part(
-                            &mut source,
-                            next_index,
-                            source_length,
-                            options.part_size,
-                        )
-                        .await
-                        {
-                            Ok(bytes) => {
-                                spawn_part(&mut join_set, next_index, bytes);
-                                next_index += 1;
+                            if next_index < part_count {
+                                match Self::read_parallel_part(
+                                    &mut source,
+                                    next_index,
+                                    source_length,
+                                    options.part_size,
+                                )
+                                .await
+                                {
+                                    Ok(bytes) => {
+                                        spawn_part(&mut join_set, next_index, bytes);
+                                        next_index += 1;
+                                    }
+                                    Err(error) => failure = Some(error),
+                                }
                             }
-                            Err(error) => failure = Some(error),
                         }
                     }
                 }
@@ -318,13 +466,16 @@ where
 
         if let Some(error) = failure {
             join_set.abort_all();
-            // Collect parts that still completed so cleanup can cover them.
+            // Record created URLs from any parts that still completed so
+            // cleanup can terminate them too, even if their upload later failed.
             while let Some(result) = join_set.join_next().await {
-                if let Ok(Ok((index, url))) = result {
-                    part_urls[index] = Some(url);
+                if let Ok(outcome) = result
+                    && let Some(url) = outcome.created_url
+                {
+                    created_urls[outcome.index] = Some(url);
                 }
             }
-            self.cleanup_partial_uploads(part_urls).await;
+            self.cleanup_partial_uploads(created_urls).await;
             return Err(error);
         }
 
@@ -494,23 +645,43 @@ where
         index: usize,
         bytes: Vec<u8>,
         capabilities: Option<ServerCapabilities>,
-    ) -> Result<(usize, String)> {
-        let upload = self
-            .upload_partial_with_capabilities(bytes, UploadMetadata::new(), capabilities.as_ref())
-            .await?;
+        progress: Option<std::sync::Arc<ParallelProgressState>>,
+    ) -> PartOutcome {
+        let mut progress = PartProgress {
+            shared: progress,
+            last: 0,
+        };
+        let mut created_url = None;
+        let result = self
+            .upload_partial_with_capabilities(
+                bytes,
+                UploadMetadata::new(),
+                capabilities.as_ref(),
+                &mut progress,
+                &mut created_url,
+            )
+            .await
+            .map(|upload| upload.url.to_string());
 
-        Ok((index, upload.url.to_string()))
+        PartOutcome {
+            index,
+            created_url,
+            result,
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn upload_partial_with_capabilities<S>(
+    async fn upload_partial_with_capabilities<S, P>(
         &self,
         mut source: S,
         metadata: UploadMetadata,
         capabilities: Option<&ServerCapabilities>,
+        progress: &mut P,
+        created_url: &mut Option<String>,
     ) -> Result<UploadInfo>
     where
         S: UploadSource,
+        P: UploadProgress,
     {
         let length = source.len();
 
@@ -519,16 +690,22 @@ where
             let upload = self
                 .create_upload_info(NewUpload::with_body(body, metadata).partial())
                 .await?;
+            *created_url = Some(upload.url.to_string());
+            progress.on_progress(upload.offset, length);
             if upload.offset == length {
                 return Ok(upload);
             }
-            return self.resume_at(&upload.url, source).await;
+            return self
+                .resume_at_with_progress(&upload.url, source, progress)
+                .await;
         }
 
         let upload = self
             .create_upload_info(NewUpload::new(length, metadata).partial())
             .await?;
-        self.resume_at(&upload.url, source).await
+        *created_url = Some(upload.url.to_string());
+        self.resume_at_with_progress(&upload.url, source, progress)
+            .await
     }
 
     /// Fetches server capabilities ahead of creation when the source is
@@ -632,10 +809,11 @@ where
                     ),
                 });
             }
+            let chunk_len_sent = chunk.len() as u64;
             let new_offset = self
                 .send_upload_chunk_at(upload_url, chunk, sent, "patch upload")
                 .await?;
-            validate_patch_advance(sent, new_offset, total_length)?;
+            validate_patch_advance(sent, new_offset, chunk_len_sent, total_length)?;
             sent = new_offset;
             remaining = total_length.saturating_sub(sent);
             progress.on_progress(sent, total_length);
@@ -645,14 +823,11 @@ where
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Sleeps between retry attempts through the runtime seam in
+/// [`crate::runtime`] (tokio timers on native targets, the browser event
+/// loop on `wasm32`).
 async fn sleep_before_retry(base: std::time::Duration, attempt: usize) {
-    tokio::time::sleep(jittered_backoff_delay(base, attempt)).await;
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn sleep_before_retry(base: std::time::Duration, attempt: usize) {
-    gloo_timers::future::sleep(jittered_backoff_delay(base, attempt)).await;
+    crate::runtime::sleep(jittered_backoff_delay(base, attempt)).await;
 }
 
 #[cfg(test)]
@@ -876,7 +1051,7 @@ mod tests {
                     }
                 }
                 Method::HEAD => Ok(mock_head_response(4, 4)),
-                _ => Err(Error::Transport(format!(
+                _ => Err(Error::transport(format!(
                     "unexpected method {}",
                     request.method()
                 ))),
@@ -903,6 +1078,66 @@ mod tests {
         assert_eq!(upload.offset, 4);
         assert_eq!(transport.partial_uploads.load(Ordering::Relaxed), 2);
         assert_eq!(transport.max_active.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_reports_monotonic_aggregated_progress() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
+                ]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-2"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/final")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(8, 8)));
+        }
+        let client =
+            Client::with_transport(endpoint_url(), transport).with_max_initial_upload_size(1024);
+        let updates: Arc<std::sync::Mutex<Vec<(u64, u64)>>> = Arc::default();
+
+        let options = ParallelUpload::new(4)
+            .with_max_concurrency(1)
+            .with_progress({
+                let updates = updates.clone();
+                move |uploaded, total| updates.lock().unwrap().push((uploaded, total))
+            });
+        let upload = client
+            .upload_parallel(b"abcdefgh".to_vec(), UploadMetadata::new(), options)
+            .await
+            .unwrap();
+
+        assert_eq!(upload.offset, 8);
+        let updates = updates.lock().unwrap().clone();
+        assert!(!updates.is_empty(), "progress must be reported");
+        assert!(
+            updates.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "aggregated progress must be monotonic: {updates:?}"
+        );
+        assert!(
+            updates.iter().all(|(_, total)| *total == 8),
+            "total must be the whole source size: {updates:?}"
+        );
+        assert_eq!(updates.last(), Some(&(8, 8)));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1278,13 +1513,57 @@ mod tests {
         );
     }
 
+    /// 460 Checksum Mismatch (TUS checksum extension) signals that the
+    /// server detected in-transit corruption and *discarded* the chunk —
+    /// exactly the transient failure the extension exists for. The client
+    /// must re-HEAD and resend instead of aborting the upload permanently.
+    #[async_test]
+    async fn resume_at_retries_460_checksum_mismatch() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(mock_head_response(0, 4)));
+            responses.push_back(Ok(transport_response(
+                460,
+                http::HeaderMap::new(),
+                b"checksum mismatch".to_vec(),
+            )));
+            responses.push_back(Ok(mock_head_response(0, 4)));
+            responses.push_back(Ok(mock_patch_response(4)));
+            responses.push_back(Ok(mock_head_response(4, 4)));
+        }
+
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_retries(1)
+            .with_retry_delay(Duration::from_millis(0));
+
+        let upload = client
+            .resume_at(&upload_url("upload-1"), b"data".to_vec())
+            .await
+            .expect("460 checksum mismatch must be retried");
+        assert_eq!(upload.offset, 4);
+
+        let requests = transport.requests.lock().unwrap();
+        let methods: Vec<_> = requests.iter().map(|req| req.method().clone()).collect();
+        assert_eq!(
+            methods,
+            vec![
+                Method::HEAD,
+                Method::PATCH,
+                Method::HEAD,
+                Method::PATCH,
+                Method::HEAD
+            ]
+        );
+    }
+
     #[async_test]
     async fn resume_at_retries_custom_transport_failure() {
         let transport = MockTransport::default();
         {
             let responses = &mut *transport.responses.lock().unwrap();
             responses.push_back(Ok(mock_head_response(0, 4)));
-            responses.push_back(Err(Error::Transport("connection reset".into())));
+            responses.push_back(Err(Error::transport("connection reset")));
             responses.push_back(Ok(mock_head_response(0, 4)));
             responses.push_back(Ok(mock_patch_response(4)));
             responses.push_back(Ok(mock_head_response(4, 4)));
@@ -1404,6 +1683,39 @@ mod tests {
                 actual: 0,
             })
         ));
+    }
+
+    /// A server acking more bytes than the PATCH actually sent would make
+    /// the client skip source bytes and report a corrupt upload as
+    /// successful; it must surface as a permanent `OffsetDesync`.
+    #[async_test]
+    async fn resume_at_rejects_patch_offset_beyond_bytes_sent() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(mock_head_response(0, 4)));
+            // The client sends bytes 0..2 (max_chunk_size 2); the server
+            // acks all 4 bytes of the upload.
+            responses.push_back(Ok(mock_patch_response(4)));
+        }
+
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_chunk_size(2)
+            .with_max_retries(3);
+
+        let result = client
+            .resume_at(&upload_url("upload-1"), b"data".to_vec())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::OffsetDesync {
+                expected: 2,
+                actual: 4,
+            })
+        ));
+        // Deterministic protocol bug: no retry, no recovery HEAD.
+        assert_eq!(transport.requests.lock().unwrap().len(), 2);
     }
 
     #[async_test]
@@ -1674,6 +1986,65 @@ mod tests {
             .iter()
             .find(|request| request.method() == Method::DELETE)
             .expect("failed parallel upload must terminate created partials");
+        assert_eq!(delete.uri().to_string(), "http://example.test/files/part-1");
+    }
+
+    /// A partial whose creation succeeds but whose follow-up resume fails must
+    /// still be terminated: the created URL is only known inside the part task,
+    /// so it has to survive the error back to the cleanup step.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_terminates_partial_created_before_a_resume_failure() {
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
+                ]),
+                Vec::new(),
+            )));
+            // Creation-with-upload accepts only part of the body, so the part
+            // task must resume the created partial.
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "2")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(2, 4)));
+            // The resume PATCH fails after the partial already exists.
+            responses.push_back(Ok(transport_response(
+                400,
+                http::HeaderMap::new(),
+                b"resume rejected".to_vec(),
+            )));
+            // Best-effort DELETE of the created-but-unfinished partial.
+            responses.push_back(Ok(transport_response(
+                204,
+                http::HeaderMap::new(),
+                Vec::new(),
+            )));
+        }
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_max_initial_upload_size(1024)
+            .with_max_retries(0);
+
+        let result = client
+            .upload_parallel(
+                b"abcd".to_vec(),
+                UploadMetadata::new(),
+                ParallelUpload::new(4).with_max_concurrency(1),
+            )
+            .await;
+
+        assert!(result.is_err());
+        let requests = transport.requests.lock().unwrap();
+        let delete = requests
+            .iter()
+            .find(|request| request.method() == Method::DELETE)
+            .expect("a partial created before a resume failure must be terminated");
         assert_eq!(delete.uri().to_string(), "http://example.test/files/part-1");
     }
 

@@ -59,7 +59,7 @@ mod upload_id;
 
 pub use body::{BodyFrame, BodyStream, RequestBody};
 pub use download::{DownloadRequest, DownloadResponse};
-pub use headers::Headers;
+pub use headers::{Headers, UploadChecksum};
 pub use response::{Response, TUS_SUCCESS_RESPONSE_HEADERS};
 pub use upload_id::UploadId;
 
@@ -292,7 +292,7 @@ where
     /// Terminates an upload.
     pub async fn delete(
         &self,
-        headers: &Headers,
+        headers: Headers,
         upload_id: &UploadId,
     ) -> Result<Response, crate::Error> {
         self.protocol().delete(headers, upload_id).await
@@ -387,12 +387,12 @@ mod handle_tests {
         let handle = storage.create(upload.id()).await.unwrap();
         upload.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: upload.require_storage_handle().unwrap(),
-                expected_offset: upload.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(b"hello")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                upload.require_storage_handle().unwrap(),
+                upload.offset(),
+                ChunkStream::from_bytes(Bytes::from_static(b"hello")),
+                true,
+            ))
             .await
             .unwrap();
         upload.set_storage_handle(handle);

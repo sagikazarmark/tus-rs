@@ -52,6 +52,14 @@ where
             .upload_offset
             .ok_or_else(|| Error::MissingHeader("Upload-Offset"))?;
 
+        // Cheap unlocked existence pre-check (DoS guard, not authoritative):
+        // requests for unknown IDs must not exercise the locker, which may
+        // allocate per-ID resources. The authoritative state load below still
+        // happens under the lock.
+        if self.state_store.get(upload_id).await?.is_none() {
+            return Err(Error::NotFound(upload_id.to_string()));
+        }
+
         let _guard = self
             .locker
             .lock(upload_id, self.config.lock_timeout())
@@ -95,7 +103,7 @@ where
         }
 
         for (name, value) in response_headers {
-            response = response.with_header_owned(name, value);
+            response = response.with_header(name, value);
         }
 
         Ok(response)
@@ -206,12 +214,12 @@ mod tests {
             .length()
             .is_some_and(|length| projected_offset == length);
         let handle = storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle().unwrap(),
-                expected_offset: state.offset(),
-                data: body(data),
+            .append(AppendRequest::new(
+                state.require_storage_handle().unwrap(),
+                state.offset(),
+                body(data),
                 completes_upload,
-            })
+            ))
             .await
             .unwrap();
         state.set_storage_handle(handle);
@@ -232,6 +240,57 @@ mod tests {
         Protocol::new(config, storage, store, &locker, &hooks)
             .patch(h, &upload_id, RequestBody::from_chunk_stream(body(data)))
             .await
+    }
+
+    /// Locker that fails every call; used to prove handlers do not exercise
+    /// the locker for unknown upload IDs.
+    struct RejectingLocker;
+
+    #[async_trait::async_trait]
+    impl crate::locking::Locker for RejectingLocker {
+        fn name(&self) -> &'static str {
+            "rejecting"
+        }
+
+        async fn lock(
+            &self,
+            _upload_id: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<crate::locking::LockGuard, Error> {
+            Err(Error::Internal("locker must not be exercised".to_string()))
+        }
+
+        async fn try_lock(
+            &self,
+            _upload_id: &str,
+        ) -> Result<Option<crate::locking::LockGuard>, Error> {
+            Err(Error::Internal("locker must not be exercised".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_of_unknown_upload_does_not_touch_locker() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id: UploadId = "missing".parse().unwrap();
+
+        let err = Protocol::new(
+            &Config::default(),
+            &storage,
+            &store,
+            &RejectingLocker,
+            &hooks,
+        )
+        .patch(
+            headers(0),
+            &upload_id,
+            RequestBody::from_chunk_stream(body(b"data")),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::NotFound(_)));
     }
 
     #[tokio::test]

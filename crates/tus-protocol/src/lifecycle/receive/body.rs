@@ -7,11 +7,11 @@ use http::HeaderMap;
 
 use crate::config::{Config, Extension};
 use crate::error::{Error, Result};
-use crate::protocol::headers::parse_upload_checksum;
+use crate::protocol::headers::{UploadChecksum, parse_upload_checksum};
 use crate::protocol::{BodyFrame, BodyStream, Headers, RequestBody};
 use crate::storage::{ByteStream, ChunkStream};
 
-type BodyChecksum = Option<(crate::config::ChecksumAlgorithm, Vec<u8>)>;
+type BodyChecksum = Option<UploadChecksum>;
 
 #[derive(Debug)]
 pub(super) struct IntakeBody {
@@ -299,16 +299,16 @@ fn streaming_hashers(policy: &BodyPolicy) -> Vec<crate::checksum::Hasher> {
         return Vec::new();
     }
 
-    if let Some((algorithm, _)) = policy.headers.upload_checksum {
-        return vec![crate::checksum::Hasher::new(algorithm)];
+    if let Some(checksum) = &policy.headers.upload_checksum {
+        return vec![crate::checksum::Hasher::new(checksum.algorithm)];
     }
 
     if policy.config.has_extension(Extension::ChecksumTrailer) {
         return policy
             .config
             .checksum_algorithms()
-            .iter()
-            .map(|algorithm| crate::checksum::Hasher::new(*algorithm))
+            .into_iter()
+            .map(crate::checksum::Hasher::new)
             .collect();
     }
 
@@ -322,13 +322,14 @@ fn verify_streamed_checksum(
     checksum: BodyChecksum,
     hashers: Vec<crate::checksum::Hasher>,
 ) -> Result<()> {
-    let Some((algorithm, expected)) = checksum else {
+    let Some(checksum) = checksum else {
         return Ok(());
     };
     if !config.has_extension(Extension::Checksum) {
         return Ok(());
     }
 
+    let (algorithm, expected) = (checksum.algorithm, checksum.digest);
     validate_checksum_algorithm(config, algorithm)?;
     let calculated = hashers
         .into_iter()
@@ -356,8 +357,17 @@ fn validate_before_polling(
     headers: &Headers,
     body_limit: Option<u64>,
 ) -> Result<()> {
-    if let Some(checksum) = headers.upload_checksum.as_ref() {
-        validate_checksum_algorithm(config, checksum.0)?;
+    // Upload-Checksum is only meaningful when the Checksum extension is
+    // enabled; otherwise the header (including unparseable values recorded
+    // during lenient header parsing) is ignored.
+    if config.has_extension(Extension::Checksum) {
+        if let Some(deferred) = headers.upload_checksum_error.as_ref() {
+            return Err(deferred.to_error());
+        }
+
+        if let Some(checksum) = headers.upload_checksum.as_ref() {
+            validate_checksum_algorithm(config, checksum.algorithm)?;
+        }
     }
 
     if let Some(content_length) = headers.content_length
@@ -446,11 +456,12 @@ fn validate_checksum_algorithm(
 
 fn verify_checksum(config: &Config, checksum: BodyChecksum, bytes: &[u8]) -> Result<()> {
     #[cfg(feature = "checksum")]
-    if let Some((algorithm, expected)) = checksum {
+    if let Some(checksum) = checksum {
         if !config.has_extension(Extension::Checksum) {
             return Ok(());
         }
 
+        let (algorithm, expected) = (checksum.algorithm, checksum.digest);
         validate_checksum_algorithm(config, algorithm)?;
         let calculated = crate::checksum::calculate(algorithm, bytes);
         if calculated != expected {
@@ -590,6 +601,49 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn unparseable_upload_checksum_is_ignored_when_checksum_extension_disabled() {
+        // Simulates `Upload-Checksum: whirlpool AAAA` arriving at a server
+        // that does not advertise the Checksum extension: the header must be
+        // ignored, not rejected.
+        let mut raw = HeaderMap::new();
+        raw.insert("tus-resumable", "1.0.0".parse().unwrap());
+        raw.insert("upload-checksum", "whirlpool AAAA".parse().unwrap());
+        let headers = Headers::from_headers(&raw).unwrap();
+
+        let collected = prepare(
+            &Config::default(),
+            &headers,
+            Some(10),
+            RequestBody::from_bytes(Bytes::from_static(b"hello")),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(collected.size, 5);
+    }
+
+    #[cfg(feature = "checksum")]
+    #[tokio::test]
+    async fn unparseable_upload_checksum_is_rejected_when_checksum_extension_enabled() {
+        let mut raw = HeaderMap::new();
+        raw.insert("tus-resumable", "1.0.0".parse().unwrap());
+        raw.insert("upload-checksum", "whirlpool AAAA".parse().unwrap());
+        let headers = Headers::from_headers(&raw).unwrap();
+        let config = Config::default().with_extension(Extension::Checksum);
+
+        let err = prepare(
+            &config,
+            &headers,
+            Some(10),
+            RequestBody::from_bytes(Bytes::from_static(b"hello")),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::UnsupportedChecksum(algorithm) if algorithm == "whirlpool"));
+    }
+
     #[cfg(feature = "checksum")]
     fn sha1_header_for(data: &[u8]) -> String {
         use crate::config::ChecksumAlgorithm;
@@ -616,7 +670,7 @@ mod tests {
 
         let config = Config::default().with_extension(Extension::Checksum);
         let headers = Headers {
-            upload_checksum: Some((
+            upload_checksum: Some(crate::UploadChecksum::new(
                 ChecksumAlgorithm::Sha1,
                 crate::checksum::calculate(ChecksumAlgorithm::Sha1, b"hello"),
             )),
@@ -676,7 +730,7 @@ mod tests {
         let config = Config::default().with_extension(Extension::ChecksumTrailer);
         let headers = Headers {
             content_length: Some(5),
-            upload_checksum: Some((
+            upload_checksum: Some(crate::UploadChecksum::new(
                 ChecksumAlgorithm::Sha1,
                 crate::checksum::calculate(ChecksumAlgorithm::Sha1, b"hello"),
             )),
@@ -715,7 +769,10 @@ mod tests {
             Ok(BodyFrame::Data(Bytes::from_static(b"hello")))
         }));
         let headers = Headers {
-            upload_checksum: Some((ChecksumAlgorithm::Sha256, vec![0u8; 32])),
+            upload_checksum: Some(crate::UploadChecksum::new(
+                ChecksumAlgorithm::Sha256,
+                vec![0u8; 32],
+            )),
             ..Default::default()
         };
 
@@ -739,7 +796,10 @@ mod tests {
 
         let config = Config::default().with_extension(Extension::Checksum);
         let headers = Headers {
-            upload_checksum: Some((ChecksumAlgorithm::Sha1, vec![0u8; 20])),
+            upload_checksum: Some(crate::UploadChecksum::new(
+                ChecksumAlgorithm::Sha1,
+                vec![0u8; 20],
+            )),
             ..Default::default()
         };
 

@@ -40,6 +40,15 @@ where
     pub async fn head(&self, upload_id: &UploadId) -> Result<Response, Error> {
         let hook_contexts = HookContextBuilder::new(self.config, HookRequestFacts::head(upload_id));
         let upload_id = upload_id.as_str();
+
+        // Cheap unlocked existence pre-check (DoS guard, not authoritative):
+        // requests for unknown IDs must not exercise the locker, which may
+        // allocate per-ID resources. The authoritative state load below still
+        // happens under the lock.
+        if self.state_store.get(upload_id).await?.is_none() {
+            return Err(Error::NotFound(upload_id.to_string()));
+        }
+
         let _guard = self
             .locker
             .lock(upload_id, self.config.lock_timeout())
@@ -219,12 +228,12 @@ mod tests {
             .length()
             .is_some_and(|length| projected_offset == length);
         let handle = storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle().unwrap(),
-                expected_offset: state.offset(),
-                data: ChunkStream::from_bytes(bytes),
+            .append(AppendRequest::new(
+                state.require_storage_handle().unwrap(),
+                state.offset(),
+                ChunkStream::from_bytes(bytes),
                 completes_upload,
-            })
+            ))
             .await
             .unwrap();
         state.set_storage_handle(handle);
@@ -257,6 +266,27 @@ mod tests {
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(response.headers.get("upload-offset").unwrap(), "0");
         assert_eq!(response.headers.get("upload-length").unwrap(), "1000");
+    }
+
+    #[tokio::test]
+    async fn head_of_unknown_upload_does_not_touch_locker() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let locker = RecordingLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let upload_id: UploadId = "missing".parse().unwrap();
+
+        let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .head(&upload_id)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::NotFound(_)));
+        assert_eq!(
+            locker.lock_calls(),
+            0,
+            "unknown IDs must not exercise the locker"
+        );
     }
 
     #[tokio::test]

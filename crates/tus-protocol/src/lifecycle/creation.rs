@@ -8,23 +8,23 @@ use crate::state::{UploadMetadata, UploadState};
 
 /// Request fields needed to create an upload state.
 #[derive(Debug, Clone)]
-pub struct CreationRequest {
+pub(crate) struct CreationRequest {
     /// Upload-Length, if supplied.
-    pub upload_length: Option<u64>,
+    pub(crate) upload_length: Option<u64>,
     /// Whether Upload-Defer-Length was set.
-    pub upload_defer_length: bool,
+    pub(crate) upload_defer_length: bool,
     /// Upload-Metadata, if supplied.
-    pub upload_metadata: Option<UploadMetadata>,
+    pub(crate) upload_metadata: Option<UploadMetadata>,
     /// Upload-Concat, if supplied.
-    pub upload_concat: Option<UploadConcat>,
+    pub(crate) upload_concat: Option<UploadConcat>,
     /// Whether the POST request carries bytes.
-    pub has_body: bool,
+    pub(crate) has_body: bool,
 }
 
 impl CreationRequest {
     /// Builds lifecycle creation input from parsed protocol headers.
     #[must_use]
-    pub fn from_headers(headers: &Headers, has_body: bool) -> Self {
+    pub(crate) fn from_headers(headers: &Headers, has_body: bool) -> Self {
         Self {
             upload_length: headers.upload_length,
             upload_defer_length: headers.upload_defer_length,
@@ -37,7 +37,7 @@ impl CreationRequest {
 
 /// Result of applying creation-time protocol rules.
 #[derive(Debug)]
-pub enum CreationTransition {
+pub(crate) enum CreationTransition {
     /// A regular or partial upload ready for hooks and persistence.
     Upload(UploadState),
     /// A final upload that still needs its partial uploads loaded.
@@ -50,7 +50,10 @@ pub enum CreationTransition {
 }
 
 /// Applies creation-time protocol rules and returns the initial upload state.
-pub fn prepare_creation(config: &Config, request: CreationRequest) -> Result<CreationTransition> {
+pub(crate) fn prepare_creation(
+    config: &Config,
+    request: CreationRequest,
+) -> Result<CreationTransition> {
     if !config.has_extension(Extension::Creation) {
         return Err(Error::ExtensionNotSupported("creation".to_string()));
     }

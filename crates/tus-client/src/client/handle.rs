@@ -7,10 +7,21 @@ use crate::helpers::resolve_upload_url;
 use crate::transport::Transport;
 
 /// A remote upload resource.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Upload<T> {
     client: Client<T>,
     url: Url,
+}
+
+// Manual impl so `Upload<T>: Debug` does not require `T: Debug`, matching
+// `Client<T>`'s manual impl.
+impl<T> std::fmt::Debug for Upload<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Upload")
+            .field("client", &self.client)
+            .field("url", &self.url)
+            .finish()
+    }
 }
 
 impl<T> Upload<T>
@@ -115,6 +126,20 @@ mod tests {
         let handle: crate::Upload<_> = client.upload_at(url.clone()).unwrap();
 
         assert_eq!(handle.url(), &url);
+    }
+
+    /// `Upload<T>` must be debuggable even when the transport is not
+    /// (`MockTransport` does not implement `Debug`).
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn upload_debug_does_not_require_transport_debug() {
+        let client = Client::with_transport(endpoint_url(), MockTransport::default());
+        let handle = client.upload_at(upload_url()).unwrap();
+
+        let debug = format!("{handle:?}");
+
+        assert!(debug.starts_with("Upload"), "{debug}");
+        assert!(debug.contains("/files/upload-1"), "{debug}");
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]

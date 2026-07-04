@@ -27,6 +27,10 @@ pub enum BodyFrame {
 }
 
 /// Framework-neutral request body input for protocol handlers.
+///
+/// This enum is deliberately exhaustive (not `#[non_exhaustive]`): consumers
+/// must handle every body delivery mode, so adding a variant is a breaking
+/// change by design.
 pub enum RequestBody {
     /// No request body was supplied.
     Absent,
@@ -75,6 +79,16 @@ impl RequestBody {
             ChunkStream::Stream(stream) => {
                 Self::Stream(Box::pin(stream.map(|chunk| chunk.map(BodyFrame::Data))))
             }
+        }
+    }
+}
+
+impl std::fmt::Debug for RequestBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestBody::Absent => write!(f, "RequestBody::Absent"),
+            RequestBody::Bytes(bytes) => write!(f, "RequestBody::Bytes({} bytes)", bytes.len()),
+            RequestBody::Stream(_) => write!(f, "RequestBody::Stream(..)"),
         }
     }
 }

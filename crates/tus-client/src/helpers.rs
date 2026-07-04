@@ -146,11 +146,29 @@ pub(crate) fn validate_remote_for_resume(remote: &UploadInfo, file_length: u64) 
     validate_offset_not_beyond_source(remote.offset, file_length)
 }
 
-pub(crate) fn validate_patch_advance(previous: u64, next: u64, source_len: u64) -> Result<()> {
+/// Validates the offset a server acknowledged for a PATCH that sent
+/// `chunk_len` bytes starting at `previous`.
+///
+/// The acknowledged offset must advance (`next > previous`) but can never
+/// exceed `previous + chunk_len`: a server acking beyond the bytes actually
+/// transmitted would make the client silently skip source bytes and report
+/// a corrupt upload as successful.
+pub(crate) fn validate_patch_advance(
+    previous: u64,
+    next: u64,
+    chunk_len: u64,
+    source_len: u64,
+) -> Result<()> {
     validate_offset_not_beyond_source(next, source_len)?;
     if next <= previous {
         return Err(Error::OffsetDesync {
             expected: previous + 1,
+            actual: next,
+        });
+    }
+    if next > previous.saturating_add(chunk_len) {
+        return Err(Error::OffsetDesync {
+            expected: previous + chunk_len,
             actual: next,
         });
     }
@@ -202,13 +220,29 @@ pub(crate) fn encode_checksum(algorithm: tus_protocol::ChecksumAlgorithm, body: 
         .encode(tus_protocol::calculate_checksum(algorithm, body))
 }
 
+/// Maximum number of error-response body bytes captured into
+/// [`Error::UnexpectedResponse`]. Error bodies exist for diagnostics only;
+/// an unbounded capture would let a misbehaving server balloon client
+/// memory (and logs).
+pub(crate) const MAX_CAPTURED_ERROR_BODY_BYTES: usize = 8 * 1024;
+
+pub(crate) const TRUNCATED_ERROR_BODY_MARKER: &str = "...[truncated]";
+
 pub(crate) async fn unexpected_response(
     operation: &'static str,
     response: TransportResponse,
 ) -> Error {
     let status = response.status().as_u16();
-    let body = String::from_utf8(response.into_body())
-        .unwrap_or_else(|bytes| String::from_utf8_lossy(bytes.as_bytes()).into_owned());
+    let mut bytes = response.into_body();
+    let truncated = bytes.len() > MAX_CAPTURED_ERROR_BODY_BYTES;
+    if truncated {
+        bytes.truncate(MAX_CAPTURED_ERROR_BODY_BYTES);
+    }
+    let mut body = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    if truncated {
+        body.push_str(TRUNCATED_ERROR_BODY_MARKER);
+    }
     Error::UnexpectedResponse {
         operation,
         status,
@@ -288,6 +322,96 @@ mod tests {
             let url = resolve_upload_location(&endpoint, location).unwrap();
 
             assert_eq!(url.as_str(), expected);
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn validate_patch_advance_accepts_offsets_up_to_the_bytes_sent() {
+        // Full ack and partial ack of a 4-byte chunk sent at offset 2.
+        validate_patch_advance(2, 6, 4, 10).unwrap();
+        validate_patch_advance(2, 3, 4, 10).unwrap();
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn validate_patch_advance_rejects_non_advancing_offsets() {
+        let result = validate_patch_advance(2, 2, 4, 10);
+
+        assert!(matches!(
+            result,
+            Err(Error::OffsetDesync {
+                expected: 3,
+                actual: 2,
+            })
+        ));
+    }
+
+    /// A server acking beyond `previous + chunk_len` would make the client
+    /// skip source bytes and report a corrupt upload as successful.
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn validate_patch_advance_rejects_offsets_beyond_the_bytes_sent() {
+        let result = validate_patch_advance(2, 7, 4, 10);
+
+        assert!(matches!(
+            result,
+            Err(Error::OffsetDesync {
+                expected: 6,
+                actual: 7,
+            })
+        ));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn validate_patch_advance_rejects_offsets_beyond_the_source() {
+        let result = validate_patch_advance(2, 5, 4, 4);
+
+        assert!(matches!(
+            result,
+            Err(Error::OffsetBeyondSource {
+                offset: 5,
+                source_len: 4,
+            })
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn unexpected_response_caps_the_captured_body() {
+        let body = vec![b'x'; MAX_CAPTURED_ERROR_BODY_BYTES + 1024];
+        let response = http::Response::builder().status(502).body(body).unwrap();
+
+        let error = unexpected_response("patch upload", response).await;
+
+        match error {
+            Error::UnexpectedResponse {
+                status: 502, body, ..
+            } => {
+                assert!(body.ends_with(TRUNCATED_ERROR_BODY_MARKER), "{body:?}");
+                assert_eq!(
+                    body.len(),
+                    MAX_CAPTURED_ERROR_BODY_BYTES + TRUNCATED_ERROR_BODY_MARKER.len()
+                );
+            }
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn unexpected_response_keeps_small_bodies_intact() {
+        let response = http::Response::builder()
+            .status(502)
+            .body(b"bad gateway".to_vec())
+            .unwrap();
+
+        let error = unexpected_response("patch upload", response).await;
+
+        match error {
+            Error::UnexpectedResponse { body, .. } => assert_eq!(body, "bad gateway"),
+            other => panic!("expected UnexpectedResponse, got {other:?}"),
         }
     }
 

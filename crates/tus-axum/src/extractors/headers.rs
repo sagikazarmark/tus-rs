@@ -37,7 +37,7 @@ impl Headers {
     pub(crate) fn from_header_map(headers: &HeaderMap) -> Result<Self, Error> {
         tus_protocol::Headers::from_headers(headers)
             .map(Self)
-            .map_err(Error)
+            .map_err(Error::from)
     }
 }
 

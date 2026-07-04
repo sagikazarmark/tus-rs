@@ -20,7 +20,7 @@ pub(crate) use access::{
     prepare_upload_download_access, prepare_upload_mutation_access,
     prepare_upload_observation_access, prepare_upload_reclamation_access,
 };
-pub use creation::{CreationRequest, CreationTransition, prepare_creation};
+pub(crate) use creation::{CreationRequest, CreationTransition, prepare_creation};
 pub(crate) use final_upload::FinalUploadMaterializer;
 pub(crate) use finish::UploadCompletion;
 pub(crate) use pre_hook::PreHookGate;
@@ -36,7 +36,7 @@ use crate::error::{Error, Result};
 use crate::state::UploadState;
 
 /// Rejects protocol-expired uploads before protocol handlers expose or mutate state.
-pub fn ensure_active(state: &UploadState) -> Result<()> {
+pub(crate) fn ensure_active(state: &UploadState) -> Result<()> {
     if state.is_expired() {
         return Err(Error::Expired(state.id().to_string()));
     }

@@ -158,7 +158,12 @@ where
 
         let handle = self.storage.create(state.id()).await?;
         state.set_storage_handle(handle);
-        self.state_store.set(&state, true).await?;
+        if let Err(err) = self.state_store.set(&state, true).await {
+            // Best-effort rollback: the storage object created above must not
+            // leak when the state record cannot be persisted.
+            self.rollback_creation(&state).await;
+            return Err(err);
+        }
 
         if let Err(err) =
             commit_receive_body(self.storage, self.state_store, &mut state, prepared).await
@@ -187,10 +192,22 @@ where
     }
 
     async fn rollback_creation(&self, state: &UploadState) {
-        if let Some(handle) = state.storage_handle() {
-            let _ = self.storage.delete(&handle).await;
+        if let Some(handle) = state.storage_handle()
+            && let Err(error) = self.storage.delete(&handle).await
+        {
+            tracing::warn!(
+                upload_id = %state.id(),
+                %error,
+                "failed to roll back storage object while undoing upload creation"
+            );
         }
-        let _ = self.state_store.delete(state.id()).await;
+        if let Err(error) = self.state_store.delete(state.id()).await {
+            tracing::warn!(
+                upload_id = %state.id(),
+                %error,
+                "failed to roll back state record while undoing upload creation"
+            );
+        }
     }
 
     fn completion(&self) -> UploadCompletion<'_, H> {
@@ -366,12 +383,12 @@ where
 {
     let deferred_error = prepared.deferred_error.clone();
     let handle = match storage
-        .append(AppendRequest {
-            handle: state.require_storage_handle()?,
-            expected_offset: state.offset(),
-            data: prepared.data,
-            completes_upload: prepared.projection.completes_upload,
-        })
+        .append(AppendRequest::new(
+            state.require_storage_handle()?,
+            state.offset(),
+            prepared.data,
+            prepared.projection.completes_upload,
+        ))
         .await
     {
         Ok(handle) => handle,

@@ -108,7 +108,7 @@ Feature flags enable optional built-in backends and checksum support:
 - `storage-file`, `state-file`, `lock-file` for native filesystem-backed
   backends.
 - `checksum` for checksum validation algorithms.
-- `full-native` for the native feature set intended for server deployments.
+- `native` for the async runtime support the file and lock backends build on.
 
 On `wasm32` targets (such as Cloudflare Workers), trait bounds relax to
 non-`Send` futures automatically; no feature flag is needed.

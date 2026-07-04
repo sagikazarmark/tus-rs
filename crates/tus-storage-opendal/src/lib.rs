@@ -4,7 +4,9 @@
 //! Configure the operator in application code, then pass it to
 //! [`OpendalStorage::new`]. Construct the operator from this crate's
 //! [`opendal`] re-export so it matches the exact `opendal` version this crate
-//! links against.
+//! links against. Cargo features named `services-*` (for example
+//! `services-s3`) forward to the same-named `opendal` features so downstream
+//! crates can enable backends without depending on `opendal` directly.
 //!
 //! # Append strategy
 //!
@@ -27,6 +29,31 @@
 //! after the complete object is written, then the staging prefix is removed.
 //! Completion requires an OpenDAL service that supports `rename` or `copy` so
 //! partially materialized target objects are not exposed.
+//!
+//! # Interrupted finalize and lazy repair
+//!
+//! The completing PATCH first writes a durable completion marker
+//! (`uploads/<id>.complete`, recording the final part number), then stages the
+//! final part, then finalizes. Finalize is retried a bounded number of times
+//! inline; if it still fails (or the process crashes before it runs), the
+//! upload is fully staged but the main object does not exist yet. The read
+//! paths ([`StorageReader::stream`](tus_protocol::StorageReader::stream),
+//! [`StorageReader::stream_range`](tus_protocol::StorageReader::stream_range)) and the
+//! part-read side of [`Storage::concat`](tus_protocol::Storage::concat)
+//! detect this state via the marker and lazily re-drive materialization
+//! before serving. Repair never deletes staged parts, so concurrent repairs
+//! promote byte-identical content (idempotent last-writer-wins); leftover
+//! staging objects are removed when the upload is deleted.
+//!
+//! # Reads of incomplete uploads
+//!
+//! Unlike `FileStorage` in `tus-protocol` (which serves the partial bytes
+//! written so far), this backend returns [`Error::NotFound`] from
+//! [`StorageReader::stream`](tus_protocol::StorageReader::stream) and
+//! [`StorageReader::stream_range`](tus_protocol::StorageReader::stream_range) for uploads
+//! that are still incomplete: their bytes live only in staging objects and no
+//! main object exists to read. Complete uploads whose finalize was
+//! interrupted are repaired transparently as described above.
 //!
 //! # Single-writer expectation
 //!
@@ -56,6 +83,13 @@ use opendal::Operator;
 use tus_protocol::{AppendRequest, ByteStream, ConcatRequest, Error, Result, StorageHandle};
 
 mod staging;
+
+/// Extra inline `finalize` attempts after the first failure.
+///
+/// A failed finalize leaves a completed upload staged but unreadable until a
+/// read repairs it lazily, so it is worth a couple of immediate retries to
+/// shrink that window.
+const FINALIZE_RETRIES: u32 = 2;
 
 /// OpenDAL-based storage backend.
 ///
@@ -93,6 +127,31 @@ impl OpendalStorage {
             format!("{}/{}", self.prefix.trim_end_matches('/'), id)
         }
     }
+
+    /// Opens a byte stream over the main object, repairing an interrupted
+    /// finalize first.
+    async fn stream_from(&self, key: &str, start: u64, end: Option<u64>) -> Result<ByteStream> {
+        // A completed upload whose finalize was interrupted has no main
+        // object yet; re-drive materialization before reading. Genuinely
+        // incomplete uploads only have staging bytes and are not readable.
+        if !staging::UploadObjects::new(&self.operator, key)
+            .ensure_materialized()
+            .await?
+        {
+            return Err(Error::NotFound(key.to_string()));
+        }
+
+        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
+        let stream = match end {
+            Some(end) => reader.into_bytes_stream(start..end).await,
+            None => reader.into_bytes_stream(start..).await,
+        }
+        .map_err(Error::storage)?;
+
+        Ok(Box::pin(
+            stream.map(|result| result.map_err(io::Error::other)),
+        ))
+    }
 }
 
 impl std::fmt::Debug for OpendalStorage {
@@ -111,6 +170,14 @@ impl tus_protocol::Storage for OpendalStorage {
 
     async fn create(&self, upload_id: &str) -> Result<StorageHandle> {
         let key = self.make_key(upload_id);
+
+        // A reused key must not inherit staged parts, temporary objects, or a
+        // completion marker from an earlier upload; stale staged bytes would
+        // otherwise splice into the new upload via append-position recovery.
+        staging::UploadObjects::new(&self.operator, &key)
+            .prepare_for_new_upload()
+            .await?;
+
         let mut handle = StorageHandle::new(key);
         staging::UploadObjects::initialize_handle(&mut handle);
         Ok(handle)
@@ -122,6 +189,7 @@ impl tus_protocol::Storage for OpendalStorage {
             expected_offset,
             data,
             completes_upload,
+            ..
         } = request;
         let key = handle.key().to_string();
         let upload = staging::UploadObjects::new(&self.operator, &key);
@@ -130,23 +198,33 @@ impl tus_protocol::Storage for OpendalStorage {
         // part object without buffering it; a mid-stream failure discards the
         // partial part so a failed PATCH changes nothing.
         upload
-            .append_part(&mut handle, expected_offset, data)
+            .append_part(&mut handle, expected_offset, data, completes_upload)
             .await?;
 
         // Lifecycle owns completion detection. Deferred-length uploads stay in
         // staging until the PATCH that declares and reaches the length.
         if completes_upload {
-            upload.finalize().await?;
+            finalize_with_retry(&upload, &key).await?;
         }
 
         Ok(handle)
     }
 
     async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
-        let ConcatRequest { target, parts } = request;
+        let ConcatRequest { target, parts, .. } = request;
         let target_key = target.key();
 
         let part_keys: Vec<String> = parts.iter().map(|part| part.key().to_string()).collect();
+
+        // A partial upload whose finalize was interrupted has its bytes fully
+        // staged but no main object; repair it so concatenation can read it.
+        // Genuinely missing parts still fail below when the read runs.
+        for part_key in &part_keys {
+            staging::UploadObjects::new(&self.operator, part_key)
+                .ensure_materialized()
+                .await?;
+        }
+
         staging::UploadObjects::new(&self.operator, target_key)
             .concat(&part_keys)
             .await?;
@@ -167,22 +245,18 @@ impl tus_protocol::Storage for OpendalStorage {
     }
 }
 
+/// Reads of stored upload bytes.
+///
+/// Incomplete uploads are not readable through this backend: their bytes live
+/// only in staging objects, so `stream`/`stream_range` return
+/// [`Error::NotFound`] until the upload completes. This diverges from
+/// `FileStorage`, which serves the partial bytes written so far. Completed
+/// uploads whose finalize was interrupted are repaired transparently before
+/// serving.
 #[async_trait]
 impl tus_protocol::StorageReader for OpendalStorage {
     async fn stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
-        let key = handle.key();
-
-        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
-
-        // Convert OpenDAL reader to our ByteStream
-        let stream = reader
-            .into_bytes_stream(0..)
-            .await
-            .map_err(Error::storage)?;
-
-        Ok(Box::pin(
-            stream.map(|result| result.map_err(io::Error::other)),
-        ))
+        self.stream_from(handle.key(), 0, None).await
     }
 
     async fn stream_range(
@@ -191,37 +265,49 @@ impl tus_protocol::StorageReader for OpendalStorage {
         start: u64,
         end: Option<u64>,
     ) -> Result<ByteStream> {
-        let key = handle.key();
-
-        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
-        let stream = match end {
-            Some(end) => reader
-                .into_bytes_stream(start..end)
-                .await
-                .map_err(Error::storage)?,
-            None => reader
-                .into_bytes_stream(start..)
-                .await
-                .map_err(Error::storage)?,
-        };
-
-        Ok(Box::pin(
-            stream.map(|result| result.map_err(io::Error::other)),
-        ))
+        self.stream_from(handle.key(), start, end).await
     }
+}
+
+/// Runs `finalize` with a small number of immediate retries.
+async fn finalize_with_retry(upload: &staging::UploadObjects<'_>, key: &str) -> Result<()> {
+    let mut error = match upload.finalize().await {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+
+    for attempt in 1..=FINALIZE_RETRIES {
+        tracing::warn!(
+            key,
+            attempt,
+            error = %error,
+            "finalize failed; retrying inline"
+        );
+        error = match upload.finalize().await {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+    }
+
+    tracing::warn!(
+        key,
+        error = %error,
+        "finalize failed after retries; upload stays staged until a read repairs it"
+    );
+    Err(error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use opendal::services::Fs;
+    use opendal::services::{Fs, Memory};
     use tus_protocol::storage::conformance;
     use tus_protocol::{ChunkStream, Storage, StorageReader};
 
     struct TestStorage {
         storage: OpendalStorage,
-        _tempdir: tempfile::TempDir,
+        tempdir: tempfile::TempDir,
     }
 
     impl TestStorage {
@@ -247,8 +333,16 @@ mod tests {
 
         TestStorage {
             storage: OpendalStorage::new(operator),
-            _tempdir: tempdir,
+            tempdir,
         }
+    }
+
+    async fn read_all(mut stream: ByteStream) -> Vec<u8> {
+        let mut data = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            data.extend_from_slice(&chunk.unwrap());
+        }
+        data
     }
 
     #[tokio::test]
@@ -270,12 +364,7 @@ mod tests {
         // this write completes the upload.
         let data = ChunkStream::from_bytes(Bytes::from("hello world"));
         let handle = storage
-            .append(AppendRequest {
-                handle,
-                expected_offset: 0,
-                data,
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(handle, 0, data, true))
             .await
             .unwrap();
 
@@ -290,22 +379,22 @@ mod tests {
         let handle = storage.create("test-upload-2").await.unwrap();
 
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello ")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello ")),
+                false,
+            ))
             .await
             .unwrap();
 
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 6,
-                data: ChunkStream::from_bytes(Bytes::from("world")),
-                completes_upload: true,
-            })
+                6,
+                ChunkStream::from_bytes(Bytes::from("world")),
+                true,
+            ))
             .await
             .unwrap();
 
@@ -320,12 +409,12 @@ mod tests {
 
         let handle = storage.create("deferred-upload").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -338,12 +427,12 @@ mod tests {
         let handle = storage.create("handle-internals").await.unwrap();
 
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -352,17 +441,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_expected_offset_returns_offset_mismatch() {
+        let storage = create_test_storage();
+
+        let handle = storage.create("offset-mismatch-upload").await.unwrap();
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
+            .await
+            .unwrap();
+
+        // Storage holds 5 bytes; a client (or stale state after a failed
+        // completing append) supplying another offset gets the
+        // protocol-correct 409 conflict, not an internal error.
+        let error = storage
+            .append(AppendRequest::new(
+                handle.clone(),
+                3,
+                ChunkStream::from_bytes(Bytes::from("xyz")),
+                false,
+            ))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::OffsetMismatch {
+                expected: 5,
+                actual: 3
+            }
+        ));
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
+    }
+
+    #[tokio::test]
     async fn failed_stream_append_discards_partial_part() {
         let storage = create_test_storage();
 
         let handle = storage.create("failed-stream-upload").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -371,12 +498,12 @@ mod tests {
             Err(io::Error::other("client went away")),
         ]));
         let error = storage
-            .append(AppendRequest {
-                handle: handle.clone(),
-                expected_offset: 5,
-                data: ChunkStream::from_stream(failing),
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(
+                handle.clone(),
+                5,
+                ChunkStream::from_stream(failing),
+                false,
+            ))
             .await
             .unwrap_err();
 
@@ -397,12 +524,12 @@ mod tests {
 
         let handle = storage.create("stale-offset-upload").await.unwrap();
         let mut handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -416,12 +543,12 @@ mod tests {
 
         let handle = storage.create("partial-main-upload").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -432,6 +559,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
+    }
+
+    #[tokio::test]
+    async fn staged_size_on_memory_backend_falls_back_to_stat() {
+        // The memory service's listings do not include content lengths, so
+        // size() must fall back to stat-ing the parts it cannot size from the
+        // listing alone.
+        let operator = Operator::new(Memory::default()).unwrap().finish();
+        let storage = OpendalStorage::new(operator);
+
+        let handle = storage.create("memory-upload").await.unwrap();
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello ")),
+                false,
+            ))
+            .await
+            .unwrap();
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                6,
+                ChunkStream::from_bytes(Bytes::from("world")),
+                false,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
     }
 
     #[tokio::test]
@@ -446,32 +604,28 @@ mod tests {
         let recovered_handle = active_handle.clone();
 
         let _active_handle = storage
-            .append(AppendRequest {
-                handle: active_handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(
+                active_handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
             .await
             .unwrap();
 
         let recovered_offset = storage.size(&recovered_handle).await.unwrap().unwrap();
 
         let recovered_handle = storage
-            .append(AppendRequest {
-                handle: recovered_handle,
-                expected_offset: recovered_offset,
-                data: ChunkStream::from_bytes(Bytes::from("world")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                recovered_handle,
+                recovered_offset,
+                ChunkStream::from_bytes(Bytes::from("world")),
+                true,
+            ))
             .await
             .unwrap();
 
-        let mut stream = storage.stream(&recovered_handle).await.unwrap();
-        let mut data = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            data.extend_from_slice(&chunk.unwrap());
-        }
+        let data = read_all(storage.stream(&recovered_handle).await.unwrap()).await;
 
         assert_eq!(data, b"helloworld");
     }
@@ -482,23 +636,141 @@ mod tests {
 
         let handle = storage.create("test-upload-3").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("test content")),
-                completes_upload: true,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("test content")),
+                true,
+            ))
             .await
             .unwrap();
 
-        let mut stream = storage.stream(&handle).await.unwrap();
-        let mut data = Vec::new();
-
-        while let Some(chunk) = stream.next().await {
-            data.extend_from_slice(&chunk.unwrap());
-        }
+        let data = read_all(storage.stream(&handle).await.unwrap()).await;
 
         assert_eq!(String::from_utf8(data).unwrap(), "test content");
+    }
+
+    #[tokio::test]
+    async fn stream_of_incomplete_upload_returns_not_found() {
+        // Incomplete uploads only have staging bytes; unlike FileStorage
+        // (which serves partial bytes), this backend reports NotFound until
+        // the upload completes.
+        let storage = create_test_storage();
+
+        let handle = storage.create("incomplete-read").await.unwrap();
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                false,
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            storage.stream(&handle).await.map(|_| ()),
+            Err(Error::NotFound(_))
+        ));
+        assert!(matches!(
+            storage.stream_range(&handle, 0, Some(2)).await.map(|_| ()),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn interrupted_finalize_is_repaired_on_stream() {
+        let storage = create_test_storage();
+
+        let handle = storage.create("stranded-upload").await.unwrap();
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello ")),
+                false,
+            ))
+            .await
+            .unwrap();
+
+        // Block promotion: a directory at the main key makes the fs
+        // service's rename fail, so the completing append stages its part
+        // durably but every finalize attempt (including the inline retries)
+        // fails.
+        storage
+            .operator
+            .create_dir("stranded-upload/")
+            .await
+            .unwrap();
+
+        let error = storage
+            .append(AppendRequest::new(
+                handle.clone(),
+                6,
+                ChunkStream::from_bytes(Bytes::from("world")),
+                true,
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Storage(_)));
+
+        // Promotion becomes possible again; the read path must repair the
+        // stranded upload instead of returning NotFound forever.
+        storage.operator.delete("stranded-upload/").await.unwrap();
+
+        // HEAD reconciliation reads size(), sees all bytes accounted for, and
+        // marks the upload complete even though no main object exists yet.
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
+
+        let body = read_all(storage.stream(&handle).await.unwrap()).await;
+        assert_eq!(body, b"hello world");
+
+        let range = read_all(storage.stream_range(&handle, 6, None).await.unwrap()).await;
+        assert_eq!(range, b"world");
+
+        // The repaired upload stays consistent for follow-up reads.
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
+    }
+
+    #[tokio::test]
+    async fn concat_repairs_stranded_partial_upload() {
+        let storage = create_test_storage();
+
+        // Strand a partial upload: its completing append stages everything
+        // but finalize cannot promote the main object.
+        let stranded = storage.create("stranded-part").await.unwrap();
+        storage.operator.create_dir("stranded-part/").await.unwrap();
+        let error = storage
+            .append(AppendRequest::new(
+                stranded.clone(),
+                0,
+                ChunkStream::from_bytes(Bytes::from("Hello ")),
+                true,
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Storage(_)));
+        storage.operator.delete("stranded-part/").await.unwrap();
+
+        let healthy = storage.create("healthy-part").await.unwrap();
+        let healthy = storage
+            .append(AppendRequest::new(
+                healthy,
+                0,
+                ChunkStream::from_bytes(Bytes::from("World")),
+                true,
+            ))
+            .await
+            .unwrap();
+
+        let target = storage.create("concat-repair-target").await.unwrap();
+        let target = storage
+            .concat(ConcatRequest::new(target, vec![stranded, healthy]))
+            .await
+            .unwrap();
+
+        let body = read_all(storage.stream(&target).await.unwrap()).await;
+        assert_eq!(body, b"Hello World");
     }
 
     #[tokio::test]
@@ -508,42 +780,35 @@ mod tests {
         // Create parts; each declares its length so finalize runs.
         let part1 = storage.create("part1").await.unwrap();
         let part1 = storage
-            .append(AppendRequest {
-                handle: part1,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("Hello ")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part1,
+                0,
+                ChunkStream::from_bytes(Bytes::from("Hello ")),
+                true,
+            ))
             .await
             .unwrap();
 
         let part2 = storage.create("part2").await.unwrap();
         let part2 = storage
-            .append(AppendRequest {
-                handle: part2,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("World")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part2,
+                0,
+                ChunkStream::from_bytes(Bytes::from("World")),
+                true,
+            ))
             .await
             .unwrap();
 
         // Create target and concat
         let target = storage.create("final").await.unwrap();
         let target = storage
-            .concat(ConcatRequest {
-                target,
-                parts: vec![part1, part2],
-            })
+            .concat(ConcatRequest::new(target, vec![part1, part2]))
             .await
             .unwrap();
 
         // Read result
-        let mut stream = storage.stream(&target).await.unwrap();
-        let mut data = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            data.extend_from_slice(&chunk.unwrap());
-        }
+        let data = read_all(storage.stream(&target).await.unwrap()).await;
 
         assert_eq!(String::from_utf8(data).unwrap(), "Hello World");
     }
@@ -554,22 +819,19 @@ mod tests {
 
         let part = storage.create("concat-good-part").await.unwrap();
         let part = storage
-            .append(AppendRequest {
-                handle: part,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("Hello ")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part,
+                0,
+                ChunkStream::from_bytes(Bytes::from("Hello ")),
+                true,
+            ))
             .await
             .unwrap();
 
         let missing_part = storage.create("concat-missing-part").await.unwrap();
         let target = storage.create("concat-failed-target").await.unwrap();
         let error = storage
-            .concat(ConcatRequest {
-                target: target.clone(),
-                parts: vec![part, missing_part],
-            })
+            .concat(ConcatRequest::new(target.clone(), vec![part, missing_part]))
             .await
             .unwrap_err();
 
@@ -582,22 +844,19 @@ mod tests {
         let storage = create_test_storage();
         let part = storage.create("part-internals").await.unwrap();
         let part = storage
-            .append(AppendRequest {
-                handle: part,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("part")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part,
+                0,
+                ChunkStream::from_bytes(Bytes::from("part")),
+                true,
+            ))
             .await
             .unwrap();
         let mut target = storage.create("target-internals").await.unwrap();
         target.set_internal("target_fact", "keep-me");
 
         let target = storage
-            .concat(ConcatRequest {
-                target,
-                parts: vec![part],
-            })
+            .concat(ConcatRequest::new(target, vec![part]))
             .await
             .unwrap();
 
@@ -610,12 +869,12 @@ mod tests {
 
         let handle = storage.create("test-delete").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("hello")),
-                completes_upload: true,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("hello")),
+                true,
+            ))
             .await
             .unwrap();
         assert!(storage.size(&handle).await.unwrap().is_some());
@@ -632,12 +891,12 @@ mod tests {
 
         let handle = storage.create("stale-upload").await.unwrap();
         let handle = storage
-            .append(AppendRequest {
+            .append(AppendRequest::new(
                 handle,
-                expected_offset: 0,
-                data: ChunkStream::from_bytes(Bytes::from("abc")),
-                completes_upload: false,
-            })
+                0,
+                ChunkStream::from_bytes(Bytes::from("abc")),
+                false,
+            ))
             .await
             .unwrap();
 
@@ -645,6 +904,82 @@ mod tests {
 
         storage.delete(&handle).await.unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_propagates_staging_cleanup_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let storage = create_test_storage();
+
+        let handle = storage.create("undeletable-upload").await.unwrap();
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("abc")),
+                false,
+            ))
+            .await
+            .unwrap();
+
+        // Make the staged part undeletable; DELETE must surface the failure
+        // (so the client can retry) instead of reporting success while the
+        // bytes remain orphaned.
+        let parts_dir = storage.tempdir.path().join("undeletable-upload.parts");
+        std::fs::set_permissions(&parts_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let error = storage.delete(&handle).await.unwrap_err();
+        assert!(matches!(error, Error::Storage(_)));
+
+        // Once the failure clears, the retried DELETE succeeds and removes
+        // everything.
+        std::fs::set_permissions(&parts_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        storage.delete(&handle).await.unwrap();
+        assert_eq!(storage.size(&handle).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn create_removes_stale_staging_objects_at_reused_key() {
+        let storage = create_test_storage();
+
+        // Leftovers from a previous upload at the same key: staged parts, a
+        // temporary object, and a completion marker.
+        storage
+            .operator
+            .write("reused.parts/0000000001", Bytes::from("stale"))
+            .await
+            .unwrap();
+        storage
+            .operator
+            .write("reused.tmp/finalize-deadbeef", Bytes::from("stale-tmp"))
+            .await
+            .unwrap();
+        storage
+            .operator
+            .write("reused.complete", Bytes::from("1"))
+            .await
+            .unwrap();
+
+        let handle = storage.create("reused").await.unwrap();
+
+        // The fresh upload starts empty and stale bytes never splice in.
+        assert_eq!(storage.size(&handle).await.unwrap(), None);
+
+        let handle = storage
+            .append(AppendRequest::new(
+                handle,
+                0,
+                ChunkStream::from_bytes(Bytes::from("fresh")),
+                true,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
+        let body = read_all(storage.stream(&handle).await.unwrap()).await;
+        assert_eq!(body, b"fresh");
     }
 
     #[tokio::test]

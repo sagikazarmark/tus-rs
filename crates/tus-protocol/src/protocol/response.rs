@@ -64,31 +64,16 @@ impl Response {
 
     /// Sets a header, replacing any existing value.
     ///
-    /// Drops the header (with a warning log) if the value is invalid; header
-    /// values must never carry unvalidated bytes into the response.
-    #[must_use]
-    pub fn with_header(mut self, name: &'static str, value: impl AsRef<str>) -> Self {
-        match HeaderValue::from_str(value.as_ref()) {
-            Ok(v) => {
-                self.headers.insert(HeaderName::from_static(name), v);
-            }
-            Err(_) => {
-                tracing::warn!(header = name, "dropping response header with invalid value");
-            }
-        }
-        self
-    }
-
-    /// Sets a header by owned name (for caller-supplied strings from hooks).
-    ///
-    /// Drops the header (with a warning log) if the name or value is invalid;
-    /// hook-supplied strings must never carry unvalidated bytes into the
+    /// Accepts both static and caller-supplied (e.g. hook-provided) names and
+    /// values. Drops the header (with a warning log) if the name or value is
+    /// invalid; header strings must never carry unvalidated bytes into the
     /// response.
     #[must_use]
-    pub fn with_header_owned(mut self, name: String, value: String) -> Self {
+    pub fn with_header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+        let name = name.as_ref();
         match (
-            HeaderName::try_from(name.as_str()),
-            HeaderValue::try_from(value.as_str()),
+            HeaderName::try_from(name),
+            HeaderValue::from_str(value.as_ref()),
         ) {
             (Ok(n), Ok(v)) => {
                 self.headers.insert(n, v);

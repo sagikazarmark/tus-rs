@@ -37,9 +37,10 @@ cors_origins = ["https://app.example.com", "https://admin.example.com"]
 # Auth
 auth_token = ["token-one", "token-two"]
 
-# HTTP body limits (0 = explicit opt-out; defaults are 1 GiB / 60 s)
+# HTTP limits (0 = explicit opt-out; defaults are 1 GiB / 60 s / 30 s)
 max_request_body_bytes = 1073741824
 request_body_read_timeout = 60
+request_header_read_timeout = 30
 
 # Logging
 log_format = "text"

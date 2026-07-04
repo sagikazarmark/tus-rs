@@ -203,9 +203,7 @@ async fn main() -> Result<()> {
             output,
         } => {
             let options = UploadOptions::new(no_progress, chunk_size.or(upload_config.chunk_size));
-            let upload =
-                upload_file(file, upload_url, metadata, output, options, &settings).await?;
-            print_upload_result(upload, output);
+            upload_file(file, upload_url, metadata, output, options, &settings).await?;
         }
         Command::Info { upload_url, output } => {
             let client = build_upload_client(&upload_url, &settings)?;
@@ -377,7 +375,7 @@ async fn upload_file(
     output: UploadOutputFormat,
     options: UploadOptions,
     settings: &Settings,
-) -> Result<tus_client::UploadInfo> {
+) -> Result<()> {
     match upload_url {
         Some(upload_url) => {
             upload_existing_file(file, &upload_url, output, options, settings).await
@@ -392,24 +390,29 @@ async fn create_upload_file(
     output: UploadOutputFormat,
     options: UploadOptions,
     settings: &Settings,
-) -> Result<tus_client::UploadInfo> {
+) -> Result<()> {
     let endpoint = resolve_collection_endpoint(settings)?;
     let client = apply_upload_options(build_collection_client(endpoint, settings)?, options);
     let metadata = to_metadata_map(metadata);
     let source = open_upload_file(&file).await?;
-    let upload = if should_show_progress(output, options) {
-        let total = source.len();
-        let mut progress = Progress::new(total);
-        let upload = client
-            .upload_from_with_progress(source, &metadata, &mut progress)
-            .await?;
-        progress.finish(upload.offset);
-        upload
-    } else {
-        client.upload_from(source, &metadata).await?
-    };
+    let (upload, _info) = client
+        .create_upload(NewUpload::new(source.len(), metadata))
+        .await?;
 
-    Ok(upload)
+    // Print the upload URL *before* transferring any bytes: if the upload
+    // fails or is interrupted mid-transfer, the user still has the URL and
+    // can resume with `tus upload FILE URL`.
+    match output {
+        UploadOutputFormat::Human => eprintln!("Upload created: {}", upload.url()),
+        UploadOutputFormat::Url => println!("{}", upload.url()),
+    }
+
+    let info = drive_upload(&upload, source, output, options).await?;
+    if output == UploadOutputFormat::Human {
+        eprintln!("Upload complete: {}", info.url);
+    }
+
+    Ok(())
 }
 
 async fn upload_existing_file(
@@ -418,13 +421,26 @@ async fn upload_existing_file(
     output: UploadOutputFormat,
     options: UploadOptions,
     settings: &Settings,
-) -> Result<tus_client::UploadInfo> {
+) -> Result<()> {
     let client = apply_upload_options(build_upload_client(upload_url, settings)?, options);
     let upload = client.upload_at(upload_url)?;
     let source = open_upload_file(&file).await?;
     if output == UploadOutputFormat::Human {
         eprintln!("Uploading to {}", upload.url());
     }
+
+    let info = drive_upload(&upload, source, output, options).await?;
+    print_upload_result(info, output);
+
+    Ok(())
+}
+
+async fn drive_upload(
+    upload: &tus_client::Upload<tus_client::ReqwestTransport>,
+    source: FileSource,
+    output: UploadOutputFormat,
+    options: UploadOptions,
+) -> Result<tus_client::UploadInfo> {
     let info = if should_show_progress(output, options) {
         let total = source.len();
         let mut progress = Progress::new(total);
@@ -453,6 +469,12 @@ fn collection_endpoint(mut url: Url) -> Result<Url> {
         .path_segments()
         .context("upload URL must include a path")?
         .collect::<Vec<_>>();
+    // A trailing slash produces an empty final segment; strip empties so
+    // popping removes the upload id instead of returning the upload URL
+    // itself as its own collection endpoint.
+    while segments.last() == Some(&"") {
+        segments.pop();
+    }
     if segments.is_empty() {
         anyhow::bail!("upload URL must include an upload id path segment");
     }
@@ -769,6 +791,45 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn collection_endpoint_pops_the_upload_id_segment() {
+        let cases = [
+            (
+                "http://example.com/files/upload-1",
+                "http://example.com/files",
+            ),
+            // Trailing slashes must not make the upload URL its own
+            // collection endpoint.
+            (
+                "http://example.com/files/upload-1/",
+                "http://example.com/files",
+            ),
+            (
+                "http://example.com/files/upload-1//",
+                "http://example.com/files",
+            ),
+        ];
+
+        for (upload_url, expected) in cases {
+            let endpoint = collection_endpoint(Url::parse(upload_url).unwrap()).unwrap();
+
+            assert_eq!(endpoint.as_str(), expected, "for {upload_url}");
+        }
+    }
+
+    #[test]
+    fn collection_endpoint_rejects_urls_without_an_upload_id_segment() {
+        for upload_url in [
+            "http://example.com",
+            "http://example.com/",
+            "http://example.com//",
+        ] {
+            let result = collection_endpoint(Url::parse(upload_url).unwrap());
+
+            assert!(result.is_err(), "expected error for {upload_url}");
+        }
     }
 
     #[test]

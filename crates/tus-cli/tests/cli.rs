@@ -139,7 +139,10 @@ fn created_upload_url(output: &std::process::Output) -> String {
 
 fn assert_upload_human_output(output: &std::process::Output, upload_url: &str) {
     assert_eq!(stdout(output), "");
-    assert_eq!(stderr(output), format!("Upload complete: {upload_url}\n"));
+    assert_eq!(
+        stderr(output),
+        format!("Upload created: {upload_url}\nUpload complete: {upload_url}\n")
+    );
 }
 
 fn assert_existing_upload_human_output(output: &std::process::Output, upload_url: &str) {
@@ -362,6 +365,69 @@ async fn upload_url_output_prints_only_created_upload_url() {
     let upload_url = lines[0];
     assert!(upload_url.starts_with(&endpoint));
     assert_eq!(stdout, format!("{upload_url}\n"));
+
+    handle.abort();
+}
+
+/// The whole point of printing the upload URL at creation time: a
+/// mid-upload failure must still leave the user with the URL so the upload
+/// can be resumed with `tus upload FILE URL`.
+#[tokio::test]
+async fn upload_failure_still_prints_created_upload_url() {
+    async fn reject_patch(req: Request, next: Next) -> Result<Response, StatusCode> {
+        if req.method() == Method::PATCH {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        Ok(next.run(req).await)
+    }
+
+    let state = TusState::new(ProtocolHandle::new(
+        Config::default(),
+        MemoryStorage::new(),
+        MemoryStateStore::new(),
+        MemoryLocker::new(),
+        NoopHookExecutor::new(),
+    ));
+    let app: Router = tus_axum::create_router(state)
+        .unwrap()
+        .layer(axum::middleware::from_fn(reject_patch));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let endpoint = format!("http://{addr}/files");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("doomed-upload.txt");
+    tokio::fs::write(&path, b"hello").await.unwrap();
+
+    // URL output mode: the URL must be on stdout even though PATCH failed.
+    let output = run_cli(&[
+        "--endpoint",
+        &endpoint,
+        "upload",
+        "-o",
+        "url",
+        path.to_str().unwrap(),
+    ])
+    .await;
+
+    assert!(!output.status.success());
+    let upload_url = created_upload_url(&output);
+    assert!(upload_url.starts_with(&endpoint), "{upload_url}");
+
+    // Human output mode: the URL must be on stderr even though PATCH failed.
+    let output = run_cli(&["--endpoint", &endpoint, "upload", path.to_str().unwrap()]).await;
+
+    assert!(!output.status.success());
+    let stderr = stderr(&output);
+    let created_line = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Upload created: "))
+        .expect("stderr should include the created upload URL");
+    assert!(created_line.starts_with(&endpoint), "{stderr}");
+    assert!(!stderr.contains("Upload complete:"), "{stderr}");
 
     handle.abort();
 }

@@ -14,30 +14,30 @@ use super::{PreHookGate, UploadCompletion, ensure_active};
 
 /// Loaded and validated final-upload parts.
 #[derive(Debug, Clone)]
-pub struct FinalUploadPlan {
+pub(crate) struct FinalUploadPlan {
     /// Part IDs in concatenation order.
-    pub part_ids: Vec<String>,
+    pub(crate) part_ids: Vec<String>,
     /// Part states in concatenation order.
-    pub parts: Vec<UploadState>,
+    pub(crate) parts: Vec<UploadState>,
     /// Summarized final-upload state derived from the parts.
-    pub status: FinalUploadStatus,
+    pub(crate) status: FinalUploadStatus,
 }
 
 /// Final-upload state derived from its partial uploads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FinalUploadStatus {
+pub(crate) struct FinalUploadStatus {
     /// Known total length when all parts have known length.
-    pub total_length: Option<u64>,
+    pub(crate) total_length: Option<u64>,
     /// Sum of current offsets for all parts.
-    pub current_offset: u64,
+    pub(crate) current_offset: u64,
     /// Whether every part is complete and total length is known.
-    pub all_complete: bool,
+    pub(crate) all_complete: bool,
 }
 
 impl FinalUploadStatus {
     /// Returns the offset the final upload state should expose internally.
     #[must_use]
-    pub fn expected_offset(&self) -> u64 {
+    pub(crate) fn expected_offset(&self) -> u64 {
         if self.all_complete {
             self.total_length.unwrap_or(self.current_offset)
         } else {
@@ -47,7 +47,7 @@ impl FinalUploadStatus {
 
     /// Returns whether storage materialization may run now.
     #[must_use]
-    pub fn ready_to_materialize(&self) -> bool {
+    pub(crate) fn ready_to_materialize(&self) -> bool {
         self.all_complete && self.total_length.is_some()
     }
 }
@@ -198,19 +198,24 @@ where
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
+    let mut plan = load_final_upload_plan(state_store, config, &part_urls).await?;
+
+    // Hold the part locks across materialization so no part changes between
+    // the completeness check and the storage-level concat below. Part states
+    // are re-loaded and re-validated after the locks are acquired, so the
+    // validated snapshot is the one the locks actually protect.
+    let _part_guards = if plan.status.ready_to_materialize() {
+        let guards = lock_parts(locker, &plan.part_ids).await?;
+        plan = load_final_upload_plan(state_store, config, &part_urls).await?;
+        guards
+    } else {
+        Vec::new()
+    };
     let FinalUploadPlan {
         part_ids,
         parts,
         status,
-    } = load_final_upload_plan(state_store, config, &part_urls).await?;
-
-    // Hold the part locks across materialization so no part changes between
-    // the completeness check above and the storage-level concat below.
-    let _part_guards = if status.ready_to_materialize() {
-        lock_parts(locker, &part_ids).await?
-    } else {
-        Vec::new()
-    };
+    } = plan;
 
     apply_final_upload_plan(&mut state, part_ids, &status);
     cap_planned_final_upload_expiration(&mut state, &parts);
@@ -225,11 +230,19 @@ where
     let handle = storage.create(state.id()).await?;
     state.set_storage_handle(handle);
 
-    if status.ready_to_materialize() {
-        materialize_final_upload(storage, &mut state, &parts).await?;
+    if status.ready_to_materialize()
+        && let Err(err) = materialize_final_upload(storage, &mut state, &parts).await
+    {
+        rollback_final_upload_storage(storage, &state).await;
+        return Err(err);
     }
 
-    state_store.set(&state, true).await?;
+    if let Err(err) = state_store.set(&state, true).await {
+        // Best-effort rollback: the storage object created above must not
+        // leak when the state record cannot be persisted.
+        rollback_final_upload_storage(storage, &state).await;
+        return Err(err);
+    }
 
     run_post_event(hooks, HookEvent::PostCreate, request_info, &state).await;
 
@@ -258,20 +271,25 @@ where
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
-    let Some(FinalUploadPlan {
-        part_ids,
-        parts,
-        status,
-    }) = load_final_upload_status(state_store, state).await?
-    else {
+    let Some(mut plan) = load_final_upload_status(state_store, state).await? else {
         return Ok(false);
     };
 
-    let _part_guards = if status.ready_to_materialize() {
-        lock_parts(locker, &part_ids).await?
+    // Hold the part locks across materialization so no part changes between
+    // the completeness check and the storage-level concat below. Part states
+    // are re-loaded and re-validated after the locks are acquired, so the
+    // validated snapshot is the one the locks actually protect.
+    let _part_guards = if plan.status.ready_to_materialize() {
+        let guards = lock_parts(locker, &plan.part_ids).await?;
+        let Some(fresh) = load_final_upload_status(state_store, state).await? else {
+            return Ok(false);
+        };
+        plan = fresh;
+        guards
     } else {
         Vec::new()
     };
+    let FinalUploadPlan { parts, status, .. } = plan;
 
     let refresh = PlannedFinalUploadRefresh::inspect(storage, state, parts, status).await?;
 
@@ -419,7 +437,7 @@ impl PlannedFinalUploadRefresh {
 }
 
 /// Loads and validates parts referenced by a final Upload-Concat header.
-pub async fn load_final_upload_plan<I>(
+pub(crate) async fn load_final_upload_plan<I>(
     state_store: &I,
     config: &Config,
     part_urls: &[String],
@@ -477,7 +495,7 @@ where
 }
 
 /// Loads final-upload parts referenced by persisted final upload state.
-pub async fn load_final_upload_status<I>(
+pub(crate) async fn load_final_upload_status<I>(
     state_store: &I,
     state: &UploadState,
 ) -> Result<Option<FinalUploadPlan>>
@@ -514,7 +532,7 @@ where
 }
 
 /// Summarizes final-upload state derived from partial uploads.
-pub fn summarize_final_parts(parts: &[UploadState]) -> Result<FinalUploadStatus> {
+pub(crate) fn summarize_final_parts(parts: &[UploadState]) -> Result<FinalUploadStatus> {
     let mut total_length = 0_u64;
     let mut current_offset = 0_u64;
     let mut all_complete = true;
@@ -593,6 +611,25 @@ async fn run_post_event<H>(
     execute_post_best_effort(hooks, &ctx).await;
 }
 
+/// Best-effort removal of the storage object created for a final upload whose
+/// creation could not be committed. Failures are logged; the original error
+/// is what callers return.
+async fn rollback_final_upload_storage<S>(storage: &S, state: &UploadState)
+where
+    S: Storage + ?Sized,
+{
+    let Some(handle) = state.storage_handle() else {
+        return;
+    };
+    if let Err(error) = storage.delete(&handle).await {
+        tracing::warn!(
+            upload_id = %state.id(),
+            %error,
+            "failed to roll back final upload storage after creation failure"
+        );
+    }
+}
+
 async fn storage_size<S>(storage: &S, state: &UploadState) -> Result<u64>
 where
     S: Storage + ?Sized,
@@ -613,10 +650,10 @@ where
     S: Storage + ?Sized,
 {
     let handle = storage
-        .concat(ConcatRequest {
-            target: state.require_storage_handle()?,
-            parts: storage_handles(parts)?,
-        })
+        .concat(ConcatRequest::new(
+            state.require_storage_handle()?,
+            storage_handles(parts)?,
+        ))
         .await?;
     state.set_storage_handle(handle);
 
@@ -760,12 +797,12 @@ mod materialization_tests {
         let handle = storage.create(part.id()).await.unwrap();
         part.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: part.require_storage_handle().unwrap(),
-                expected_offset: part.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(bytes)),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                part.require_storage_handle().unwrap(),
+                part.offset(),
+                ChunkStream::from_bytes(Bytes::from_static(bytes)),
+                true,
+            ))
             .await
             .unwrap();
         part.set_storage_handle(handle);
@@ -899,12 +936,12 @@ mod materialization_tests {
         let handle = storage.create(final_upload.id()).await.unwrap();
         final_upload.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: final_upload.require_storage_handle().unwrap(),
-                expected_offset: final_upload.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(b"ABCDEF")),
-                completes_upload: false,
-            })
+            .append(AppendRequest::new(
+                final_upload.require_storage_handle().unwrap(),
+                final_upload.offset(),
+                ChunkStream::from_bytes(Bytes::from_static(b"ABCDEF")),
+                false,
+            ))
             .await
             .unwrap();
         final_upload.set_storage_handle(handle);
@@ -1090,12 +1127,12 @@ mod materialization_tests {
         let handle = storage.create(final_upload.id()).await.unwrap();
         final_upload.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: final_upload.require_storage_handle().unwrap(),
-                expected_offset: final_upload.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                final_upload.require_storage_handle().unwrap(),
+                final_upload.offset(),
+                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
+                true,
+            ))
             .await
             .unwrap();
         final_upload.set_storage_handle(handle);
@@ -1128,12 +1165,12 @@ mod materialization_tests {
         let handle = storage.create(final_upload.id()).await.unwrap();
         final_upload.set_storage_handle(handle);
         let handle = storage
-            .append(AppendRequest {
-                handle: final_upload.require_storage_handle().unwrap(),
-                expected_offset: final_upload.offset(),
-                data: ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
-                completes_upload: true,
-            })
+            .append(AppendRequest::new(
+                final_upload.require_storage_handle().unwrap(),
+                final_upload.offset(),
+                ChunkStream::from_bytes(Bytes::from_static(b"ABCD")),
+                true,
+            ))
             .await
             .unwrap();
         final_upload.set_storage_handle(handle);

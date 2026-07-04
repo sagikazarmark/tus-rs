@@ -22,14 +22,20 @@ pub use client::{
     Client, HeaderProvider, NewUpload, ParallelUpload, RetryHook, ServerCapabilities, Upload,
     UploadInfo, UploadProgress, UploadSource,
 };
-pub use error::{Error, Result};
-pub use transport::{Transport, TransportBody, TransportRequest, TransportResponse};
+pub use error::{BoxError, Error, Result};
+pub use transport::{BoxTransport, Transport, TransportBody, TransportRequest, TransportResponse};
 #[cfg(feature = "checksum")]
 pub use tus_protocol::ChecksumAlgorithm;
 pub use tus_protocol::{MetadataValue, UploadMetadata};
 
-/// Re-export of the `url` crate used in the public API.
-pub use url;
+// Re-exported dependency crates whose types appear in this crate's public
+// API (`http::HeaderMap` in `Client::with_headers`, `http::Request` behind
+// `TransportRequest`, `#[async_trait]` for implementing `Transport`,
+// `UploadSource`, and `HeaderProvider`, protocol types like
+// `UploadMetadata`, and `url::Url` throughout). Depend on these through the
+// re-export so your version can never skew from the one `tus-client` was
+// built against.
+pub use {async_trait, http, tus_protocol, url};
 
 #[cfg(feature = "transport-reqwest")]
 pub use transport::ReqwestTransport;

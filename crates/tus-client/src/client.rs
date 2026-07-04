@@ -29,6 +29,15 @@ pub use upload::{ParallelUpload, UploadProgress, UploadSource};
 use crate::transport::ReqwestTransport;
 
 /// Async TUS client.
+///
+/// # Async runtime
+///
+/// On native targets the client depends on tokio: retrying operations
+/// (`upload_from`, [`Upload::upload`], …) sleep between attempts via tokio
+/// timers (see `crate::runtime`), and [`Client::upload_parallel`] spawns
+/// tokio tasks. Client operations must therefore run inside a tokio
+/// runtime. On `wasm32` the client is runtime-agnostic and uses the
+/// browser event loop for timers.
 #[derive(Clone)]
 pub struct Client<
     #[cfg(feature = "transport-reqwest")] T = ReqwestTransport,
@@ -158,7 +167,7 @@ where
     ///
     /// [`ChecksumMode::Trailer`] is not supported on `wasm32` because the
     /// browser `fetch` API cannot send request trailers; the first request
-    /// fails with a permanent, non-retried [`Error::TransportPermanent`].
+    /// fails with a permanent, non-retried [`Error::Transport`].
     #[cfg(feature = "checksum")]
     pub fn with_checksum(mut self, mode: impl Into<ChecksumMode>) -> Self {
         self.checksum = Some(mode.into());
@@ -166,6 +175,14 @@ where
     }
 
     /// Adds a dynamic header provider consulted for every request.
+    ///
+    /// Provider headers *replace* any statically configured
+    /// [`with_headers`](Client::with_headers) values of the same header
+    /// name — including all appended multi-values of that name — so a
+    /// refreshed credential can never be sent alongside a stale configured
+    /// one. Configured headers with other names are unaffected. If the
+    /// provider itself yields the same name more than once, the last value
+    /// wins.
     pub fn with_header_provider<P>(mut self, provider: P) -> Self
     where
         P: HeaderProvider + 'static,
@@ -186,13 +203,13 @@ where
     async fn request(&self, method: Method, url: &str) -> Result<TransportRequest> {
         let url = Url::parse(url)?;
         let uri: Uri = url.as_str().parse().map_err(|err| {
-            Error::TransportPermanent(format!("invalid transport URI {}: {err}", url.as_str()))
+            Error::transport_permanent(format!("invalid transport URI {}: {err}", url.as_str()))
         })?;
         let mut request = http::Request::builder()
             .method(method)
             .uri(uri)
             .body(TransportBody::Empty)
-            .map_err(|err| Error::TransportPermanent(format!("failed to build request: {err}")))?;
+            .map_err(|err| Error::transport_permanent(format!("failed to build request: {err}")))?;
 
         // `append` keeps every value of repeated default header names
         // (e.g. multiple `Cookie` or custom multi-valued headers) instead of
@@ -201,6 +218,10 @@ where
             request.headers_mut().append(name.clone(), value.clone());
         }
         if let Some(provider) = &self.header_provider {
+            // `insert` (not `append`): provider headers replace all
+            // configured values of the same name, so refreshed credentials
+            // never travel next to stale configured ones. Documented on
+            // `with_header_provider`.
             for (name, value) in provider.headers().await? {
                 insert_request_header(&mut request, name, value)?;
             }
@@ -248,10 +269,9 @@ where
                 Ok(request)
             }
             #[cfg(target_arch = "wasm32")]
-            ChecksumMode::Trailer(_) => Err(Error::TransportPermanent(
+            ChecksumMode::Trailer(_) => Err(Error::transport_permanent(
                 "checksum trailers are not supported on wasm32 (browser fetch cannot send \
-                 request trailers); use ChecksumMode::Header instead"
-                    .to_string(),
+                 request trailers); use ChecksumMode::Header instead",
             )),
             #[cfg(not(target_arch = "wasm32"))]
             ChecksumMode::Trailer(algorithm) => {
@@ -516,6 +536,130 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("team-a")
         );
+    }
+
+    /// Provider headers replace *all* configured multi-values of the same
+    /// name (documented on `with_header_provider`), while configured
+    /// headers with other names survive untouched.
+    #[async_test]
+    async fn header_provider_replaces_configured_multi_values_of_same_name() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                201,
+                {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(LOCATION, HeaderValue::from_static("/files/mock-id"));
+                    headers
+                },
+                Vec::new(),
+            )));
+
+        let mut headers = HeaderMap::new();
+        headers.append(
+            HeaderName::from_static("x-trace-tag"),
+            HeaderValue::from_static("alpha"),
+        );
+        headers.append(
+            HeaderName::from_static("x-trace-tag"),
+            HeaderValue::from_static("beta"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-tenant-id"),
+            HeaderValue::from_static("team-a"),
+        );
+        let client = Client::with_transport(endpoint_url(), transport.clone())
+            .with_headers(headers)
+            .with_header_provider(|| {
+                std::future::ready(Ok(vec![("x-trace-tag".to_string(), "fresh".to_string())]))
+            });
+
+        client
+            .create_upload(NewUpload::new(5, UploadMetadata::new()))
+            .await
+            .unwrap();
+
+        let requests = transport.requests.lock().unwrap();
+        let request = requests.first().unwrap();
+        let trace_tags: Vec<_> = request
+            .headers()
+            .get_all("x-trace-tag")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect();
+        assert_eq!(
+            trace_tags,
+            vec!["fresh"],
+            "provider value must replace every configured value of the same name"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("x-tenant-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("team-a"),
+            "configured headers with other names must survive"
+        );
+    }
+
+    #[async_test]
+    async fn box_transport_erases_the_concrete_transport_type() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                201,
+                {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(LOCATION, HeaderValue::from_static("/files/mock-id"));
+                    headers
+                },
+                Vec::new(),
+            )));
+
+        let boxed = crate::BoxTransport::new(transport.clone());
+        let client: Client<crate::BoxTransport> = Client::with_transport(endpoint_url(), boxed);
+
+        let (upload, _info) = client
+            .create_upload(NewUpload::new(5, UploadMetadata::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(upload.url().as_str(), "http://example.test/files/mock-id");
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
+
+    #[async_test]
+    async fn arc_wrapped_transports_are_transports() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                201,
+                {
+                    let mut headers = HeaderMap::new();
+                    headers.insert(LOCATION, HeaderValue::from_static("/files/mock-id"));
+                    headers
+                },
+                Vec::new(),
+            )));
+
+        let client = Client::with_transport(endpoint_url(), Arc::new(transport.clone()));
+
+        let (upload, _info) = client
+            .create_upload(NewUpload::new(5, UploadMetadata::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(upload.url().as_str(), "http://example.test/files/mock-id");
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
     }
 
     #[async_test]

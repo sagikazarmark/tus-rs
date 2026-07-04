@@ -151,11 +151,22 @@ impl Config {
     /// When enabling the Checksum extension, default algorithms (sha1) are automatically
     /// added if no algorithms are already configured. Use `with_checksum()` to add
     /// additional algorithms.
+    ///
+    /// # Panics
+    ///
+    /// Panics when enabling [`Extension::Checksum`] or
+    /// [`Extension::ChecksumTrailer`] without the `checksum` Cargo feature:
+    /// the extension would be advertised but no algorithm could ever verify a
+    /// request. Enable the `checksum` feature of `tus-protocol` to use these
+    /// extensions.
     #[must_use]
     pub fn with_extension(mut self, ext: Extension) -> Self {
         #[cfg(not(feature = "checksum"))]
         if matches!(ext, Extension::Checksum | Extension::ChecksumTrailer) {
-            return self;
+            panic!(
+                "enable the `checksum` feature of tus-protocol to use the {} extension",
+                ext.as_str()
+            );
         }
 
         self.extensions.insert(ext);
@@ -269,9 +280,14 @@ impl Config {
         self.max_size
     }
 
-    /// Returns the supported checksum algorithms.
-    pub fn checksum_algorithms(&self) -> &HashSet<ChecksumAlgorithm> {
-        &self.checksum_algorithms
+    /// Returns the supported checksum algorithms, sorted by name.
+    ///
+    /// The internal collection type is deliberately not exposed so it can
+    /// change without breaking callers.
+    pub fn checksum_algorithms(&self) -> Vec<ChecksumAlgorithm> {
+        let mut algorithms: Vec<_> = self.checksum_algorithms.iter().copied().collect();
+        algorithms.sort_by_key(|algorithm| algorithm.as_str());
+        algorithms
     }
 
     /// Returns whether a checksum algorithm is supported.
@@ -328,13 +344,11 @@ impl Config {
 
     /// Returns the checksum algorithms as a comma-separated string.
     pub fn checksum_algorithms_string(&self) -> String {
-        let mut algs: Vec<_> = self
-            .checksum_algorithms
+        self.checksum_algorithms()
             .iter()
             .map(|a| a.as_str())
-            .collect();
-        algs.sort();
-        algs.join(",")
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     /// Builds the full URL for an upload.
@@ -520,6 +534,35 @@ mod tests {
         assert!(config.has_extension(Extension::Expiration));
         assert!(config.supports_checksum_algorithm(ChecksumAlgorithm::Sha256));
         assert_eq!(config.base_path(), "/uploads");
+    }
+
+    #[cfg(not(feature = "checksum"))]
+    #[test]
+    #[should_panic(expected = "enable the `checksum` feature")]
+    fn with_extension_panics_for_checksum_without_feature() {
+        let _ = Config::new().with_extension(Extension::Checksum);
+    }
+
+    #[cfg(not(feature = "checksum"))]
+    #[test]
+    #[should_panic(expected = "enable the `checksum` feature")]
+    fn with_extension_panics_for_checksum_trailer_without_feature() {
+        let _ = Config::new().with_extension(Extension::ChecksumTrailer);
+    }
+
+    #[cfg(feature = "checksum")]
+    #[test]
+    fn checksum_algorithms_are_returned_sorted_by_name() {
+        let config = Config::new()
+            .with_checksum(ChecksumAlgorithm::Sha256)
+            .with_checksum(ChecksumAlgorithm::Crc32);
+
+        let names: Vec<&str> = config
+            .checksum_algorithms()
+            .into_iter()
+            .map(|algorithm| algorithm.as_str())
+            .collect();
+        assert_eq!(names, vec!["crc32", "sha1", "sha256"]);
     }
 
     #[test]

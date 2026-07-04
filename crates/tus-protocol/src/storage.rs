@@ -28,7 +28,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::Stream;
 
 use crate::error::Result;
 use crate::runtime::MaybeSendSync;
@@ -114,35 +114,19 @@ pub trait StorageReader: MaybeSendSync {
     /// Retrieves a range of bytes from the upload.
     ///
     /// `start` is inclusive and `end` is exclusive. `None` for `end` means the
-    /// end of the upload. The default implementation clamps the range to the
+    /// end of the upload. Implementations should clamp the range to the
     /// current object size.
     ///
-    /// The default implementation buffers the full upload and slices it in
-    /// memory. Backends with native range support should override this.
+    /// This method is deliberately required (no buffering default): range
+    /// requests must not silently degrade into reading the whole object into
+    /// memory. Backends without native range support should stream and skip
+    /// instead of buffering everything.
     async fn stream_range(
         &self,
         handle: &StorageHandle,
         start: u64,
         end: Option<u64>,
-    ) -> Result<ByteStream> {
-        let mut stream = self.stream(handle).await?;
-        let mut body = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(crate::error::Error::Io)?;
-            body.extend_from_slice(&chunk);
-        }
-
-        let len = body.len() as u64;
-        let start = start.min(len);
-        let end = end.unwrap_or(len).min(len);
-        let slice = if start <= end {
-            Bytes::copy_from_slice(&body[start as usize..end as usize])
-        } else {
-            Bytes::new()
-        };
-
-        Ok(Box::pin(futures::stream::once(async move { Ok(slice) })))
-    }
+    ) -> Result<ByteStream>;
 }
 
 /// Opaque storage addressing and backend-specific persisted facts.
@@ -203,7 +187,12 @@ impl StorageHandle {
 }
 
 /// Storage append request facts.
+///
+/// Construct with [`AppendRequest::new`]. The struct is `#[non_exhaustive]`
+/// so future protocol facts can be added without breaking storage backends;
+/// fields stay public for reading and destructuring with `..`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AppendRequest {
     /// Opaque storage handle for the upload being appended to.
     pub handle: StorageHandle,
@@ -215,8 +204,31 @@ pub struct AppendRequest {
     pub completes_upload: bool,
 }
 
+impl AppendRequest {
+    /// Creates an append request from its protocol facts.
+    #[must_use]
+    pub fn new(
+        handle: StorageHandle,
+        expected_offset: u64,
+        data: ChunkStream,
+        completes_upload: bool,
+    ) -> Self {
+        Self {
+            handle,
+            expected_offset,
+            data,
+            completes_upload,
+        }
+    }
+}
+
 /// Storage concatenation request facts.
+///
+/// Construct with [`ConcatRequest::new`]. The struct is `#[non_exhaustive]`
+/// so future protocol facts can be added without breaking storage backends;
+/// fields stay public for reading and destructuring with `..`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ConcatRequest {
     /// Opaque storage handle for the final upload target.
     pub target: StorageHandle,
@@ -224,7 +236,19 @@ pub struct ConcatRequest {
     pub parts: Vec<StorageHandle>,
 }
 
+impl ConcatRequest {
+    /// Creates a concatenation request from its protocol facts.
+    #[must_use]
+    pub fn new(target: StorageHandle, parts: Vec<StorageHandle>) -> Self {
+        Self { target, parts }
+    }
+}
+
 /// A stream of data chunks for upload.
+///
+/// This enum is deliberately exhaustive (not `#[non_exhaustive]`): storage
+/// backends must handle every delivery mode, so adding a variant is a
+/// breaking change by design.
 pub enum ChunkStream {
     /// Buffered data (small uploads or pre-buffered).
     Buffered(Bytes),

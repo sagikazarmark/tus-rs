@@ -212,7 +212,10 @@ mod tests {
     #[cfg(not(feature = "checksum"))]
     #[test]
     fn checksum_extension_is_not_advertised_without_feature() {
-        let config = Config::default().with_extension(Extension::Checksum);
+        // Without the `checksum` feature the extension cannot be enabled at
+        // all (Config::with_extension panics), so a default configuration
+        // must not advertise it.
+        let config = Config::default();
         let response = options(&config);
         assert!(response.headers.get("tus-checksum-algorithm").is_none());
         let extensions = response

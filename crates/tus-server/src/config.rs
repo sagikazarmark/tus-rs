@@ -8,6 +8,11 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use tus_protocol::{Config as TusConfig, Extension};
+// The `opendal` version and enabled services come from
+// tus-storage-opendal's re-export and `services-*` passthrough
+// features, so this crate needs no version-locked `opendal`
+// dependency of its own.
+use tus_storage_opendal::opendal;
 
 pub(crate) const DEFAULT_STORAGE_URI: &str = "fs://";
 pub(crate) const DEFAULT_FS_ROOT: &str = "./uploads";
@@ -18,6 +23,11 @@ pub(crate) const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024 * 1024;
 /// Default idle timeout between successive body frames: 60 seconds.
 /// `0` is the explicit opt-out meaning "disabled".
 pub(crate) const DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS: u64 = 60;
+/// Default limit on how long a connection may spend sending its
+/// request headers (slowloris defense for the header phase, matching
+/// hyper's intended default): 30 seconds. `0` is the explicit opt-out
+/// meaning "disabled".
+pub(crate) const DEFAULT_REQUEST_HEADER_READ_TIMEOUT_SECS: u64 = 30;
 /// Default cap on a single PATCH chunk: 256 MiB. Bounds per-request
 /// memory/staging on a stock server. `0` is the explicit opt-out
 /// meaning "unlimited".
@@ -177,6 +187,10 @@ pub(crate) struct ServeCli {
     #[arg(long)]
     pub(crate) request_body_read_timeout: Option<u64>,
 
+    /// Maximum seconds a connection may spend sending request headers (0 = disabled, default 30). Env: TUS_REQUEST_HEADER_READ_TIMEOUT.
+    #[arg(long)]
+    pub(crate) request_header_read_timeout: Option<u64>,
+
     /// Require an Authorization: Bearer token on every TUS request. Env: TUS_AUTH_TOKEN.
     ///
     /// Warning: tokens passed on the command line are visible in
@@ -240,6 +254,7 @@ pub(crate) struct Settings {
     pub(crate) hook: HookConfig,
     pub(crate) max_request_body_bytes: usize,
     pub(crate) request_body_read_timeout: u64,
+    pub(crate) request_header_read_timeout: u64,
     pub(crate) auth_token: Vec<String>,
     pub(crate) log_format: LogFormat,
     pub(crate) cleanup: bool,
@@ -269,6 +284,7 @@ impl Default for Settings {
             hook: HookConfig::default(),
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
             request_body_read_timeout: DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
+            request_header_read_timeout: DEFAULT_REQUEST_HEADER_READ_TIMEOUT_SECS,
             auth_token: Vec::new(),
             log_format: LogFormat::Text,
             cleanup: false,
@@ -365,6 +381,8 @@ pub(crate) struct SettingsPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) request_body_read_timeout: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) request_header_read_timeout: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) auth_token: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) log_format: Option<LogFormat>,
@@ -435,6 +453,7 @@ impl ServeCli {
             hook: hook_patch_from_serve_cli(self),
             max_request_body_bytes: self.max_request_body_bytes,
             request_body_read_timeout: self.request_body_read_timeout,
+            request_header_read_timeout: self.request_header_read_timeout,
             auth_token: self.auth_token.clone(),
             log_format: self.log_format,
             cleanup: self.cleanup,
@@ -740,6 +759,9 @@ where
             "TUS_REQUEST_BODY_READ_TIMEOUT" => {
                 patch.request_body_read_timeout = Some(parse_env_value(key, value)?);
             }
+            "TUS_REQUEST_HEADER_READ_TIMEOUT" => {
+                patch.request_header_read_timeout = Some(parse_env_value(key, value)?);
+            }
             "TUS_AUTH_TOKEN" => patch.auth_token = Some(split_csv(value)),
             "TUS_LOG_FORMAT" => patch.log_format = Some(parse_env_value(key, value)?),
             "TUS_CLEANUP" => patch.cleanup = Some(parse_env_value(key, value)?),
@@ -787,6 +809,7 @@ const KNOWN_TUS_ENV_KEYS: &[&str] = &[
     "TUS_MAX_REQUEST_BODY_BYTES",
     "TUS_MAX_SIZE",
     "TUS_REQUEST_BODY_READ_TIMEOUT",
+    "TUS_REQUEST_HEADER_READ_TIMEOUT",
     "TUS_RESPECT_FORWARDED_HEADERS",
     "TUS_SHUTDOWN_GRACE",
     "TUS_STATE_DIR",
@@ -1094,6 +1117,7 @@ mod tests {
 
         assert_eq!(settings.max_request_body_bytes, 1024 * 1024 * 1024);
         assert_eq!(settings.request_body_read_timeout, 60);
+        assert_eq!(settings.request_header_read_timeout, 30);
         assert_eq!(settings.max_chunk_size, 256 * 1024 * 1024);
         assert!(!settings.respect_forwarded_headers);
     }
@@ -1107,6 +1131,8 @@ mod tests {
             "0",
             "--request-body-read-timeout",
             "0",
+            "--request-header-read-timeout",
+            "0",
             "--max-chunk-size",
             "0",
         ]);
@@ -1114,6 +1140,7 @@ mod tests {
 
         assert_eq!(settings.max_request_body_bytes, 0);
         assert_eq!(settings.request_body_read_timeout, 0);
+        assert_eq!(settings.request_header_read_timeout, 0);
         assert_eq!(settings.max_chunk_size, 0);
 
         let config = build_tus_config(&settings);
@@ -1129,6 +1156,20 @@ mod tests {
 
         let config = build_tus_config(&settings);
         assert_eq!(config.max_chunk_size(), Some(1048576));
+    }
+
+    #[test]
+    fn request_header_read_timeout_reads_from_env_and_config_file() {
+        let patch =
+            settings_patch_from_env_vars([("TUS_REQUEST_HEADER_READ_TIMEOUT", "5")]).unwrap();
+        assert_eq!(patch.request_header_read_timeout, Some(5));
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "request_header_read_timeout = 10\n").unwrap();
+
+        let settings = load_settings_from_sources(Some(&path), SettingsPatch::default()).unwrap();
+        assert_eq!(settings.request_header_read_timeout, 10);
     }
 
     #[test]

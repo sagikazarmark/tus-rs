@@ -44,14 +44,12 @@ where
     pub(crate) async fn terminate(&self, state: UploadState) -> Result<TerminationOutcome> {
         let response_headers = self.run_pre_terminate(&state).await?;
 
-        if let Some(handle) = state.storage_handle()
-            && let Err(err) = self.storage.delete(&handle).await
-        {
-            tracing::warn!(
-                upload_id = %state.id(),
-                error = %err,
-                "failed to delete upload data from storage"
-            );
+        // Storage deletion failures must propagate: state is only deleted
+        // after the bytes are gone, so the client can retry the DELETE.
+        // Backends treat missing objects as success, keeping the retry
+        // idempotent.
+        if let Some(handle) = state.storage_handle() {
+            self.storage.delete(&handle).await?;
         }
 
         self.state_store.delete(state.id()).await?;

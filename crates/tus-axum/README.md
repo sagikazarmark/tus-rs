@@ -27,11 +27,11 @@ tus-protocol = { version = "0.0.1", features = ["storage-memory", "state-memory"
 ```
 
 For a native server using the bundled filesystem backends and checksum support,
-enable the `tus-protocol` native feature set instead:
+enable the matching `tus-protocol` features instead:
 
 ```toml
 [dependencies]
-tus-protocol = { version = "0.0.1", features = ["full-native"] }
+tus-protocol = { version = "0.0.1", features = ["storage-file", "state-file", "lock-memory", "checksum"] }
 ```
 
 ## Quick Start
@@ -133,7 +133,6 @@ Common `tus-protocol` features for axum servers:
 | `state-file` | Native filesystem-backed upload state. |
 | `lock-file` | Native filesystem-backed upload locks. |
 | `checksum` | Checksum validation algorithms. |
-| `full-native` | Convenience set for native servers: native runtime support, file storage/state, memory locks, and checksums. |
 
 ## Protocol Support
 

@@ -22,7 +22,7 @@ percent-encoding = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tracing = "0.1"
+tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 # Optional - native runtime
@@ -43,7 +43,7 @@ uuid = { workspace = true, features = ["v4", "js"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [features]
 default = []
@@ -55,8 +55,6 @@ native = ["tokio", "tokio-util"]
 conformance-lock = ["tokio/time"]
 conformance-state = []
 conformance-storage = []
-# Backward-compatible alias for adapter suites that adopted the original name.
-storage-conformance = ["conformance-storage"]
 
 # Storage implementations
 storage-file = ["native", "tokio/fs", "tokio/io-util"]
@@ -75,15 +73,6 @@ checksum = ["crc32fast", "md5", "sha1", "sha2"]
 
 # Internal-only hooks for fuzz harnesses.
 fuzzing = []
-
-# Full native feature set for convenience
-full-native = [
-  "native",
-  "storage-file",
-  "state-file",
-  "lock-memory",
-  "checksum",
-]
 
 [package.metadata.docs.rs]
 all-features = true

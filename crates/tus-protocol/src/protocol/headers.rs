@@ -25,8 +25,17 @@ pub struct Headers {
     pub upload_defer_length: bool,
     /// Parsed Upload-Metadata values.
     pub upload_metadata: Option<UploadMetadata>,
-    /// Parsed Upload-Checksum (algorithm, checksum bytes).
-    pub upload_checksum: Option<(ChecksumAlgorithm, Vec<u8>)>,
+    /// Parsed Upload-Checksum header.
+    ///
+    /// Parsing is lenient: an unparseable value is recorded internally and
+    /// only rejected by handlers when the Checksum extension is enabled, so
+    /// servers without the extension ignore the header entirely.
+    pub upload_checksum: Option<UploadChecksum>,
+    /// Deferred Upload-Checksum parse failure.
+    ///
+    /// Surfaced as an error only where the configuration is known and the
+    /// Checksum extension is enabled.
+    pub(crate) upload_checksum_error: Option<UploadChecksumParseError>,
     /// Parsed Upload-Concat header.
     pub upload_concat: Option<UploadConcat>,
     /// Content-Length header value.
@@ -54,8 +63,11 @@ impl Headers {
     ///
     /// # Errors
     ///
-    /// Returns an error if `Tus-Resumable` is missing or unsupported, or if any
-    /// TUS-specific header value cannot be parsed or validated.
+    /// Returns an error if `Tus-Resumable` is missing or unsupported, or if a
+    /// required TUS header value cannot be parsed or validated.
+    /// `Upload-Checksum` parse failures are the exception: they are deferred
+    /// (captured, not returned) and only surfaced later by handlers, and only
+    /// when the Checksum extension is enabled.
     pub fn from_headers(headers: &HeaderMap) -> Result<Self, Error> {
         // Validate Tus-Resumable header
         match headers.get("tus-resumable").and_then(|v| v.to_str().ok()) {
@@ -100,7 +112,13 @@ impl Headers {
             Some(transfer_encoding_values.join(","))
         };
         let upload_metadata = parse_upload_metadata(headers)?;
-        let upload_checksum = parse_upload_checksum(headers)?;
+        // Lenient: whether an unparseable Upload-Checksum is an error depends
+        // on the server configuration, which is not available here. Handlers
+        // reject the deferred error only when the Checksum extension is on.
+        let (upload_checksum, upload_checksum_error) = match parse_upload_checksum(headers) {
+            Ok(checksum) => (checksum, None),
+            Err(error) => (None, Some(UploadChecksumParseError::from_error(error))),
+        };
         let upload_concat = parse_upload_concat(headers)?;
 
         let host_header = headers
@@ -122,6 +140,7 @@ impl Headers {
             upload_defer_length,
             upload_metadata,
             upload_checksum,
+            upload_checksum_error,
             upload_concat,
             content_length,
             content_type,
@@ -168,6 +187,56 @@ impl Headers {
                 expected: "application/offset+octet-stream".to_string(),
                 actual: "missing".to_string(),
             }),
+        }
+    }
+}
+
+/// Parsed `Upload-Checksum` value: algorithm plus decoded digest bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UploadChecksum {
+    /// Checksum algorithm named by the client.
+    pub algorithm: ChecksumAlgorithm,
+    /// Decoded (raw, not base64) digest bytes supplied by the client.
+    pub digest: Vec<u8>,
+}
+
+impl UploadChecksum {
+    /// Creates an upload checksum from an algorithm and raw digest bytes.
+    #[must_use]
+    pub fn new(algorithm: ChecksumAlgorithm, digest: Vec<u8>) -> Self {
+        Self { algorithm, digest }
+    }
+}
+
+/// Deferred `Upload-Checksum` parse failure.
+///
+/// Stored on [`Headers`] instead of failing the parse so that servers without
+/// the Checksum extension ignore the header instead of rejecting the request.
+#[derive(Debug, Clone)]
+pub(crate) enum UploadChecksumParseError {
+    /// The algorithm token was not a recognized checksum algorithm.
+    UnsupportedAlgorithm(String),
+    /// The header value was malformed.
+    Invalid(String),
+}
+
+impl UploadChecksumParseError {
+    fn from_error(error: Error) -> Self {
+        match error {
+            Error::UnsupportedChecksum(algorithm) => Self::UnsupportedAlgorithm(algorithm),
+            Error::InvalidHeader { message, .. } => Self::Invalid(message),
+            other => Self::Invalid(other.to_string()),
+        }
+    }
+
+    pub(crate) fn to_error(&self) -> Error {
+        match self {
+            Self::UnsupportedAlgorithm(algorithm) => Error::UnsupportedChecksum(algorithm.clone()),
+            Self::Invalid(message) => Error::InvalidHeader {
+                header: "Upload-Checksum",
+                message: message.clone(),
+            },
         }
     }
 }
@@ -240,20 +309,23 @@ fn is_valid_metadata_key(key: &str) -> bool {
         })
 }
 
-pub(crate) fn parse_upload_checksum(
-    headers: &HeaderMap,
-) -> Result<Option<(ChecksumAlgorithm, Vec<u8>)>, Error> {
-    let value = match headers.get("upload-checksum").and_then(|v| v.to_str().ok()) {
-        Some(v) => v,
+pub(crate) fn parse_upload_checksum(headers: &HeaderMap) -> Result<Option<UploadChecksum>, Error> {
+    // A present-but-opaque value is a malformed header, not an absent one:
+    // dropping it silently (via `to_str().ok()`) would ignore a checksum the
+    // client did send. Map the decode failure to a deferred parse error so
+    // handlers can reject it when the Checksum extension is enabled.
+    let value = match headers.get("upload-checksum") {
+        Some(value) => value.to_str().map_err(|_| Error::InvalidHeader {
+            header: "Upload-Checksum",
+            message: "expected a valid UTF-8 value".to_string(),
+        })?,
         None => return Ok(None),
     };
 
     parse_upload_checksum_value(value).map(Some)
 }
 
-pub(crate) fn parse_upload_checksum_value(
-    value: &str,
-) -> Result<(ChecksumAlgorithm, Vec<u8>), Error> {
+pub(crate) fn parse_upload_checksum_value(value: &str) -> Result<UploadChecksum, Error> {
     let parts: Vec<&str> = value.splitn(2, ' ').collect();
     if parts.len() != 2 {
         return Err(Error::InvalidHeader {
@@ -272,7 +344,7 @@ pub(crate) fn parse_upload_checksum_value(
             message: format!("invalid base64: {}", e),
         })?;
 
-    Ok((algorithm, checksum))
+    Ok(UploadChecksum::new(algorithm, checksum))
 }
 
 fn parse_upload_concat(headers: &HeaderMap) -> Result<Option<UploadConcat>, Error> {
@@ -315,6 +387,7 @@ fn fuzz_header_map(header: &'static str, value: &[u8]) -> Result<HeaderMap, Erro
 
 /// Fuzz-only entry point for `Upload-Metadata` parsing.
 #[cfg(feature = "fuzzing")]
+#[doc(hidden)]
 pub fn fuzz_parse_upload_metadata(value: &[u8]) -> Result<Option<UploadMetadata>, Error> {
     let headers = fuzz_header_map("upload-metadata", value)?;
     parse_upload_metadata(&headers)
@@ -322,15 +395,15 @@ pub fn fuzz_parse_upload_metadata(value: &[u8]) -> Result<Option<UploadMetadata>
 
 /// Fuzz-only entry point for `Upload-Checksum` parsing.
 #[cfg(feature = "fuzzing")]
-pub fn fuzz_parse_upload_checksum(
-    value: &[u8],
-) -> Result<Option<(ChecksumAlgorithm, Vec<u8>)>, Error> {
+#[doc(hidden)]
+pub fn fuzz_parse_upload_checksum(value: &[u8]) -> Result<Option<UploadChecksum>, Error> {
     let headers = fuzz_header_map("upload-checksum", value)?;
     parse_upload_checksum(&headers)
 }
 
 /// Fuzz-only entry point for `Upload-Concat` parsing.
 #[cfg(feature = "fuzzing")]
+#[doc(hidden)]
 pub fn fuzz_parse_upload_concat(value: &[u8]) -> Result<Option<UploadConcat>, Error> {
     let headers = fuzz_header_map("upload-concat", value)?;
     parse_upload_concat(&headers)
@@ -542,8 +615,45 @@ mod tests {
     fn upload_checksum_value_parser_accepts_valid_value() {
         let parsed = parse_upload_checksum_value("sha1 AAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
 
-        assert_eq!(parsed.0, ChecksumAlgorithm::Sha1);
-        assert_eq!(parsed.1.len(), 20);
+        assert_eq!(parsed.algorithm, ChecksumAlgorithm::Sha1);
+        assert_eq!(parsed.digest.len(), 20);
+    }
+
+    #[test]
+    fn from_headers_defers_unparseable_upload_checksum() {
+        // An unknown algorithm must not fail header parsing: whether it is an
+        // error depends on the server config (Checksum extension enabled),
+        // which is unknown here.
+        let headers = make_headers(&[
+            ("tus-resumable", "1.0.0"),
+            ("upload-checksum", "whirlpool AAAA"),
+        ]);
+
+        let tus = Headers::from_headers(&headers).unwrap();
+
+        assert!(tus.upload_checksum.is_none());
+        let deferred = tus.upload_checksum_error.expect("deferred parse error");
+        assert!(matches!(
+            deferred.to_error(),
+            Error::UnsupportedChecksum(algorithm) if algorithm == "whirlpool"
+        ));
+    }
+
+    #[test]
+    fn from_headers_defers_malformed_upload_checksum() {
+        let headers = make_headers(&[("tus-resumable", "1.0.0"), ("upload-checksum", "sha1")]);
+
+        let tus = Headers::from_headers(&headers).unwrap();
+
+        assert!(tus.upload_checksum.is_none());
+        let deferred = tus.upload_checksum_error.expect("deferred parse error");
+        assert!(matches!(
+            deferred.to_error(),
+            Error::InvalidHeader {
+                header: "Upload-Checksum",
+                ..
+            }
+        ));
     }
 
     #[test]

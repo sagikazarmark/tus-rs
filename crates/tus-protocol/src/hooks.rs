@@ -131,6 +131,7 @@ pub trait Hook: MaybeSendSync {
 /// Hook events that can be subscribed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum HookEvent {
     /// Before creating a new upload (POST).
     /// Pre-hook can reject the creation or replace user metadata.

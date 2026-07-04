@@ -3,9 +3,10 @@
 //! This crate supports **axum 0.8.x**.
 //!
 //! This crate carries the axum-specific surface of a TUS server: error
-//! conversion ([`Error`]), request extractors ([`extractors`]), the
-//! route table ([`router`]), and internal [`tus_protocol`]-backed handlers wired
-//! into axum signatures.
+//! conversion ([`Error`]), request extractors ([`Headers`], [`TusBody`],
+//! [`UploadId`]), the route table ([`create_router`] and friends, configured
+//! through [`RouterOptions`]), and internal [`tus_protocol`]-backed handlers
+//! wired into axum signatures.
 //!
 //! The protocol logic itself stays in [`tus_protocol`]. This crate is a thin
 //! adapter that translates axum requests into the framework-neutral inputs
@@ -16,9 +17,10 @@
 //! [`RouterOptions`] (see [`create_router_with_options`]), not through
 //! [`tus_protocol::Config`].
 //!
-//! Public adapter types are re-exported from the crate root. Implementation
-//! modules such as `state` and `response` are intentionally not part of the
-//! public module surface:
+//! Public adapter types are re-exported from the crate root, which is the
+//! only stable path for them. Implementation modules such as `state`,
+//! `response`, `error`, `extractors`, and `router` are intentionally not
+//! part of the public module surface:
 //!
 //! ```compile_fail
 //! use tus_axum::state::TusState;
@@ -26,6 +28,18 @@
 //!
 //! ```compile_fail
 //! use tus_axum::response::TusResponse;
+//! ```
+//!
+//! ```compile_fail
+//! use tus_axum::error::Error;
+//! ```
+//!
+//! ```compile_fail
+//! use tus_axum::extractors::Headers;
+//! ```
+//!
+//! ```compile_fail
+//! use tus_axum::router::create_router;
 //! ```
 //!
 //! `handlers` is an internal adapter wiring module. Use [`create_router`] or
@@ -70,13 +84,20 @@
 //! ```
 
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![warn(unreachable_pub)]
 
-pub mod error;
-pub mod extractors;
+mod error;
+mod extractors;
 mod handlers;
 mod response;
-pub mod router;
+mod router;
 mod state;
+
+// Re-exported dependency crates whose types appear in this crate's public
+// API. Depend on these through the re-export so your version can never skew
+// from the one `tus-axum` was built against.
+pub use {axum, tus_protocol};
 
 pub use error::Error;
 pub use extractors::{Headers, TusBody, UploadId};

@@ -75,14 +75,6 @@ pub enum Error {
     #[error("lock acquisition timeout for upload: {0}")]
     LockTimeout(String),
 
-    /// Lock operation failed (500 Internal Server Error).
-    #[error("lock error: {0}")]
-    Lock(String),
-
-    /// State operation failed (500 Internal Server Error).
-    #[error("state error: {0}")]
-    State(String),
-
     /// Upload has expired (410 Gone).
     #[error("upload has expired: {0}")]
     Expired(String),
@@ -132,15 +124,27 @@ pub enum Error {
     StorageKeyMissing,
 
     /// Storage operation failed (500 Internal Server Error).
-    #[error("storage error: {0}")]
+    ///
+    /// The underlying cause is exposed through `std::error::Error::source`
+    /// only (not embedded in the display message), so error-chain reporters
+    /// don't print it twice.
+    #[error("storage error")]
     Storage(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// State store operation failed (500 Internal Server Error).
-    #[error("state store error: {0}")]
+    ///
+    /// The underlying cause is exposed through `std::error::Error::source`
+    /// only (not embedded in the display message), so error-chain reporters
+    /// don't print it twice.
+    #[error("state store error")]
     StateStore(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Hook execution failed (500 Internal Server Error or hook-determined).
-    #[error("hook error: {0}")]
+    ///
+    /// The underlying cause is exposed through `std::error::Error::source`
+    /// only (not embedded in the display message), so error-chain reporters
+    /// don't print it twice.
+    #[error("hook error")]
     Hook(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Hook rejected the operation (hook-determined status code).
@@ -203,8 +207,6 @@ impl Error {
             Error::InvalidHeader { .. } => 400,
             Error::Locked(_) => 423,
             Error::LockTimeout(_) => 423,
-            Error::Lock(_) => 500,
-            Error::State(_) => 500,
             Error::Expired(_) => 410,
             Error::ChecksumMismatch { .. } => 460, // TUS-specific status code
             Error::UnsupportedChecksum(_) => 400,
@@ -246,8 +248,6 @@ impl Error {
             Error::Storage(_)
                 | Error::StateStore(_)
                 | Error::Hook(_)
-                | Error::Lock(_)
-                | Error::State(_)
                 | Error::Io(_)
                 | Error::Internal(_)
         )
@@ -345,6 +345,29 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_error_display_does_not_embed_source() {
+        let cases: [(Error, &str); 3] = [
+            (
+                Error::storage(std::io::Error::other("disk on fire")),
+                "storage error",
+            ),
+            (
+                Error::state_store(std::io::Error::other("redis ate it")),
+                "state store error",
+            ),
+            (
+                Error::hook(std::io::Error::other("hook crashed")),
+                "hook error",
+            ),
+        ];
+        for (err, display) in cases {
+            assert_eq!(err.to_string(), display, "source leaked into Display");
+            let source = std::error::Error::source(&err).expect("source must be preserved");
+            assert!(!source.to_string().is_empty());
+        }
+    }
+
+    #[test]
     fn test_should_expose_details() {
         assert!(Error::NotFound("test".into()).should_expose_details());
         assert!(
@@ -427,8 +450,6 @@ mod tests {
             Error::Storage(Box::new(std::io::Error::other("disk on fire"))),
             Error::StateStore(Box::new(std::io::Error::other("redis ate it"))),
             Error::Hook(Box::new(std::io::Error::other("hook crashed"))),
-            Error::Lock("oops".into()),
-            Error::State("oops".into()),
             Error::Io(std::io::Error::other("eio")),
         ];
         for err in cases {
@@ -486,8 +507,6 @@ mod tests {
             }),
             Box::new(|| Error::Locked("x".into())),
             Box::new(|| Error::LockTimeout("x".into())),
-            Box::new(|| Error::Lock("x".into())),
-            Box::new(|| Error::State("x".into())),
             Box::new(|| Error::Expired("x".into())),
             Box::new(|| Error::ChecksumMismatch {
                 expected: "abc".into(),

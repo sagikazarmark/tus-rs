@@ -88,7 +88,20 @@ where
 
             let handle = self.storage.create(state.id()).await?;
             state.set_storage_handle(handle);
-            self.state_store.set(&state, true).await?;
+            if let Err(err) = self.state_store.set(&state, true).await {
+                // Best-effort rollback: the storage object created above must
+                // not leak when the state record cannot be persisted.
+                if let Some(handle) = state.storage_handle()
+                    && let Err(rollback_err) = self.storage.delete(&handle).await
+                {
+                    tracing::warn!(
+                        upload_id = %state.id(),
+                        error = %rollback_err,
+                        "failed to roll back storage object after state persistence failure"
+                    );
+                }
+                return Err(err);
+            }
 
             // A zero-length upload is already complete at creation, so finish
             // hooks must fire here or consumers would never observe it. The
@@ -126,7 +139,7 @@ where
         }
 
         for (name, value) in response_headers {
-            response = response.with_header_owned(name, value);
+            response = response.with_header(name, value);
         }
 
         Ok(response)
@@ -179,7 +192,7 @@ where
         }
 
         for (name, value) in created.response_headers {
-            response = response.with_header_owned(name, value);
+            response = response.with_header(name, value);
         }
 
         Ok(response)
@@ -353,6 +366,57 @@ mod tests {
         }
     }
 
+    /// State store whose creates fail once armed; used to prove creation
+    /// rolls the storage object back when state persistence fails.
+    struct FailingSetStateStore {
+        inner: MemoryStateStore,
+        fail_creates: AtomicBool,
+    }
+
+    impl FailingSetStateStore {
+        fn new() -> Self {
+            Self {
+                inner: MemoryStateStore::new(),
+                fail_creates: AtomicBool::new(false),
+            }
+        }
+
+        fn arm(&self) {
+            self.fail_creates.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::state::StateStore for FailingSetStateStore {
+        fn name(&self) -> &'static str {
+            "failing-set"
+        }
+
+        async fn set(&self, state: &UploadState, create: bool) -> crate::Result<()> {
+            if create && self.fail_creates.load(Ordering::SeqCst) {
+                return Err(Error::state_store(std::io::Error::other(
+                    "state set failed",
+                )));
+            }
+            self.inner.set(state, create).await
+        }
+
+        async fn get(&self, id: &str) -> crate::Result<Option<UploadState>> {
+            self.inner.get(id).await
+        }
+
+        async fn delete(&self, id: &str) -> crate::Result<()> {
+            self.inner.delete(id).await
+        }
+
+        async fn list_expired(
+            &self,
+            before: chrono::DateTime<chrono::Utc>,
+        ) -> crate::Result<Vec<String>> {
+            self.inner.list_expired(before).await
+        }
+    }
+
     #[async_trait::async_trait]
     impl HookExecutor for FailingPostHookExecutor {
         async fn execute_pre(&self, _ctx: &HookContext) -> crate::Result<PreHookResult> {
@@ -396,12 +460,12 @@ mod tests {
             .length()
             .is_some_and(|length| projected_offset == length);
         let handle = storage
-            .append(AppendRequest {
-                handle: state.require_storage_handle().unwrap(),
-                expected_offset: state.offset(),
-                data: ChunkStream::from_bytes(data),
+            .append(AppendRequest::new(
+                state.require_storage_handle().unwrap(),
+                state.offset(),
+                ChunkStream::from_bytes(data),
                 completes_upload,
-            })
+            ))
             .await
             .unwrap();
         state.set_storage_handle(handle);
@@ -430,6 +494,88 @@ mod tests {
         let id = location.rsplit('/').next().unwrap();
         let stored = store.get(id).await.unwrap().unwrap();
         assert_eq!(stored.length(), Some(1000));
+    }
+
+    #[tokio::test]
+    async fn creation_rolls_back_storage_when_state_persistence_fails() {
+        let storage = MemoryStorage::new();
+        let store = FailingSetStateStore::new();
+        store.arm();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+
+        let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .post(headers_with_length(1000), RequestBody::absent())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::StateStore(_)));
+        assert!(
+            storage.is_empty(),
+            "storage object must be rolled back when state persistence fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn creation_with_upload_rolls_back_storage_when_state_persistence_fails() {
+        let config = Config::default().with_extension(Extension::CreationWithUpload);
+        let storage = MemoryStorage::new();
+        let store = FailingSetStateStore::new();
+        store.arm();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+        let headers = Headers {
+            upload_length: Some(100),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(
+                headers,
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::StateStore(_)));
+        assert!(
+            storage.is_empty(),
+            "storage object must be rolled back when state persistence fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_upload_creation_rolls_back_storage_when_state_persistence_fails() {
+        let config = Config::default().with_extension(Extension::Concatenation);
+        let storage = MemoryStorage::new();
+        let store = FailingSetStateStore::new();
+        let locker = NoopLocker::new();
+        let hooks = NoopHookExecutor::new();
+
+        let mut part = UploadState::new("part1").with_length(5).as_partial();
+        create_storage(&storage, &mut part).await;
+        append_storage(&storage, &mut part, Bytes::from_static(b"Hello")).await;
+        store.inner.set(&part, true).await.unwrap();
+        store.arm();
+
+        let headers = Headers {
+            upload_concat: Some(UploadConcat::Final(vec!["/files/part1".to_string()])),
+            ..Default::default()
+        };
+
+        let err = Protocol::new(&config, &storage, &store, &locker, &hooks)
+            .post(headers, RequestBody::absent())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::StateStore(_)));
+        // Only the partial upload's storage object may remain; the final
+        // upload's created target must be rolled back.
+        assert_eq!(storage.len(), 1);
     }
 
     #[tokio::test]
@@ -1742,7 +1888,10 @@ mod tests {
             upload_length: Some(5),
             content_length: Some(5),
             content_type: Some("application/offset+octet-stream".to_string()),
-            upload_checksum: Some((ChecksumAlgorithm::Sha1, vec![0u8; 20])),
+            upload_checksum: Some(crate::UploadChecksum::new(
+                ChecksumAlgorithm::Sha1,
+                vec![0u8; 20],
+            )),
             ..Default::default()
         };
         let err = call(
