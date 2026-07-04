@@ -26,8 +26,13 @@ where
         }
     }
 
-    /// Runs the PreFinish hook gate before completion is durable.
-    pub(crate) async fn before_commit(&self, state: UploadState) -> Result<()> {
+    /// Runs the PreFinish hook gate before completion is reported.
+    ///
+    /// For receive paths the completing bytes are already durable when this
+    /// runs; a rejection fails the response and skips `PostFinish`. For
+    /// concatenation paths this runs before the final record is materialized,
+    /// so a rejection prevents the final upload from being created.
+    pub(crate) async fn finish_gate(&self, state: UploadState) -> Result<()> {
         PreHookGate::Finish
             .run(self.hooks, self.request_info, state)
             .await?;
@@ -52,21 +57,21 @@ where
     }
 }
 
-#[cfg(all(test, not(feature = "local-futures")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::error::Error;
     use crate::hooks::{HookChain, PreHookResult};
 
     #[tokio::test]
-    async fn completion_before_commit_returns_hook_rejection() {
+    async fn completion_finish_gate_returns_hook_rejection() {
         let hooks = HookChain::new()
             .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) });
         let request_info = HookRequestInfo::default();
         let state = UploadState::new("upload-1").with_length(5);
 
         let err = UploadCompletion::new(&hooks, &request_info)
-            .before_commit(state)
+            .finish_gate(state)
             .await
             .unwrap_err();
 
@@ -80,7 +85,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_before_commit_defaults_rejection_response() {
+    async fn completion_finish_gate_defaults_rejection_response() {
         let hooks = HookChain::new().on_pre_finish(|_| async {
             Ok(PreHookResult {
                 proceed: false,
@@ -91,7 +96,7 @@ mod tests {
         let state = UploadState::new("upload-1").with_length(5);
 
         let err = UploadCompletion::new(&hooks, &request_info)
-            .before_commit(state)
+            .finish_gate(state)
             .await
             .unwrap_err();
 

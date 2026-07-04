@@ -136,16 +136,25 @@ impl Storage for FileStorage {
             )));
         }
 
-        let bytes = collect_chunk_stream(data).await?;
         let mut file = OpenOptions::new()
             .append(true)
             .open(&path)
             .await
             .map_err(Error::Io)?;
-        file.write_all(&bytes).await.map_err(Error::Io)?;
-        file.sync_data().await.map_err(Error::Io)?;
-
-        Ok(handle)
+        // Bytes stream straight to disk. If the stream fails mid-append, the
+        // file is truncated back to the committed offset so a failed PATCH
+        // never leaves partial bytes behind.
+        match write_chunk_stream(&mut file, data).await {
+            Ok(()) => {
+                file.sync_data().await.map_err(Error::Io)?;
+                Ok(handle)
+            }
+            Err(error) => {
+                file.set_len(expected_offset).await.map_err(Error::Io)?;
+                file.sync_data().await.map_err(Error::Io)?;
+                Err(error)
+            }
+        }
     }
 
     async fn concat(&self, request: ConcatRequest) -> Result<StorageHandle> {
@@ -192,13 +201,13 @@ impl Storage for FileStorage {
 
 #[async_trait]
 impl StorageReader for FileStorage {
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
+    async fn stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
         let path = self.path_for_handle(handle)?;
         let file = File::open(path).await.map_err(Error::Io)?;
         Ok(Box::pin(ReaderStream::new(file)))
     }
 
-    async fn get_range(
+    async fn stream_range(
         &self,
         handle: &StorageHandle,
         start: u64,
@@ -251,15 +260,15 @@ fn unique_concat_temp_path(target_path: &Path) -> PathBuf {
     ))
 }
 
-async fn collect_chunk_stream(data: ChunkStream) -> Result<Bytes> {
+async fn write_chunk_stream(file: &mut File, data: ChunkStream) -> Result<()> {
     match data {
-        ChunkStream::Buffered(bytes) => Ok(bytes),
+        ChunkStream::Buffered(bytes) => file.write_all(&bytes).await.map_err(Error::Io),
         ChunkStream::Stream(mut stream) => {
-            let mut out = Vec::new();
             while let Some(chunk) = stream.next().await {
-                out.extend_from_slice(&chunk.map_err(Error::Io)?);
+                let chunk = chunk.map_err(Error::Io)?;
+                file.write_all(&chunk).await.map_err(Error::Io)?;
             }
-            Ok(Bytes::from(out))
+            Ok(())
         }
     }
 }
@@ -315,7 +324,7 @@ mod tests {
             .unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), Some(11));
 
-        let body = collect_stream(storage.get_stream(&handle).await.unwrap()).await;
+        let body = collect_stream(storage.stream(&handle).await.unwrap()).await;
         assert_eq!(body, b"hello world");
     }
 
@@ -335,10 +344,10 @@ mod tests {
             .await
             .unwrap();
 
-        let range = collect_stream(storage.get_range(&handle, 6, Some(10)).await.unwrap()).await;
+        let range = collect_stream(storage.stream_range(&handle, 6, Some(10)).await.unwrap()).await;
         assert_eq!(range, b"beta");
 
-        let suffix = collect_stream(storage.get_range(&handle, 11, None).await.unwrap()).await;
+        let suffix = collect_stream(storage.stream_range(&handle, 11, None).await.unwrap()).await;
         assert_eq!(suffix, b"gamma");
     }
 
@@ -378,7 +387,7 @@ mod tests {
             .await
             .unwrap();
 
-        let body = collect_stream(storage.get_stream(&target).await.unwrap()).await;
+        let body = collect_stream(storage.stream(&target).await.unwrap()).await;
         assert_eq!(body, b"leftright");
     }
 
@@ -428,7 +437,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(target.get_internal("target_fact"), Some("keep-me"));
+        assert_eq!(target.internal("target_fact"), Some("keep-me"));
     }
 
     #[tokio::test]
