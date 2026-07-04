@@ -927,6 +927,25 @@ mod tests {
     }
 
     #[test]
+    fn pre_hook_response_discards_reject_fields_when_proceeding() {
+        // A webhook that proceeds must not smuggle a rejection status/message
+        // into the result: the constructor-based conversion drops them.
+        let response = PreHookResponse {
+            proceed: true,
+            metadata: None,
+            reject_status: Some(403),
+            reject_message: Some("ignored".to_string()),
+            response_headers: None,
+        };
+
+        let result: PreHookResult = response.into();
+
+        assert!(result.proceeds());
+        assert_eq!(result.reject_status(), None);
+        assert_eq!(result.reject_message(), None);
+    }
+
+    #[test]
     fn pre_hook_response_maps_metadata_replacement() {
         let response: PreHookResponse =
             serde_json::from_str(r#"{"metadata":{"filename":"hook.txt"}}"#).unwrap();
