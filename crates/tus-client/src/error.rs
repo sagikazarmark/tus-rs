@@ -37,6 +37,7 @@ pub enum Error {
 
     /// The server sent a malformed response header.
     #[error("invalid `{header}` header value `{value}`")]
+    #[non_exhaustive]
     InvalidHeader {
         /// Name of the offending response header.
         header: &'static str,
@@ -46,6 +47,7 @@ pub enum Error {
 
     /// The configured default header is invalid.
     #[error("invalid default header `{name}`: {value}")]
+    #[non_exhaustive]
     InvalidDefaultHeader {
         /// Name of the configured header.
         name: String,
@@ -55,6 +57,7 @@ pub enum Error {
 
     /// The remote offset is beyond the local source size.
     #[error("server offset {offset} exceeds local source size {source_len}")]
+    #[non_exhaustive]
     OffsetBeyondSource {
         /// Offset reported by the server.
         offset: u64,
@@ -64,6 +67,7 @@ pub enum Error {
 
     /// The remote upload length does not match the local source size.
     #[error("server length {remote} does not match local source size {local}")]
+    #[non_exhaustive]
     LengthMismatch {
         /// Upload length reported by the server.
         remote: u64,
@@ -76,6 +80,7 @@ pub enum Error {
     /// transmitted — which indicates a protocol bug on one side rather than
     /// a transient network failure. Never retried.
     #[error("server offset {actual} does not match expected offset {expected}")]
+    #[non_exhaustive]
     OffsetDesync {
         /// Offset the client expected after the write.
         expected: u64,
@@ -87,6 +92,7 @@ pub enum Error {
     /// or content that changed underneath the client). Deterministic and
     /// never retried.
     #[error("upload source failed: {message}")]
+    #[non_exhaustive]
     Source {
         /// Description of the source misbehavior.
         message: String,
@@ -94,6 +100,7 @@ pub enum Error {
 
     /// The server returned an unexpected HTTP response.
     #[error("unexpected {operation} response: status {status}, body `{body}`")]
+    #[non_exhaustive]
     UnexpectedResponse {
         /// The client operation that received the response.
         operation: &'static str,
