@@ -64,24 +64,38 @@ impl Response {
 
     /// Sets a header, replacing any existing value.
     ///
-    /// Silently drops the header if the name or value is invalid; the
-    /// caller is expected to pass well-formed values.
+    /// Drops the header (with a warning log) if the value is invalid; header
+    /// values must never carry unvalidated bytes into the response.
     #[must_use]
     pub fn with_header(mut self, name: &'static str, value: impl AsRef<str>) -> Self {
-        if let Ok(v) = HeaderValue::from_str(value.as_ref()) {
-            self.headers.insert(HeaderName::from_static(name), v);
+        match HeaderValue::from_str(value.as_ref()) {
+            Ok(v) => {
+                self.headers.insert(HeaderName::from_static(name), v);
+            }
+            Err(_) => {
+                tracing::warn!(header = name, "dropping response header with invalid value");
+            }
         }
         self
     }
 
     /// Sets a header by owned name (for caller-supplied strings from hooks).
+    ///
+    /// Drops the header (with a warning log) if the name or value is invalid;
+    /// hook-supplied strings must never carry unvalidated bytes into the
+    /// response.
     #[must_use]
     pub fn with_header_owned(mut self, name: String, value: String) -> Self {
-        if let (Ok(n), Ok(v)) = (
+        match (
             HeaderName::try_from(name.as_str()),
             HeaderValue::try_from(value.as_str()),
         ) {
-            self.headers.insert(n, v);
+            (Ok(n), Ok(v)) => {
+                self.headers.insert(n, v);
+            }
+            _ => {
+                tracing::warn!(header = %name, "dropping response header with invalid name or value");
+            }
         }
         self
     }

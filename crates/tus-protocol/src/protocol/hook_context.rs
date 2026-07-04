@@ -90,8 +90,8 @@ impl<'a> HookRequestFacts<'a> {
 
     fn path(&self, config: &Config) -> String {
         match self.upload_id {
-            Some(upload_id) => format!("{}/{}", config.base_path_str(), upload_id.as_str()),
-            None => config.base_path_str().to_string(),
+            Some(upload_id) => format!("{}/{}", config.base_path(), upload_id.as_str()),
+            None => config.base_path().to_string(),
         }
     }
 
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn post_request_path_is_the_configured_base_path() {
-        let config = Config::default().base_path("/uploads");
+        let config = Config::default().with_base_path("/uploads");
         let headers = Headers::default();
 
         let request = request_info(&config, HookRequestFacts::post(&headers));
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn upload_request_paths_follow_the_configured_base_path() {
-        let config = Config::default().base_path("/uploads");
+        let config = Config::default().with_base_path("/uploads");
         let headers = Headers::default();
         let upload_id = upload_id();
 
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn builder_creates_contexts_with_shared_request_facts() {
-        let config = Config::default().base_path("/uploads");
+        let config = Config::default().with_base_path("/uploads");
         let headers = Headers {
             upload_length: Some(42),
             ..Default::default()

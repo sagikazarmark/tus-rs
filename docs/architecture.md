@@ -28,7 +28,7 @@ adapter has already parsed:
 
 - `Headers` for TUS request headers.
 - `UploadId` for validated upload resource identifiers.
-- `RequestBody` or `PatchBody` for body intake.
+- `RequestBody` for body intake.
 
 It returns framework-neutral `Response` values or `Error` values. Adapters map
 those results back to their HTTP framework.

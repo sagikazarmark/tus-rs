@@ -6,6 +6,16 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use crate::error::Error;
+
+/// Characters escaped when an upload id is placed in a URL path segment:
+/// everything except RFC 3986 unreserved characters.
+const PATH_SEGMENT_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 /// The TUS protocol version supported by this implementation.
 pub const TUS_VERSION: &str = "1.0.0";
 
@@ -29,12 +39,12 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 /// use tus_protocol::{Config, Extension};
 ///
 /// let config = Config::new()
-///     .base_path("/uploads")
-///     .max_size(100 * 1024 * 1024)
-///     .expiration(Duration::from_secs(24 * 60 * 60))
+///     .with_base_path("/uploads")
+///     .with_max_size(100 * 1024 * 1024)
+///     .with_expiration(Duration::from_secs(24 * 60 * 60))
 ///     .with_extension(Extension::Concatenation);
 ///
-/// assert_eq!(config.base_path_str(), "/uploads");
+/// assert_eq!(config.base_path(), "/uploads");
 /// assert!(config.has_extension(Extension::Concatenation));
 /// ```
 #[derive(Debug, Clone)]
@@ -66,7 +76,6 @@ pub struct Config {
     respect_forwarded_headers: bool,
 
     /// CORS allowed origins. Empty means CORS is disabled.
-    cors_origins: Vec<String>,
 
     /// Maximum chunk size per PATCH request. None means unlimited.
     max_chunk_size: Option<u64>,
@@ -94,7 +103,6 @@ impl Default for Config {
             base_path: "/files".to_string(),
             base_url: None,
             respect_forwarded_headers: false,
-            cors_origins: vec![],
             max_chunk_size: None,
             disable_download: false,
             allow_empty_creation: true,
@@ -125,6 +133,7 @@ impl Config {
                 ChecksumAlgorithm::Sha1,
                 ChecksumAlgorithm::Sha256,
                 ChecksumAlgorithm::Md5,
+                ChecksumAlgorithm::Crc32,
             ]
             .into_iter()
             .collect(),
@@ -134,7 +143,7 @@ impl Config {
 
     /// Sets the maximum upload size.
     #[must_use]
-    pub fn max_size(mut self, size: u64) -> Self {
+    pub fn with_max_size(mut self, size: u64) -> Self {
         self.max_size = Some(size);
         self
     }
@@ -172,7 +181,7 @@ impl Config {
 
     /// Sets the expiration duration for uploads.
     #[must_use]
-    pub fn expiration(mut self, duration: Duration) -> Self {
+    pub fn with_expiration(mut self, duration: Duration) -> Self {
         self.expiration = Some(duration);
         self.extensions.insert(Extension::Expiration);
         self
@@ -180,14 +189,14 @@ impl Config {
 
     /// Sets the lock acquisition timeout.
     #[must_use]
-    pub fn lock_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
         self
     }
 
     /// Sets the base path for the TUS endpoint.
     #[must_use]
-    pub fn base_path(mut self, path: impl Into<String>) -> Self {
+    pub fn with_base_path(mut self, path: impl Into<String>) -> Self {
         self.base_path = path.into();
         self
     }
@@ -197,54 +206,45 @@ impl Config {
     /// When set, Location headers will include the full URL (e.g., "http://localhost:8080/files/abc").
     /// The base URL should not include a trailing slash.
     #[must_use]
-    pub fn base_url(mut self, url: impl Into<String>) -> Self {
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = Some(url.into());
-        self
-    }
-
-    /// Enables CORS for the specified origins.
-    #[must_use]
-    pub fn cors(mut self, origins: Vec<String>) -> Self {
-        self.cors_origins = origins;
-        self
-    }
-
-    /// Enables CORS for all origins.
-    #[must_use]
-    pub fn cors_all(mut self) -> Self {
-        self.cors_origins = vec!["*".to_string()];
         self
     }
 
     /// Enables respect for forwarded headers.
     #[must_use]
-    pub fn respect_forwarded_headers(mut self) -> Self {
+    pub fn with_respect_forwarded_headers(mut self) -> Self {
         self.respect_forwarded_headers = true;
         self
     }
 
     /// Sets the maximum chunk size per PATCH request.
     #[must_use]
-    pub fn max_chunk_size(mut self, size: u64) -> Self {
+    pub fn with_max_chunk_size(mut self, size: u64) -> Self {
         self.max_chunk_size = Some(size);
         self
     }
 
     /// Disables the download endpoint.
     #[must_use]
-    pub fn disable_download(mut self) -> Self {
+    pub fn without_download(mut self) -> Self {
         self.disable_download = true;
         self
     }
 
-    /// Adds a checksum algorithm to the supported set.
+    /// Adds a checksum algorithm to the supported set and enables the
+    /// Checksum extension.
+    ///
+    /// SHA-1 is always added alongside the given algorithm because the tus
+    /// specification requires servers supporting the Checksum extension to
+    /// accept SHA-1. Trailer checksums are a separate extension; enable them
+    /// explicitly with `with_extension(Extension::ChecksumTrailer)`.
     #[cfg(feature = "checksum")]
     #[must_use]
     pub fn with_checksum(mut self, algorithm: ChecksumAlgorithm) -> Self {
         self.checksum_algorithms.insert(algorithm);
         self.checksum_algorithms.insert(ChecksumAlgorithm::Sha1);
         self.extensions.insert(Extension::Checksum);
-        self.extensions.insert(Extension::ChecksumTrailer);
         self
     }
 
@@ -256,7 +256,7 @@ impl Config {
     /// deployments that only want Creation-With-Upload requests to create new
     /// resources.
     #[must_use]
-    pub fn allow_empty_creation(mut self, allow: bool) -> Self {
+    pub fn with_allow_empty_creation(mut self, allow: bool) -> Self {
         self.allow_empty_creation = allow;
         self
     }
@@ -267,7 +267,7 @@ impl Config {
     }
 
     /// Returns the configured maximum upload size in bytes, if any.
-    pub fn max_size_limit(&self) -> Option<u64> {
+    pub fn max_size(&self) -> Option<u64> {
         self.max_size
     }
 
@@ -282,37 +282,32 @@ impl Config {
     }
 
     /// Returns the configured expiration duration, if any.
-    pub fn expiration_duration(&self) -> Option<Duration> {
+    pub fn expiration(&self) -> Option<Duration> {
         self.expiration
     }
 
     /// Returns the lock acquisition timeout.
-    pub fn lock_timeout_duration(&self) -> Duration {
+    pub fn lock_timeout(&self) -> Duration {
         self.lock_timeout
     }
 
     /// Returns the base path for TUS endpoints.
-    pub fn base_path_str(&self) -> &str {
+    pub fn base_path(&self) -> &str {
         &self.base_path
     }
 
     /// Returns the configured base URL for absolute Location headers.
-    pub fn base_url_str(&self) -> Option<&str> {
+    pub fn base_url(&self) -> Option<&str> {
         self.base_url.as_deref()
     }
 
     /// Returns whether forwarded proxy headers should be trusted.
-    pub fn uses_forwarded_headers(&self) -> bool {
+    pub fn respects_forwarded_headers(&self) -> bool {
         self.respect_forwarded_headers
     }
 
-    /// Returns the allowed CORS origins.
-    pub fn cors_allowed_origins(&self) -> &[String] {
-        &self.cors_origins
-    }
-
     /// Returns the maximum PATCH chunk size, if configured.
-    pub fn max_chunk_size_limit(&self) -> Option<u64> {
+    pub fn max_chunk_size(&self) -> Option<u64> {
         self.max_chunk_size
     }
 
@@ -346,11 +341,15 @@ impl Config {
 
     /// Builds the full URL for an upload.
     ///
+    /// The upload id is percent-encoded as a path segment so externally
+    /// seeded ids with reserved characters still yield a usable Location.
+    ///
     /// Uses the following priority for base URL:
     /// 1. Config's base_url if set
     /// 2. Request's base URL (from scheme + host) if provided
     /// 3. Falls back to relative path
     pub fn upload_url(&self, upload_id: &str, request_base_url: Option<&str>) -> String {
+        let upload_id = percent_encoding::utf8_percent_encode(upload_id, PATH_SEGMENT_ENCODE);
         let base = self.base_url.as_deref().or(request_base_url);
         match base {
             Some(base) => format!("{}{}/{}", base, self.base_path, upload_id),
@@ -399,22 +398,6 @@ impl Extension {
         }
     }
 
-    /// Parses an extension from its string name.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "creation" => Some(Extension::Creation),
-            "creation-with-upload" => Some(Extension::CreationWithUpload),
-            "creation-defer-length" => Some(Extension::CreationDeferLength),
-            "termination" => Some(Extension::Termination),
-            "expiration" => Some(Extension::Expiration),
-            "concatenation" => Some(Extension::Concatenation),
-            "concatenation-unfinished" => Some(Extension::ConcatenationUnfinished),
-            "checksum" => Some(Extension::Checksum),
-            "checksum-trailer" => Some(Extension::ChecksumTrailer),
-            _ => None,
-        }
-    }
-
     /// Returns all extensions supported by this build.
     pub fn supported() -> &'static [Extension] {
         &[
@@ -430,6 +413,25 @@ impl Extension {
             #[cfg(feature = "checksum")]
             Extension::ChecksumTrailer,
         ]
+    }
+}
+
+impl std::str::FromStr for Extension {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "creation" => Ok(Extension::Creation),
+            "creation-with-upload" => Ok(Extension::CreationWithUpload),
+            "creation-defer-length" => Ok(Extension::CreationDeferLength),
+            "termination" => Ok(Extension::Termination),
+            "expiration" => Ok(Extension::Expiration),
+            "concatenation" => Ok(Extension::Concatenation),
+            "concatenation-unfinished" => Ok(Extension::ConcatenationUnfinished),
+            "checksum" => Ok(Extension::Checksum),
+            "checksum-trailer" => Ok(Extension::ChecksumTrailer),
+            other => Err(Error::ExtensionNotSupported(other.to_string())),
+        }
     }
 }
 
@@ -457,15 +459,18 @@ impl ChecksumAlgorithm {
             ChecksumAlgorithm::Crc32 => "crc32",
         }
     }
+}
 
-    /// Parses an algorithm from its string name.
-    pub fn parse(s: &str) -> Option<Self> {
+impl std::str::FromStr for ChecksumAlgorithm {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "sha1" => Some(ChecksumAlgorithm::Sha1),
-            "sha256" => Some(ChecksumAlgorithm::Sha256),
-            "md5" => Some(ChecksumAlgorithm::Md5),
-            "crc32" => Some(ChecksumAlgorithm::Crc32),
-            _ => None,
+            "sha1" => Ok(ChecksumAlgorithm::Sha1),
+            "sha256" => Ok(ChecksumAlgorithm::Sha256),
+            "md5" => Ok(ChecksumAlgorithm::Md5),
+            "crc32" => Ok(ChecksumAlgorithm::Crc32),
+            other => Err(Error::UnsupportedChecksum(other.to_string())),
         }
     }
 }
@@ -506,17 +511,17 @@ mod tests {
     #[test]
     fn test_builder_pattern() {
         let config = Config::new()
-            .max_size(1024 * 1024 * 100) // 100 MB
+            .with_max_size(1024 * 1024 * 100) // 100 MB
             .with_extension(Extension::Checksum)
             .with_checksum(ChecksumAlgorithm::Sha256)
-            .expiration(Duration::from_secs(3600))
-            .base_path("/uploads");
+            .with_expiration(Duration::from_secs(3600))
+            .with_base_path("/uploads");
 
-        assert_eq!(config.max_size_limit(), Some(100 * 1024 * 1024));
+        assert_eq!(config.max_size(), Some(100 * 1024 * 1024));
         assert!(config.has_extension(Extension::Checksum));
         assert!(config.has_extension(Extension::Expiration));
         assert!(config.supports_checksum_algorithm(ChecksumAlgorithm::Sha256));
-        assert_eq!(config.base_path_str(), "/uploads");
+        assert_eq!(config.base_path(), "/uploads");
     }
 
     #[test]

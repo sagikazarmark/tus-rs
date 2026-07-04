@@ -63,9 +63,6 @@ pub use headers::Headers;
 pub use response::{Response, TUS_SUCCESS_RESPONSE_HEADERS};
 pub use upload_id::UploadId;
 
-/// PATCH request body input.
-pub type PatchBody = RequestBody;
-
 #[cfg(feature = "fuzzing")]
 pub use headers::{
     fuzz_parse_upload_checksum, fuzz_parse_upload_concat, fuzz_parse_upload_metadata,
@@ -122,6 +119,22 @@ where
     }
 }
 
+impl<S, I, L, H> std::fmt::Debug for Protocol<'_, S, I, L, H>
+where
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    L: Locker + ?Sized,
+    H: HookExecutor + ?Sized,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Protocol")
+            .field("storage", &self.storage.name())
+            .field("state_store", &self.state_store.name())
+            .field("locker", &self.locker.name())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Owned, cloneable handle for framework adapters and services.
 ///
 /// [`Protocol`] is a lightweight borrowed facade. Frameworks usually need an
@@ -139,6 +152,22 @@ where
     state_store: Arc<I>,
     locker: Arc<L>,
     hooks: Arc<H>,
+}
+
+impl<S, I, L, H> std::fmt::Debug for ProtocolHandle<S, I, L, H>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProtocolHandle")
+            .field("storage", &self.storage.name())
+            .field("state_store", &self.state_store.name())
+            .field("locker", &self.locker.name())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S, I, L, H> ProtocolHandle<S, I, L, H>
@@ -255,7 +284,7 @@ where
         &self,
         headers: Headers,
         upload_id: &UploadId,
-        body: PatchBody,
+        body: RequestBody,
     ) -> Result<Response, crate::Error> {
         self.protocol().patch(headers, upload_id, body).await
     }
@@ -293,7 +322,7 @@ where
     feature = "storage-memory",
     feature = "state-memory",
     feature = "lock-memory",
-    not(feature = "local-futures")
+    not(target_arch = "wasm32")
 ))]
 mod handle_tests {
     use std::sync::Arc;
@@ -380,10 +409,7 @@ mod handle_tests {
         let upload_id: UploadId = "test-id".parse().unwrap();
 
         let mut response = handle
-            .download(DownloadRequest {
-                upload_id: &upload_id,
-                range: None,
-            })
+            .download(DownloadRequest::new(&upload_id))
             .await
             .unwrap();
 

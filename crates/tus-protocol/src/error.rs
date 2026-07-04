@@ -152,6 +152,13 @@ pub enum Error {
         message: String,
     },
 
+    /// Request body size cannot be determined up front (411 Length Required).
+    ///
+    /// Returned for streamed bodies without a `Content-Length` header when the
+    /// server has no configured `max_chunk_size` to bound intake buffering.
+    #[error("length required: request must declare Content-Length")]
+    LengthRequired,
+
     /// IO error (500 Internal Server Error).
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -211,7 +218,16 @@ impl Error {
             Error::Storage(_) => 500,
             Error::StateStore(_) => 500,
             Error::Hook(_) => 500,
-            Error::HookRejected { status_code, .. } => *status_code,
+            // Hooks supply arbitrary integers; anything outside the valid
+            // HTTP range must not reach the response layer.
+            Error::HookRejected { status_code, .. } => {
+                if (100..=599).contains(status_code) {
+                    *status_code
+                } else {
+                    500
+                }
+            }
+            Error::LengthRequired => 411,
             Error::Io(_) => 500,
             Error::Internal(_) => 500,
             Error::MethodNotAllowed(_) => 405,

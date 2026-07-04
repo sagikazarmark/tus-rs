@@ -30,8 +30,8 @@ not derive protocol behavior from those storage-owned facts.
 
 Optional read behavior belongs behind `StorageReader`:
 
-- `get_stream` returns all stored bytes for a readable completed upload.
-- `get_range` returns the requested byte range and may use native provider range
+- `stream` returns all stored bytes for a readable completed upload.
+- `stream_range` returns the requested byte range and may use native provider range
   reads when available.
 
 Conformance checklist:
@@ -100,11 +100,12 @@ Required behavior:
 - `try_lock` returns `None` when the upload ID is already locked.
 - `lock` waits for release until the requested timeout and returns
   `Error::LockTimeout` on timeout.
-- `is_locked` reports a held lock for an upload ID while the lock is active.
 - A dropped `LockGuard` either releases the lock promptly or the backend lease
   expires within a documented bounded duration.
-- `unlock` is idempotent for missing locks and releases held locks when used with
-  `LockGuard::disarm`.
+- A lock stays held for as long as its `LockGuard` lives; a PATCH can hold its
+  guard for the entire streamed request body, so backends must never expire a
+  held lock on a fixed TTL. Lease-based backends must renew while the guard is
+  alive.
 - Independent upload IDs do not block each other.
 
 Conformance checklist:

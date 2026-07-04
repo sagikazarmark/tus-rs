@@ -13,14 +13,14 @@
 //! against these traits.
 
 // Feature-gated implementations
-// Native implementations are not available in local-futures builds.
+// Native implementations are not available on wasm32.
 #[cfg(any(test, feature = "conformance-storage"))]
 pub mod conformance;
 
-#[cfg(all(feature = "storage-file", not(feature = "local-futures")))]
+#[cfg(all(feature = "storage-file", not(target_arch = "wasm32")))]
 pub mod file;
 
-#[cfg(all(feature = "storage-memory", not(feature = "local-futures")))]
+#[cfg(all(feature = "storage-memory", not(target_arch = "wasm32")))]
 pub mod memory;
 
 use std::collections::HashMap;
@@ -48,9 +48,9 @@ use crate::runtime::MaybeSendSync;
 ///
 /// This trait uses conditional bounds:
 /// - On native platforms: implementations and returned futures must be `Send + Sync`
-/// - With `local-futures`: `Send + Sync` is not required
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+/// - On `wasm32`: `Send + Sync` is not required
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Storage: MaybeSendSync {
     /// Returns the storage backend name for logging/debugging.
     fn name(&self) -> &'static str;
@@ -105,11 +105,11 @@ pub trait Storage: MaybeSendSync {
 /// bytes back to callers implement this trait in addition to [`Storage`], while
 /// upload-only adapters can satisfy the protocol lifecycle with [`Storage`]
 /// alone.
-#[cfg_attr(not(feature = "local-futures"), async_trait)]
-#[cfg_attr(feature = "local-futures", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait StorageReader: MaybeSendSync {
     /// Retrieves a stream of the upload data for download.
-    async fn get_stream(&self, handle: &StorageHandle) -> Result<ByteStream>;
+    async fn stream(&self, handle: &StorageHandle) -> Result<ByteStream>;
 
     /// Retrieves a range of bytes from the upload.
     ///
@@ -119,13 +119,13 @@ pub trait StorageReader: MaybeSendSync {
     ///
     /// The default implementation buffers the full upload and slices it in
     /// memory. Backends with native range support should override this.
-    async fn get_range(
+    async fn stream_range(
         &self,
         handle: &StorageHandle,
         start: u64,
         end: Option<u64>,
     ) -> Result<ByteStream> {
-        let mut stream = self.get_stream(handle).await?;
+        let mut stream = self.stream(handle).await?;
         let mut body = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(crate::error::Error::Io)?;
@@ -192,7 +192,7 @@ impl StorageHandle {
     }
 
     /// Reads a backend-specific value previously stored on the handle.
-    pub fn get_internal(&self, key: &str) -> Option<&str> {
+    pub fn internal(&self, key: &str) -> Option<&str> {
         self.internal.get(key).map(String::as_str)
     }
 
@@ -262,11 +262,11 @@ impl std::fmt::Debug for ChunkStream {
 }
 
 /// A stream of bytes for request/response bodies.
-#[cfg(not(feature = "local-futures"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub type ByteStream = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>> + Send>>;
 
 /// A stream of bytes for request/response bodies.
-#[cfg(feature = "local-futures")]
+#[cfg(target_arch = "wasm32")]
 pub type ByteStream = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>>>>;
 
 #[cfg(test)]
@@ -290,7 +290,7 @@ mod tests {
         assert!(debug_str.contains("4 bytes"));
     }
 
-    #[cfg(feature = "local-futures")]
+    #[cfg(target_arch = "wasm32")]
     #[test]
     fn test_byte_stream_accepts_non_send_streams_in_local_mode() {
         use std::rc::Rc;
