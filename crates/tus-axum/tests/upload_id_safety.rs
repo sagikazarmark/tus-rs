@@ -45,13 +45,13 @@ async fn build_router(root: &std::path::Path) -> axum::Router {
     let state_store = FileStateStore::new(root.join("state")).await.unwrap();
     let locker = FileLocker::new(root.join("locks")).await.unwrap();
     let state = TusState::new(ProtocolHandle::new(
-        Config::default().base_path("/files"),
+        Config::default().with_base_path("/files"),
         storage,
         state_store,
         locker,
         NoopHookExecutor::new(),
     ));
-    create_router(state)
+    create_router(state).unwrap()
 }
 
 async fn build_sandbox() -> Sandbox {

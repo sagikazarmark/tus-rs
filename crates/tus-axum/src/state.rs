@@ -21,6 +21,7 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 /// #     state::memory::MemoryStateStore,
 /// #     storage::memory::MemoryStorage,
 /// # };
+/// # fn run() -> Result<(), tus_axum::RouterError> {
 /// let protocol = ProtocolHandle::new(
 ///     Config::default(),
 ///     MemoryStorage::new(),
@@ -29,7 +30,9 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 ///     NoopHookExecutor::new(),
 /// );
 /// let state = TusState::new(protocol);
-/// let router = create_router(state);
+/// let router = create_router(state)?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct TusState<S, I, L, H>
 where
@@ -156,7 +159,7 @@ mod tests {
 
     fn build() -> Backends {
         TusState::new(ProtocolHandle::new(
-            Config::default().base_path("/uploads"),
+            Config::default().with_base_path("/uploads"),
             MemoryStorage::new(),
             MemoryStateStore::new(),
             MemoryLocker::new(),
@@ -166,7 +169,7 @@ mod tests {
 
     #[test]
     fn new_starts_each_arc_at_strong_count_one() {
-        let config = Arc::new(Config::default().base_path("/uploads"));
+        let config = Arc::new(Config::default().with_base_path("/uploads"));
         let storage = Arc::new(MemoryStorage::new());
         let state_store = Arc::new(MemoryStateStore::new());
         let locker = Arc::new(MemoryLocker::new());
@@ -190,7 +193,7 @@ mod tests {
     #[test]
     fn config_exposes_base_path() {
         let state = build();
-        assert_eq!(state.config().base_path_str(), "/uploads");
+        assert_eq!(state.config().base_path(), "/uploads");
     }
 
     #[test]

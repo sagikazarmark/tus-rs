@@ -68,6 +68,13 @@ where
 
         let stream = stream::unfold(body, |mut body| async {
             body.frame().await.map(|frame| {
+                // Body read failures pass through as io errors with their
+                // source chain intact. The protocol surfaces them as
+                // `tus_protocol::Error::Io` (client disconnects stay 500-class
+                // IO errors), and the axum error bridge (`crate::error`)
+                // walks the preserved chain to answer 413 instead when a
+                // transport body-limit layer tripped mid-stream
+                // (`http_body_util::LengthLimitError`).
                 let frame = frame.map_err(std::io::Error::other).and_then(|frame| {
                     match frame.into_data() {
                         Ok(bytes) => Ok(BodyFrame::Data(bytes)),

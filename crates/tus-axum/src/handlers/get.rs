@@ -37,10 +37,7 @@ where
         .transpose()?;
 
     let response = protocol
-        .download(DownloadRequest {
-            upload_id: &upload_id,
-            range,
-        })
+        .download(DownloadRequest::new(&upload_id).with_range(range))
         .await?;
 
     let tus_protocol::DownloadResponse {

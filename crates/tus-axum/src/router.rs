@@ -1,8 +1,10 @@
 //! Router configuration for TUS endpoints.
 //!
 //! This module provides functions to create an axum Router with all TUS
-//! endpoints configured with the appropriate handlers, CORS, and the
+//! endpoints configured with the appropriate handlers and the
 //! `X-HTTP-Method-Override` POST fallback for proxy-constrained clients.
+//! CORS is opt-in through [`RouterOptions`] (an HTTP-adapter concern), not
+//! part of [`tus_protocol::Config`].
 
 use axum::{
     Router,
@@ -22,8 +24,22 @@ use crate::state::TusState;
 ///
 /// The router is configured with:
 /// - All TUS protocol endpoints (OPTIONS, POST, HEAD, PATCH, DELETE)
-/// - CORS middleware based on configuration
 /// - The provided TusState as application state
+///
+/// CORS is an HTTP-adapter concern and is configured through
+/// [`RouterOptions`] (see [`create_router_with_options`]), not through
+/// [`tus_protocol::Config`]. This constructor applies no CORS layer.
+///
+/// The upload routes are mounted under [`Config::base_path`]
+/// (`tus_protocol::Config::with_base_path`). The base path must start with
+/// `/`; a single trailing slash is stripped so `/files/` and `/files` mount
+/// the same routes.
+///
+/// # Errors
+///
+/// Returns [`RouterError::InvalidBasePath`] when the configured base path is
+/// empty or does not start with `/`. Routing such a path would otherwise
+/// panic inside axum at startup.
 ///
 /// # Example
 ///
@@ -44,20 +60,44 @@ use crate::state::TusState;
 ///     NoopHookExecutor::new(),
 /// );
 /// let state = TusState::new(protocol);
-/// let router = create_router(state);
+/// let router = create_router(state)?;
 /// let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
 /// axum::serve(listener, router).await?;
 /// # Ok(())
 /// # }
 /// ```
-pub fn create_router<S, I, L, H>(state: TusState<S, I, L, H>) -> Router
+pub fn create_router<S, I, L, H>(state: TusState<S, I, L, H>) -> Result<Router, RouterError>
 where
     S: Storage + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    finish_router(build_upload_router(state.config()), state)
+    let router = build_upload_router(state.config())?;
+    Ok(router.with_state(state))
+}
+
+/// Creates an axum Router for TUS endpoints with router-level options.
+///
+/// # Errors
+///
+/// Returns [`RouterError::InvalidCorsOrigin`] when a configured CORS origin is
+/// not a valid header value; a misconfigured origin list must fail startup
+/// instead of silently shrinking the allowlist. Returns
+/// [`RouterError::InvalidBasePath`] when the configured base path is empty or
+/// does not start with `/`.
+pub fn create_router_with_options<S, I, L, H>(
+    state: TusState<S, I, L, H>,
+    options: &RouterOptions,
+) -> Result<Router, RouterError>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    let router = build_upload_router(state.config())?;
+    finish_router(router, state, options)
 }
 
 /// Creates an axum Router for TUS endpoints plus non-standard GET downloads.
@@ -65,32 +105,172 @@ where
 /// GET download is a convenience endpoint outside the core TUS protocol. Use
 /// this router when the storage adapter implements [`StorageReader`] and should
 /// expose completed upload bytes through `GET /{upload_id}`.
-pub fn create_router_with_download<S, I, L, H>(state: TusState<S, I, L, H>) -> Router
+///
+/// # Errors
+///
+/// Returns [`RouterError::InvalidBasePath`] when the configured base path is
+/// empty or does not start with `/`.
+pub fn create_router_with_download<S, I, L, H>(
+    state: TusState<S, I, L, H>,
+) -> Result<Router, RouterError>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let upload_path = upload_path(state.config());
-    let router = build_upload_router(state.config())
-        .route(&upload_path, get(handlers::handle_get::<S, I, L, H>));
+    let paths = route_paths(state.config())?;
+    let router = build_upload_router(state.config())?
+        .route(&paths.upload, get(handlers::handle_get::<S, I, L, H>));
 
-    finish_router(router, state)
+    Ok(router.with_state(state))
 }
 
-fn build_upload_router<S, I, L, H>(config: &Config) -> Router<TusState<S, I, L, H>>
+/// Creates the download-enabled TUS router with router-level options.
+///
+/// # Errors
+///
+/// Returns [`RouterError::InvalidCorsOrigin`] when a configured CORS origin is
+/// not a valid header value, and [`RouterError::InvalidBasePath`] when the
+/// configured base path is empty or does not start with `/`.
+pub fn create_router_with_download_and_options<S, I, L, H>(
+    state: TusState<S, I, L, H>,
+    options: &RouterOptions,
+) -> Result<Router, RouterError>
+where
+    S: Storage + StorageReader + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    let paths = route_paths(state.config())?;
+    let router = build_upload_router(state.config())?
+        .route(&paths.upload, get(handlers::handle_get::<S, I, L, H>));
+
+    finish_router(router, state, options)
+}
+
+/// Router-level options for the TUS axum integration.
+///
+/// HTTP-adapter concerns (such as CORS) live here rather than in the
+/// framework-neutral [`tus_protocol::Config`].
+#[derive(Debug, Clone, Default)]
+pub struct RouterOptions {
+    cors_allowed_origins: Vec<String>,
+}
+
+impl RouterOptions {
+    /// Creates empty options: no CORS layer is applied.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allows the given CORS origins. Pass `"*"` to allow any origin.
+    #[must_use]
+    pub fn with_cors_allowed_origins<I, S>(mut self, origins: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.cors_allowed_origins = origins.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Allows any CORS origin.
+    #[must_use]
+    pub fn with_cors_any_origin(mut self) -> Self {
+        self.cors_allowed_origins = vec!["*".to_string()];
+        self
+    }
+
+    fn cors_enabled(&self) -> bool {
+        !self.cors_allowed_origins.is_empty()
+    }
+}
+
+/// Error building a TUS router from [`tus_protocol::Config`] and [`RouterOptions`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RouterError {
+    /// A configured CORS origin is not a valid header value.
+    InvalidCorsOrigin(String),
+    /// The configured base path is empty or does not start with `/`.
+    ///
+    /// Feeding such a path into `axum::Router::route` would panic at
+    /// startup, so router construction rejects it up front.
+    InvalidBasePath(String),
+}
+
+impl std::fmt::Display for RouterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RouterError::InvalidCorsOrigin(origin) => {
+                write!(f, "invalid CORS origin: {origin:?}")
+            }
+            RouterError::InvalidBasePath(path) => {
+                write!(f, "invalid TUS base path {path:?}: must start with '/'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RouterError {}
+
+/// Validated axum route templates derived from the configured base path.
+struct RoutePaths {
+    /// Collection route (`POST`/`OPTIONS`), e.g. `/files`.
+    base: String,
+    /// Item route with the `{upload_id}` capture, e.g. `/files/{upload_id}`.
+    upload: String,
+}
+
+/// Validates and normalizes the configured base path into route templates.
+///
+/// Rejects empty paths and paths that do not start with `/` (axum would
+/// panic when routing them). A single trailing slash is stripped so
+/// `/files/` produces `/files/{upload_id}` rather than the broken
+/// `/files//{upload_id}`. A bare `/` mounts the routes at the server root.
+fn route_paths(config: &Config) -> Result<RoutePaths, RouterError> {
+    let raw = config.base_path();
+    if !raw.starts_with('/') {
+        return Err(RouterError::InvalidBasePath(raw.to_string()));
+    }
+
+    let base = if raw.len() > 1 {
+        raw.strip_suffix('/').unwrap_or(raw)
+    } else {
+        raw
+    };
+
+    let upload = if base == "/" {
+        "/{upload_id}".to_string()
+    } else {
+        format!("{base}/{{upload_id}}")
+    };
+
+    Ok(RoutePaths {
+        base: base.to_string(),
+        upload,
+    })
+}
+
+fn build_upload_router<S, I, L, H>(
+    config: &Config,
+) -> Result<Router<TusState<S, I, L, H>>, RouterError>
 where
     S: Storage + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let base_path = config.base_path_str().to_string();
+    let RoutePaths {
+        base: base_path,
+        upload: upload_path,
+    } = route_paths(config)?;
 
     // Create router with all TUS endpoints
-    let upload_path = upload_path(config);
-    Router::new()
+    let router = Router::new()
         // Base path endpoints
         .route(&base_path, options(handlers::handle_options::<S, I, L, H>))
         .route(&base_path, post(handlers::handle_post::<S, I, L, H>))
@@ -111,42 +291,37 @@ where
         .route(
             &upload_path,
             post(handlers::handle_post_with_override::<S, I, L, H>),
-        )
-}
+        );
 
-fn upload_path(config: &Config) -> String {
-    format!("{}/{{upload_id}}", config.base_path_str())
+    Ok(router)
 }
 
 fn finish_router<S, I, L, H>(
     router: Router<TusState<S, I, L, H>>,
     state: TusState<S, I, L, H>,
-) -> Router
+    options: &RouterOptions,
+) -> Result<Router, RouterError>
 where
     S: Storage + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let cors_enabled = !state.config().cors_allowed_origins().is_empty();
-
     // Only apply CORS layer when CORS is explicitly configured.
     // CorsLayer intercepts OPTIONS requests for preflight handling, which would
     // prevent the TUS OPTIONS handler from running and returning TUS headers.
-    if cors_enabled {
-        router
-            .layer(build_cors_layer(state.config()))
-            .with_state(state)
+    if options.cors_enabled() {
+        Ok(router.layer(build_cors_layer(options)?).with_state(state))
     } else {
-        router.with_state(state)
+        Ok(router.with_state(state))
     }
 }
 
-/// Builds the CORS layer based on configuration.
+/// Builds the CORS layer from router options.
 ///
-/// Note: This function should only be called when CORS is enabled (cors_origins is non-empty).
-/// The CorsLayer intercepts OPTIONS requests for preflight handling.
-pub fn build_cors_layer(config: &Config) -> CorsLayer {
+/// Only called when CORS is enabled (the origin list is non-empty). The
+/// CorsLayer intercepts OPTIONS requests for preflight handling.
+fn build_cors_layer(options: &RouterOptions) -> Result<CorsLayer, RouterError> {
     let cors = CorsLayer::new()
         .allow_methods([
             Method::GET,
@@ -187,20 +362,23 @@ pub fn build_cors_layer(config: &Config) -> CorsLayer {
         )
         .max_age(std::time::Duration::from_secs(86400));
 
-    if config
-        .cors_allowed_origins()
+    if options
+        .cors_allowed_origins
         .iter()
         .any(|origin| origin == "*")
     {
-        cors.allow_origin(Any)
+        Ok(cors.allow_origin(Any))
     } else {
-        // Parse origins
-        let origins: Vec<HeaderValue> = config
-            .cors_allowed_origins()
+        let origins = options
+            .cors_allowed_origins
             .iter()
-            .filter_map(|o| o.parse::<HeaderValue>().ok())
-            .collect();
-        cors.allow_origin(origins)
+            .map(|origin| {
+                origin
+                    .parse::<HeaderValue>()
+                    .map_err(|_| RouterError::InvalidCorsOrigin(origin.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(cors.allow_origin(origins))
     }
 }
 
@@ -232,7 +410,7 @@ mod tests {
             NoopHookExecutor::new(),
         );
 
-        create_router(TusState::new(protocol))
+        create_router(TusState::new(protocol)).unwrap()
     }
 
     fn router_with_parts(
@@ -248,24 +426,7 @@ mod tests {
             Arc::new(NoopHookExecutor::new()),
         );
 
-        create_router(TusState::new(protocol))
-    }
-
-    fn router_with_hooks(
-        config: Config,
-        storage: Arc<MemoryStorage>,
-        state_store: Arc<MemoryStateStore>,
-        hooks: HookChain,
-    ) -> Router {
-        let protocol = ProtocolHandle::from_arcs(
-            Arc::new(config),
-            storage,
-            state_store,
-            Arc::new(MemoryLocker::new()),
-            Arc::new(hooks),
-        );
-
-        create_router(TusState::new(protocol))
+        create_router(TusState::new(protocol)).unwrap()
     }
 
     fn download_router_with_parts(
@@ -281,7 +442,7 @@ mod tests {
             Arc::new(NoopHookExecutor::new()),
         );
 
-        create_router_with_download(TusState::new(protocol))
+        create_router_with_download(TusState::new(protocol)).unwrap()
     }
 
     async fn seed_upload(
@@ -344,6 +505,114 @@ mod tests {
     #[test]
     fn create_router_accepts_upload_only_storage() {
         let _router = upload_only_router();
+    }
+
+    #[test]
+    fn create_router_rejects_base_path_without_leading_slash() {
+        let protocol = ProtocolHandle::new(
+            Config::default().with_base_path("files"),
+            UploadOnlyStorage,
+            MemoryStateStore::new(),
+            NoopLocker::new(),
+            NoopHookExecutor::new(),
+        );
+
+        let err = create_router(TusState::new(protocol)).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidBasePath(ref path) if path == "files"));
+    }
+
+    #[test]
+    fn create_router_rejects_empty_base_path() {
+        let protocol = ProtocolHandle::new(
+            Config::default().with_base_path(""),
+            UploadOnlyStorage,
+            MemoryStateStore::new(),
+            NoopLocker::new(),
+            NoopHookExecutor::new(),
+        );
+
+        let err = create_router(TusState::new(protocol)).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidBasePath(ref path) if path.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn create_router_strips_single_trailing_slash_from_base_path() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 1000, None).await;
+        let router = router_with_parts(
+            Config::default().with_base_path("/files/"),
+            storage,
+            state_store,
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri("/files/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn create_router_mounts_at_root_base_path() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 1000, None).await;
+        let router = router_with_parts(Config::default().with_base_path("/"), storage, state_store);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri("/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// A chunked PATCH whose transport body limit trips mid-stream (as
+    /// `tower_http::limit::RequestBodyLimitLayer` does) must answer 413,
+    /// not 500. `http_body_util::Limited` produces the same
+    /// `LengthLimitError`-wrapped body read error as the tower-http layer.
+    #[tokio::test]
+    async fn chunked_patch_over_transport_body_limit_answers_413() {
+        use http_body_util::Limited;
+
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        seed_upload(&storage, &state_store, "test-id", 100, None).await;
+        let router = router_with_parts(Config::default(), storage, state_store);
+
+        let limited = Limited::new(Full::new(Bytes::from_static(b"Hello World")), 4);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/files/test-id")
+                    .header("tus-resumable", "1.0.0")
+                    .header("upload-offset", "0")
+                    .header("content-type", "application/offset+octet-stream")
+                    .body(Body::new(limited))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -645,25 +914,23 @@ mod tests {
 
     #[test]
     fn test_build_cors_layer_wildcard() {
-        let config = Config::default().cors_all();
-        let _ = build_cors_layer(&config);
+        let options = RouterOptions::new().with_cors_any_origin();
+        let _ = build_cors_layer(&options).unwrap();
     }
 
     #[test]
     fn test_build_cors_layer_specific_origins() {
-        let config = Config::default().cors(vec![
-            "http://localhost:3000".to_string(),
-            "https://example.com".to_string(),
-        ]);
-        let _ = build_cors_layer(&config);
+        let options = RouterOptions::new()
+            .with_cors_allowed_origins(["http://localhost:3000", "https://example.com"]);
+        let _ = build_cors_layer(&options).unwrap();
     }
 
     #[test]
-    fn test_cors_not_applied_when_empty() {
-        // When cors_origins is empty, CORS layer should not be applied
-        // This is verified by the create_router logic, not build_cors_layer
-        let config = Config::default();
-        assert!(config.cors_allowed_origins().is_empty());
+    fn test_build_cors_layer_rejects_invalid_origin() {
+        let options =
+            RouterOptions::new().with_cors_allowed_origins(["http://ok.example", "bad\norigin"]);
+        let err = build_cors_layer(&options).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidCorsOrigin(origin) if origin.contains("bad")));
     }
 
     #[tokio::test]
@@ -673,7 +940,7 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&Config::default().cors_all()))
+            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin()).unwrap())
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -710,7 +977,7 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&Config::default().cors_all()))
+            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin()).unwrap())
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -750,7 +1017,7 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&Config::default().cors_all()))
+            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin()).unwrap())
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -793,7 +1060,18 @@ mod tests {
         let hooks = HookChain::new().on_pre_create(|_| async {
             Ok(PreHookResult::proceed().with_header("x-hook", "created"))
         });
-        let router = router_with_hooks(Config::default().cors_all(), storage, state_store, hooks);
+        let protocol = ProtocolHandle::from_arcs(
+            Arc::new(Config::default()),
+            storage,
+            state_store,
+            Arc::new(MemoryLocker::new()),
+            Arc::new(hooks),
+        );
+        let router = create_router_with_options(
+            TusState::new(protocol),
+            &RouterOptions::new().with_cors_any_origin(),
+        )
+        .unwrap();
 
         let response = router
             .oneshot(

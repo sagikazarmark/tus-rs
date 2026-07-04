@@ -48,7 +48,7 @@ fn runtime() -> Runtime {
 }
 
 fn config() -> Config {
-    Config::with_all_extensions().base_path("/files")
+    Config::with_all_extensions().with_base_path("/files")
 }
 
 fn patch_headers(offset: u64, size: u64) -> Headers {
@@ -99,7 +99,7 @@ async fn axum_setup() -> (Router, String) {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let router = create_router(state);
+    let router = create_router(state).unwrap();
 
     let response = router
         .clone()
@@ -257,7 +257,7 @@ fn bench_lifecycle(c: &mut Criterion) {
                     MemoryLocker::new(),
                     NoopHookExecutor::new(),
                 ));
-                (create_router(state), payload_template.clone())
+                (create_router(state).unwrap(), payload_template.clone())
             },
             |(router, payload)| async move {
                 // POST

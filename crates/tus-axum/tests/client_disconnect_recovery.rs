@@ -105,8 +105,8 @@ impl Storage for SleepyStorage {
 fn build_router(addr: std::net::SocketAddr, append_delay: Duration) -> Router {
     let state = TusState::new(ProtocolHandle::new(
         Config::default()
-            .base_path("/files")
-            .base_url(format!("http://{addr}")),
+            .with_base_path("/files")
+            .with_base_url(format!("http://{addr}")),
         SleepyStorage {
             inner: MemoryStorage::new(),
             delay: append_delay,
@@ -115,7 +115,7 @@ fn build_router(addr: std::net::SocketAddr, append_delay: Duration) -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state)
+    create_router(state).unwrap()
 }
 
 async fn spawn_server(append_delay: Duration) -> std::net::SocketAddr {

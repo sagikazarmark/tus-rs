@@ -33,14 +33,14 @@ const TUS_RESUMABLE: &str = "1.0.0";
 fn build_router() -> Router {
     let state = TusState::new(ProtocolHandle::new(
         Config::default()
-            .base_path("/files")
-            .max_size(10 * 1024 * 1024),
+            .with_base_path("/files")
+            .with_max_size(10 * 1024 * 1024),
         MemoryStorage::new(),
         MemoryStateStore::new(),
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state)
+    create_router(state).unwrap()
 }
 
 async fn create_upload(router: &Router, length: usize) -> String {

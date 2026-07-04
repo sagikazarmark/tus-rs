@@ -19,7 +19,7 @@ use tus_protocol::{
 };
 
 fn build_router() -> Router {
-    let config = Config::with_all_extensions().base_path("/files");
+    let config = Config::with_all_extensions().with_base_path("/files");
     let state = TusState::new(ProtocolHandle::new(
         config,
         MemoryStorage::new(),
@@ -27,7 +27,7 @@ fn build_router() -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state)
+    create_router(state).unwrap()
 }
 
 fn tus_request(method: Method, uri: &str) -> axum::http::request::Builder {

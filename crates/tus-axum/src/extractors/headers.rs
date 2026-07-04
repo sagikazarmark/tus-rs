@@ -13,6 +13,13 @@ use crate::error::Error;
 /// Axum extractor that parses TUS request headers and validates
 /// `Tus-Resumable: 1.0.0`.
 ///
+/// This type intentionally shares its name with [`tus_protocol::Headers`]:
+/// it is a thin newtype over that struct, existing only so the
+/// [`FromRequestParts`] impl can live in this crate (orphan rule). When both
+/// crates are in scope, import one of them under an alias (e.g.
+/// `use tus_axum::Headers as TusHeaders;`) or refer to the protocol type by
+/// its full path.
+///
 /// Use for handlers (POST, PATCH, HEAD, DELETE) that require the version
 /// header. Destructure inside the handler signature to reach the inner
 /// [`tus_protocol::Headers`]:
