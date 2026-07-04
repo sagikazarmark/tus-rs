@@ -172,11 +172,25 @@ impl StateStore for FileStateStore {
         while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
             let path = entry.path();
 
-            if path.extension().is_some_and(|e| e == "json")
-                && let Some(state) = self.read_state(&path).await?
-                && state.expires_before(before)
-            {
-                expired.push(state.id().to_string());
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+
+            // A single unreadable or malformed state file (foreign, truncated,
+            // or tampered) must not abort the whole expiration scan and stall
+            // reclamation for every other upload: skip it and log instead.
+            match self.read_state(&path).await {
+                Ok(Some(state)) if state.expires_before(before) => {
+                    expired.push(state.id().to_string());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %error,
+                        "skipping unreadable upload state file during expiration scan",
+                    );
+                }
             }
         }
 
@@ -245,6 +259,24 @@ mod tests {
         let retrieved = store.get("test-1").await.unwrap().unwrap();
         assert_eq!(retrieved.id(), "test-1");
         assert_eq!(retrieved.length(), Some(1000));
+    }
+
+    #[tokio::test]
+    async fn list_expired_skips_malformed_state_files() {
+        let (store, dir) = create_test_store().await;
+
+        // A valid, already-expired candidate.
+        let expired = UploadState::new("expired-1")
+            .with_expiration(Utc::now() - Duration::hours(1));
+        store.set(&expired, true).await.unwrap();
+
+        // A malformed `.json` file that must not abort the scan.
+        fs::write(dir.path().join("garbage.json"), b"{ not valid json")
+            .await
+            .unwrap();
+
+        let ids = store.list_expired(Utc::now()).await.unwrap();
+        assert_eq!(ids, vec!["expired-1".to_string()]);
     }
 
     #[tokio::test]

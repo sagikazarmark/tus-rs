@@ -17,6 +17,7 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 fs2 = { version = "0.4", optional = true }
 futures = { workspace = true }
+futures-core = { workspace = true }
 http = { workspace = true }
 percent-encoding = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -65,7 +66,7 @@ state-file = ["native", "tokio/fs", "tokio/io-util"]
 state-memory = []
 
 # Locking implementations
-lock-file = ["native", "fs2", "tokio/fs", "tokio/time"]
+lock-file = ["native", "fs2", "tokio/fs", "tokio/rt", "tokio/time"]
 lock-memory = ["native", "tokio/sync", "tokio/time"]
 
 # Checksum implementations

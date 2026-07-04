@@ -128,16 +128,17 @@ fn chain_contains_length_limit(err: &(dyn std::error::Error + 'static)) -> bool 
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let (status, headers, body) = self.inner.response_parts();
+        let response = self.inner.error_response();
         let body = match self.body_override {
             Some(body) => body.to_string(),
-            None => body,
+            None => response.body,
         };
 
-        let mut builder = Response::builder()
-            .status(StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR));
+        let mut builder = Response::builder().status(
+            StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        );
 
-        for (name, value) in headers {
+        for (name, value) in response.headers {
             builder = builder.header(name, value);
         }
 
@@ -224,8 +225,9 @@ mod tests {
         let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
         let err: Error = ProtocolError::Io(io_err).into();
 
-        let (_, expected_headers, _) =
-            ProtocolError::SizeExceeded { size: 0, max: 0 }.response_parts();
+        let expected_headers = ProtocolError::SizeExceeded { size: 0, max: 0 }
+            .error_response()
+            .headers;
         let response = err.into_response();
         for (name, value) in &expected_headers {
             assert_eq!(
@@ -311,17 +313,19 @@ mod tests {
 
     /// End-to-end parity: every variant routed through Error's
     /// IntoResponse impl must produce a Response whose status, header set,
-    /// and body bytes exactly match the framework-neutral tuple from
-    /// ProtocolError::response_parts(). This proves the axum bridge does not
+    /// and body bytes exactly match the framework-neutral pieces from
+    /// ProtocolError::error_response(). This proves the axum bridge does not
     /// add or lose information. (The single deliberate exception — the body
     /// override for transport body-limit remaps — is covered by
     /// `transport_body_limit_413_has_sensible_body`; none of the variants
     /// here trigger it.)
     #[tokio::test]
-    async fn into_response_matches_response_parts_for_all_variants() {
+    async fn into_response_matches_error_response_for_all_variants() {
         for make in variant_constructors() {
-            let parts_err = make();
-            let (expected_status, expected_headers, expected_body) = parts_err.response_parts();
+            let expected = make().error_response();
+            let expected_status = expected.status;
+            let expected_headers = expected.headers;
+            let expected_body = expected.body;
 
             let response = <Error as From<ProtocolError>>::from(make()).into_response();
             let actual_status = response.status().as_u16();

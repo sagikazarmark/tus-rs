@@ -14,7 +14,7 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 /// # Example
 ///
 /// ```rust,no_run
-/// # use tus_axum::{create_router, TusState};
+/// # use tus_axum::{create_router, RouterOptions, TusState};
 /// # use tus_protocol::{
 /// #     Config, NoopHookExecutor, ProtocolHandle,
 /// #     locking::memory::MemoryLocker,
@@ -30,7 +30,7 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 ///     NoopHookExecutor::new(),
 /// );
 /// let state = TusState::new(protocol);
-/// let router = create_router(state)?;
+/// let router = create_router(state, &RouterOptions::default())?;
 /// # Ok(())
 /// # }
 /// ```

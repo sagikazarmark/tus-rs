@@ -8,6 +8,13 @@
 //! `services-s3`) forward to the same-named `opendal` features so downstream
 //! crates can enable backends without depending on `opendal` directly.
 //!
+//! Only a curated subset of OpenDAL services has a passthrough feature here
+//! (currently `services-azblob`, `services-fs`, `services-gcs`,
+//! `services-memory`, and `services-s3`). To use any other OpenDAL backend,
+//! add a direct `opendal` dependency (matching the re-exported version) and
+//! enable its `services-*` feature there; `OpendalStorage` works with any
+//! [`opendal::Operator`] regardless of how the backend feature was enabled.
+//!
 //! # Append strategy
 //!
 //! Many OpenDAL backends do not support native append for object writes. Rather
@@ -66,6 +73,7 @@
 //! with `tus-protocol` is not sufficient.
 
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -95,6 +103,9 @@ const FINALIZE_RETRIES: u32 = 2;
 ///
 /// The caller provides the configured OpenDAL operator. This crate only maps
 /// the TUS storage operations onto OpenDAL object operations.
+///
+/// Cloning is cheap: `opendal::Operator` is itself a shared handle.
+#[derive(Clone)]
 pub struct OpendalStorage {
     operator: Operator,
     prefix: String,

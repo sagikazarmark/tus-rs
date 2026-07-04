@@ -3576,6 +3576,7 @@ dependencies = [
  "crc32fast",
  "fs2",
  "futures",
+ "futures-core",
  "http",
  "md5",
  "percent-encoding",

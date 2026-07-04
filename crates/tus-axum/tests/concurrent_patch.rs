@@ -22,7 +22,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use tower::ServiceExt;
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
@@ -40,7 +40,7 @@ fn build_router() -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state).unwrap()
+    create_router(state, &RouterOptions::default()).unwrap()
 }
 
 async fn create_upload(router: &Router, length: usize) -> String {

@@ -432,6 +432,16 @@ impl UploadMetadata {
         self.0.get(key)
     }
 
+    /// Returns true if the given key is present.
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+
+    /// Removes a metadata entry by key, returning the previous value if any.
+    pub fn remove(&mut self, key: &str) -> Option<MetadataValue> {
+        self.0.remove(key)
+    }
+
     /// Returns true if no metadata entries are present.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

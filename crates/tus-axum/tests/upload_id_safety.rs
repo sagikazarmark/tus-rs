@@ -22,7 +22,7 @@ use axum::{
 };
 use tempfile::TempDir;
 use tower::ServiceExt;
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::locking::file::FileLocker;
 use tus_protocol::state::file::FileStateStore;
 use tus_protocol::storage::file::FileStorage;
@@ -51,7 +51,7 @@ async fn build_router(root: &std::path::Path) -> axum::Router {
         locker,
         NoopHookExecutor::new(),
     ));
-    create_router(state).unwrap()
+    create_router(state, &RouterOptions::default()).unwrap()
 }
 
 async fn build_sandbox() -> Sandbox {

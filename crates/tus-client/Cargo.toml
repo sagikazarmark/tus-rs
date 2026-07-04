@@ -47,10 +47,13 @@ js-sys = "0.3"
 wasm-bindgen-test = "0.3"
 
 [features]
+# `reqwest?/default` pulls reqwest's default TLS stack, which on reqwest 0.13
+# is rustls (aws-lc-rs) with the platform certificate verifier.
 default = ["checksum", "transport-reqwest", "reqwest?/default"]
 checksum = ["tus-protocol/checksum"]
-# TLS passthrough for builds that disable default features (which drop
-# reqwest's default TLS support).
+# TLS passthrough for builds that disable default features (which drops the
+# rustls TLS stack above): re-add rustls, or opt into native-tls (OpenSSL /
+# system TLS) instead.
 reqwest-native-tls = ["reqwest?/native-tls"]
 reqwest-rustls = ["reqwest?/rustls"]
 source-file = ["tokio/fs", "tokio/io-util"]

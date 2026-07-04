@@ -78,6 +78,16 @@ impl FileLocker {
             .map_err(Error::Io)
     }
 
+    /// Async wrapper around [`Self::try_acquire`] that runs the blocking
+    /// filesystem syscalls (`open`, `flock`, `metadata`) on a blocking thread
+    /// so they never stall the async runtime worker under contention.
+    async fn try_acquire_async(path: PathBuf) -> Result<Option<File>> {
+        match tokio::task::spawn_blocking(move || Self::try_acquire(&path)).await {
+            Ok(result) => result,
+            Err(join_error) => Err(Error::Io(std::io::Error::other(join_error))),
+        }
+    }
+
     /// Attempts a single non-blocking exclusive acquisition on the lock file.
     ///
     /// Returns the locked file on success and `None` while another holder owns
@@ -85,6 +95,9 @@ impl FileLocker {
     /// flock may land on an inode that was already unlinked (or replaced) by a
     /// concurrent release; such stale acquisitions are detected and retried so
     /// two holders can never coexist on different inodes of the same path.
+    ///
+    /// This performs blocking filesystem syscalls; async callers must reach it
+    /// through [`Self::try_acquire_async`].
     fn try_acquire(path: &Path) -> Result<Option<File>> {
         loop {
             let file = Self::open_lock_file(path)?;
@@ -133,6 +146,14 @@ impl FileLocker {
     /// still races on this inode (and then detects the unlink and retries) or
     /// recreates the file fresh; at worst an empty lock file is recreated,
     /// which the next cycle reuses or removes.
+    ///
+    /// This runs synchronously from the [`LockGuard`] drop, so the unlink and
+    /// unlock complete before the guard's `drop` returns. That keeps release
+    /// observable immediately (a subsequent lock or `is_locked` on the same ID
+    /// sees the released state) and cannot be offloaded to `spawn_blocking`
+    /// without introducing a visibility race; the two metadata syscalls
+    /// involved are cheap relative to the contended `open`/`flock` acquisition
+    /// path, which is offloaded via [`Self::try_acquire_async`].
     fn release_lock_file(path: &Path, file: File) {
         #[cfg(unix)]
         if let Err(error) = std::fs::remove_file(path)
@@ -190,7 +211,7 @@ impl Locker for FileLocker {
         let deadline = Instant::now() + timeout;
 
         loop {
-            if let Some(file) = Self::try_acquire(&path)? {
+            if let Some(file) = Self::try_acquire_async(path.clone()).await? {
                 let release_path = path.clone();
                 return Ok(LockGuard::with_release(upload_id, move || {
                     Self::release_lock_file(&release_path, file);
@@ -210,7 +231,7 @@ impl Locker for FileLocker {
     async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>> {
         let path = self.lock_path(upload_id)?;
 
-        match Self::try_acquire(&path)? {
+        match Self::try_acquire_async(path.clone()).await? {
             Some(file) => {
                 let release_path = path.clone();
                 Ok(Some(LockGuard::with_release(upload_id, move || {

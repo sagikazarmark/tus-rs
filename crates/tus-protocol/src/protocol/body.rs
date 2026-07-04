@@ -3,7 +3,8 @@
 use std::pin::Pin;
 
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
+use futures_core::Stream;
 use http::HeaderMap;
 
 use crate::storage::ChunkStream;

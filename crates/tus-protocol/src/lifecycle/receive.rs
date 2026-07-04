@@ -451,6 +451,10 @@ fn validate_body_for_receive(
 }
 
 fn creation_with_upload_body_size_limit(config: &Config, state: &UploadState) -> Option<u64> {
+    // `max_chunk_size` is a per-PATCH cap and is deliberately not applied here:
+    // the initial data of a Creation-With-Upload request travels on the POST,
+    // not a PATCH. The body is still bounded by `max_size` and the declared
+    // `Upload-Length` below.
     [
         config
             .max_size()

@@ -21,7 +21,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use async_trait::async_trait;
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::{
     Config, Extension, HookContext, HookExecutor, NoopHookExecutor, PreHookResult, ProtocolHandle,
     Result as TusResult, TUS_RESUMABLE, locking::memory::MemoryLocker,
@@ -46,7 +46,7 @@ fn build_router_with(config: Config) -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state).unwrap()
+    create_router(state, &RouterOptions::default()).unwrap()
 }
 
 fn build_router() -> Router {
@@ -1138,7 +1138,7 @@ fn build_router_with_rejecting_hooks(status: u16, message: &str) -> Router {
             message: message.to_string(),
         },
     ));
-    create_router(state).unwrap()
+    create_router(state, &RouterOptions::default()).unwrap()
 }
 
 #[tokio::test]

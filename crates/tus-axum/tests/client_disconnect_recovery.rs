@@ -57,7 +57,7 @@ use async_trait::async_trait;
 use axum::Router;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tus_axum::{TusState, create_router};
+use tus_axum::{RouterOptions, TusState, create_router};
 use tus_protocol::locking::memory::MemoryLocker;
 use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
@@ -115,7 +115,7 @@ fn build_router(addr: std::net::SocketAddr, append_delay: Duration) -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state).unwrap()
+    create_router(state, &RouterOptions::default()).unwrap()
 }
 
 async fn spawn_server(append_delay: Duration) -> std::net::SocketAddr {

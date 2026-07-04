@@ -47,7 +47,7 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 /// assert_eq!(config.base_path(), "/uploads");
 /// assert!(config.has_extension(Extension::Concatenation));
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Config {
     /// Maximum upload size in bytes. None means unlimited.
@@ -159,14 +159,42 @@ impl Config {
     /// the extension would be advertised but no algorithm could ever verify a
     /// request. Enable the `checksum` feature of `tus-protocol` to use these
     /// extensions.
+    ///
+    /// Because whether the `checksum` feature is enabled is often decided by
+    /// Cargo feature unification rather than by the code calling this method,
+    /// prefer [`Config::try_with_extension`] when the extension set is not
+    /// statically known to be serviceable by the current build.
     #[must_use]
-    pub fn with_extension(mut self, ext: Extension) -> Self {
+    pub fn with_extension(self, ext: Extension) -> Self {
+        self.try_with_extension(ext).unwrap_or_else(|err| {
+            panic!("{err}");
+        })
+    }
+
+    /// Adds an extension to the enabled set, returning an error instead of
+    /// panicking when the current build cannot service it.
+    ///
+    /// Enabling [`Extension::Checksum`] or [`Extension::ChecksumTrailer`]
+    /// without the `checksum` Cargo feature returns
+    /// [`Error::ExtensionNotSupported`]: the extension would be advertised but
+    /// no algorithm could ever verify a request. This is the fallible
+    /// counterpart to [`Config::with_extension`]; use it when whether the
+    /// `checksum` feature is enabled is not under this call site's control.
+    ///
+    /// When enabling the Checksum extension, default algorithms (sha1) are
+    /// automatically added if no algorithms are already configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ExtensionNotSupported`] when enabling a checksum
+    /// extension without the `checksum` Cargo feature.
+    pub fn try_with_extension(mut self, ext: Extension) -> Result<Self, Error> {
         #[cfg(not(feature = "checksum"))]
         if matches!(ext, Extension::Checksum | Extension::ChecksumTrailer) {
-            panic!(
-                "enable the `checksum` feature of tus-protocol to use the {} extension",
+            return Err(Error::ExtensionNotSupported(format!(
+                "{}: enable the `checksum` feature of tus-protocol",
                 ext.as_str()
-            );
+            )));
         }
 
         self.extensions.insert(ext);
@@ -178,7 +206,7 @@ impl Config {
                 self.checksum_algorithms.insert(ChecksumAlgorithm::Sha1);
             }
         }
-        self
+        Ok(self)
     }
 
     /// Removes an extension from the enabled set.
@@ -428,6 +456,12 @@ impl Extension {
     }
 }
 
+impl std::fmt::Display for Extension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl std::str::FromStr for Extension {
     type Err = Error;
 
@@ -470,6 +504,12 @@ impl ChecksumAlgorithm {
             ChecksumAlgorithm::Md5 => "md5",
             ChecksumAlgorithm::Crc32 => "crc32",
         }
+    }
+}
+
+impl std::fmt::Display for ChecksumAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -548,6 +588,23 @@ mod tests {
     #[should_panic(expected = "enable the `checksum` feature")]
     fn with_extension_panics_for_checksum_trailer_without_feature() {
         let _ = Config::new().with_extension(Extension::ChecksumTrailer);
+    }
+
+    #[cfg(not(feature = "checksum"))]
+    #[test]
+    fn try_with_extension_errors_for_checksum_without_feature() {
+        let err = Config::new()
+            .try_with_extension(Extension::Checksum)
+            .unwrap_err();
+        assert!(matches!(err, Error::ExtensionNotSupported(_)));
+    }
+
+    #[test]
+    fn try_with_extension_accepts_non_checksum_extensions() {
+        let config = Config::new()
+            .try_with_extension(Extension::Concatenation)
+            .unwrap();
+        assert!(config.has_extension(Extension::Concatenation));
     }
 
     #[cfg(feature = "checksum")]

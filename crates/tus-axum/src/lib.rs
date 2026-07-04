@@ -13,8 +13,8 @@
 //! [`tus_protocol`] expects, then translates the framework-neutral outputs
 //! back into axum responses.
 //!
-//! HTTP-adapter concerns such as CORS are configured through
-//! [`RouterOptions`] (see [`create_router_with_options`]), not through
+//! HTTP-adapter concerns such as CORS are configured through the
+//! [`RouterOptions`] passed to [`create_router`], not through
 //! [`tus_protocol::Config`].
 //!
 //! Public adapter types are re-exported from the crate root, which is the
@@ -60,7 +60,7 @@
 //! [`examples/server.rs`]: https://github.com/sagikazarmark/tus-rs/blob/main/crates/tus-axum/examples/server.rs
 //!
 //! ```rust,no_run
-//! # use tus_axum::{create_router, TusState};
+//! # use tus_axum::{create_router, RouterOptions, TusState};
 //! # use tus_protocol::{
 //! #     Config, NoopHookExecutor, ProtocolHandle,
 //! #     locking::memory::MemoryLocker,
@@ -76,7 +76,7 @@
 //!     NoopHookExecutor::new(),
 //! );
 //! let state = TusState::new(protocol);
-//! let router = create_router(state)?;
+//! let router = create_router(state, &RouterOptions::default())?;
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
 //! axum::serve(listener, router).await?;
 //! # Ok(())
@@ -102,8 +102,5 @@ pub use {axum, tus_protocol};
 pub use error::Error;
 pub use extractors::{Headers, TusBody, UploadId};
 pub use response::TusResponse;
-pub use router::{
-    RouterError, RouterOptions, create_router, create_router_with_download,
-    create_router_with_download_and_options, create_router_with_options,
-};
+pub use router::{RouterError, RouterOptions, create_router, create_router_with_download};
 pub use state::{TusProtocol, TusState};

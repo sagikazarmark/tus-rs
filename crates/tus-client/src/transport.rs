@@ -28,9 +28,41 @@ pub use reqwest::ReqwestTransport;
 /// default implementations, so existing implementations keep compiling.
 /// Only `send` will ever be required.
 ///
-/// The trait is not dyn-compatible (it requires `Clone`). For runtime
-/// transport selection, wrap any transport in [`BoxTransport`] and use
-/// `Client<BoxTransport>`.
+/// The trait is not dyn-compatible (it requires `Clone`). Every custom
+/// transport must therefore be `Clone`; wrap any non-`Clone` resource in an
+/// [`Arc`] (the blanket `impl Transport for Arc<T>` below makes that a
+/// transport too). For runtime transport selection, wrap any transport in
+/// [`BoxTransport`] and use `Client<BoxTransport>`.
+///
+/// # Example
+///
+/// A minimal transport, showing the required `#[async_trait]` wiring and the
+/// permanent `Clone` bound:
+///
+/// ```no_run
+/// use std::sync::Arc;
+///
+/// use tus_client::{Error, Result, Transport, TransportRequest, TransportResponse};
+///
+/// // Non-`Clone` resources live behind an `Arc` so the transport stays `Clone`.
+/// struct HttpClient;
+///
+/// #[derive(Clone)]
+/// struct MyTransport {
+///     client: Arc<HttpClient>,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl Transport for MyTransport {
+///     async fn send(&self, request: TransportRequest) -> Result<TransportResponse> {
+///         // Translate `request` into your HTTP client's call, then build a
+///         // `TransportResponse` from the result. Report failures with
+///         // `Error::transport` (retryable) or `Error::transport_permanent`.
+///         let _ = (&self.client, request);
+///         Err(Error::transport_permanent("not implemented"))
+///     }
+/// }
+/// ```
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Transport: Clone + MaybeSendSync + 'static {

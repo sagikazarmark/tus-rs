@@ -22,6 +22,17 @@ use crate::storage::{
 /// File-based storage backend.
 ///
 /// Stores each upload in one file under the configured root directory.
+///
+/// # Concurrency contract
+///
+/// [`append`](Storage::append) opens the upload file with `O_APPEND`, so the
+/// write always lands at end-of-file. The pre-write check that the file size
+/// equals the request's `expected_offset` is therefore only *advisory*: it
+/// catches divergence but cannot pin the write position. Correct offset
+/// ordering relies entirely on the caller serializing concurrent writes to the
+/// same upload with a [`Locker`](crate::Locker). `FileStorage` is safe under
+/// the protocol's standard per-upload locking; do not drive it from concurrent
+/// writers without one.
 pub struct FileStorage {
     root: PathBuf,
 }

@@ -28,7 +28,7 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::Stream;
+use futures_core::Stream;
 
 use crate::error::Result;
 use crate::runtime::MaybeSendSync;

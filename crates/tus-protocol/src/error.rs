@@ -4,7 +4,7 @@
 //! Each error variant includes the appropriate HTTP status code to return to clients.
 //!
 //! Framework adapters (`tus-axum`, `tus-worker-example`, etc.) build their
-//! HTTP responses from [`Error::response_parts`]. This crate intentionally
+//! HTTP responses from [`Error::error_response`]. This crate intentionally
 //! has no dependency on a specific HTTP framework.
 
 /// Errors that can occur during TUS protocol operations.
@@ -269,18 +269,13 @@ impl Error {
     }
 
     /// Returns the framework-neutral pieces of a TUS-spec-compliant error
-    /// response: `(status, headers, body)`.
-    ///
-    /// The headers vec always contains `tus-resumable`. Some variants append
-    /// further headers required by the TUS spec (`tus-version` on version
-    /// errors, `upload-offset` on offset mismatches, `content-range` on range
-    /// errors). Internal-detail variants return a redacted body string.
+    /// response.
     ///
     /// This is the single source of truth for the TUS error→response mapping.
     /// Framework adapters (axum, Cloudflare Workers) build their concrete
-    /// `Response` types from this tuple. Keeping the mapping in one place
-    /// stops the axum and Worker code paths from drifting.
-    pub fn response_parts(&self) -> (u16, Vec<(&'static str, String)>, String) {
+    /// `Response` types from the returned [`ErrorResponse`]. Keeping the
+    /// mapping in one place stops the adapter code paths from drifting.
+    pub fn error_response(&self) -> ErrorResponse {
         let status = self.status_code();
         let body = if self.should_expose_details() {
             self.to_string()
@@ -301,8 +296,41 @@ impl Error {
             }
             _ => {}
         }
-        (status, headers, body)
+        ErrorResponse {
+            status,
+            headers,
+            body,
+        }
     }
+}
+
+/// The framework-neutral pieces of a TUS-spec-compliant error response,
+/// returned by [`Error::error_response`].
+///
+/// Adapters read the fields to build their concrete HTTP response. The type is
+/// `#[non_exhaustive]` so additional fields (for example a content type or a
+/// structured problem body) can be added later without a breaking change;
+/// adapters should therefore access fields by name rather than destructuring
+/// exhaustively.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ErrorResponse {
+    /// HTTP status code for the response.
+    ///
+    /// A `u16` rather than `http::StatusCode` because TUS uses codes outside
+    /// the IANA registry (for example `460 Checksum Mismatch`) and hooks may
+    /// supply arbitrary rejection codes.
+    pub status: u16,
+
+    /// Response headers required by the TUS spec.
+    ///
+    /// Always contains `tus-resumable`. Some variants append further headers
+    /// (`tus-version` on version errors, `upload-offset` on offset mismatches,
+    /// `content-range` on range errors).
+    pub headers: Vec<(&'static str, String)>,
+
+    /// Response body. Internal-detail variants return a redacted body string.
+    pub body: String,
 }
 
 /// Result type alias for TUS operations.
@@ -388,22 +416,25 @@ mod tests {
     }
 
     #[test]
-    fn response_parts_status_matches_status_code() {
+    fn error_response_status_matches_status_code() {
         for make in variant_constructors() {
             let err = make();
             let expected = err.status_code();
-            let (actual, _, _) = err.response_parts();
-            assert_eq!(actual, expected, "status mismatch for variant");
+            assert_eq!(
+                err.error_response().status,
+                expected,
+                "status mismatch for variant"
+            );
         }
     }
 
     #[test]
-    fn response_parts_always_includes_tus_resumable() {
+    fn error_response_always_includes_tus_resumable() {
         for make in variant_constructors() {
             let err = make();
-            let (_, headers, _) = err.response_parts();
+            let response = err.error_response();
             assert_eq!(
-                header(&headers, "tus-resumable").as_deref(),
+                header(&response.headers, "tus-resumable").as_deref(),
                 Some(crate::config::TUS_RESUMABLE),
                 "tus-resumable missing or wrong",
             );
@@ -411,40 +442,43 @@ mod tests {
     }
 
     #[test]
-    fn response_parts_version_errors_include_tus_version() {
-        let (_, headers, _) = Error::MissingTusResumable.response_parts();
+    fn error_response_version_errors_include_tus_version() {
+        let response = Error::MissingTusResumable.error_response();
         assert_eq!(
-            header(&headers, "tus-version").as_deref(),
+            header(&response.headers, "tus-version").as_deref(),
             Some(crate::config::TUS_RESUMABLE),
         );
-        let (_, headers, _) = Error::UnsupportedTusVersion("9.9.9".into()).response_parts();
+        let response = Error::UnsupportedTusVersion("9.9.9".into()).error_response();
         assert_eq!(
-            header(&headers, "tus-version").as_deref(),
+            header(&response.headers, "tus-version").as_deref(),
             Some(crate::config::TUS_RESUMABLE),
         );
     }
 
     #[test]
-    fn response_parts_offset_mismatch_includes_upload_offset() {
-        let (_, headers, _) = Error::OffsetMismatch {
+    fn error_response_offset_mismatch_includes_upload_offset() {
+        let response = Error::OffsetMismatch {
             expected: 4096,
             actual: 0,
         }
-        .response_parts();
-        assert_eq!(header(&headers, "upload-offset").as_deref(), Some("4096"),);
+        .error_response();
+        assert_eq!(
+            header(&response.headers, "upload-offset").as_deref(),
+            Some("4096"),
+        );
     }
 
     #[test]
-    fn response_parts_range_not_satisfiable_includes_content_range() {
-        let (_, headers, _) = Error::RangeNotSatisfiable { size: 1024 }.response_parts();
+    fn error_response_range_not_satisfiable_includes_content_range() {
+        let response = Error::RangeNotSatisfiable { size: 1024 }.error_response();
         assert_eq!(
-            header(&headers, "content-range").as_deref(),
+            header(&response.headers, "content-range").as_deref(),
             Some("bytes */1024"),
         );
     }
 
     #[test]
-    fn response_parts_redacts_internal_error_bodies() {
+    fn error_response_redacts_internal_error_bodies() {
         let cases = [
             Error::Internal("secret".into()),
             Error::Storage(Box::new(std::io::Error::other("disk on fire"))),
@@ -453,33 +487,35 @@ mod tests {
             Error::Io(std::io::Error::other("eio")),
         ];
         for err in cases {
-            let (_, _, body) = err.response_parts();
-            assert_eq!(body, "Internal server error", "leaked details");
+            assert_eq!(
+                err.error_response().body,
+                "Internal server error",
+                "leaked details"
+            );
         }
     }
 
     #[test]
-    fn response_parts_exposes_safe_error_bodies() {
+    fn error_response_exposes_safe_error_bodies() {
         let err = Error::NotFound("upload-123".into());
         let display = err.to_string();
-        let (_, _, body) = err.response_parts();
-        assert_eq!(body, display);
+        assert_eq!(err.error_response().body, display);
     }
 
     #[test]
-    fn response_parts_hook_rejected_uses_provided_status() {
-        let (status, _, _) = Error::HookRejected {
+    fn error_response_hook_rejected_uses_provided_status() {
+        let response = Error::HookRejected {
             status_code: 451,
             message: "legal".into(),
         }
-        .response_parts();
-        assert_eq!(status, 451);
+        .error_response();
+        assert_eq!(response.status, 451);
     }
 
     #[test]
-    fn response_parts_no_extra_headers_for_unrelated_variants() {
-        let (_, headers, _) = Error::NotFound("x".into()).response_parts();
-        let names: Vec<&str> = headers.iter().map(|(n, _)| *n).collect();
+    fn error_response_no_extra_headers_for_unrelated_variants() {
+        let response = Error::NotFound("x".into()).error_response();
+        let names: Vec<&str> = response.headers.iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["tus-resumable"]);
     }
 

@@ -86,6 +86,16 @@ pub enum ExpiredUploadReclamationOutcome {
         /// State deletion error.
         error: Error,
     },
+    /// Reclamation could not be attempted or completed because a preparatory
+    /// step failed (locking, loading, or completion reconciliation). The scan
+    /// records the failure and moves on to the next candidate.
+    #[non_exhaustive]
+    Failed {
+        /// Candidate upload ID.
+        upload_id: String,
+        /// The error that prevented reclamation.
+        error: Error,
+    },
 }
 
 impl ExpiredUploadReclamationOutcome {
@@ -98,16 +108,19 @@ impl ExpiredUploadReclamationOutcome {
             | Self::MissingState { upload_id }
             | Self::NoLongerExpired { upload_id }
             | Self::StorageDeleteFailed { upload_id, .. }
-            | Self::StateDeleteFailed { upload_id, .. } => upload_id,
+            | Self::StateDeleteFailed { upload_id, .. }
+            | Self::Failed { upload_id, .. } => upload_id,
         }
     }
 
-    /// Returns whether the outcome represents a failed deletion.
+    /// Returns whether the outcome represents a failed reclamation.
     #[must_use]
     pub fn is_failure(&self) -> bool {
         matches!(
             self,
-            Self::StorageDeleteFailed { .. } | Self::StateDeleteFailed { .. }
+            Self::StorageDeleteFailed { .. }
+                | Self::StateDeleteFailed { .. }
+                | Self::Failed { .. }
         )
     }
 }
@@ -116,8 +129,11 @@ impl ExpiredUploadReclamationOutcome {
 ///
 /// Candidates are loaded from [`StateStore::list_expired`]. Each candidate is
 /// locked with [`Locker::try_lock`], reloaded, checked for current expiration,
-/// and then reclaimed. Deletion failures are reported as per-upload outcomes so
-/// callers can continue scanning other candidates.
+/// and then reclaimed. Per-candidate failures — whether a preparatory step
+/// (locking, loading, completion reconciliation) or a deletion — are reported
+/// as outcomes so the scan continues to the remaining candidates instead of
+/// aborting and discarding the report. Only a failure to list candidates in the
+/// first place propagates as an error.
 ///
 /// Reclamation does not retain an expired partial upload because a planned final
 /// upload references it, and does not cascade deletion to referencing final
@@ -139,7 +155,7 @@ where
     let upload_ids = state_store.list_expired(before).await?;
 
     for upload_id in upload_ids {
-        report.push(reclaim_expired_upload(storage, state_store, locker, upload_id).await?);
+        report.push(reclaim_expired_upload(storage, state_store, locker, upload_id).await);
     }
 
     Ok(report)
@@ -150,35 +166,41 @@ async fn reclaim_expired_upload<S, I, L>(
     state_store: &I,
     locker: &L,
     upload_id: String,
-) -> Result<ExpiredUploadReclamationOutcome>
+) -> ExpiredUploadReclamationOutcome
 where
     S: Storage + ?Sized,
     I: StateStore + ?Sized,
     L: Locker + ?Sized,
 {
-    let Some(_guard) = locker.try_lock(&upload_id).await? else {
-        return Ok(ExpiredUploadReclamationOutcome::Locked { upload_id });
+    let _guard = match locker.try_lock(&upload_id).await {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return ExpiredUploadReclamationOutcome::Locked { upload_id },
+        Err(error) => return ExpiredUploadReclamationOutcome::Failed { upload_id, error },
     };
 
-    let Some(mut state) = state_store.get(&upload_id).await? else {
-        return Ok(ExpiredUploadReclamationOutcome::MissingState { upload_id });
+    let mut state = match state_store.get(&upload_id).await {
+        Ok(Some(state)) => state,
+        Ok(None) => return ExpiredUploadReclamationOutcome::MissingState { upload_id },
+        Err(error) => return ExpiredUploadReclamationOutcome::Failed { upload_id, error },
     };
 
-    if !prepare_upload_reclamation_access(storage, state_store, &mut state).await? {
-        return Ok(ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id });
+    match prepare_upload_reclamation_access(storage, state_store, &mut state).await {
+        Ok(true) => {}
+        Ok(false) => return ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id },
+        Err(error) => return ExpiredUploadReclamationOutcome::Failed { upload_id, error },
     }
 
     if let Some(handle) = state.storage_handle()
         && let Err(error) = storage.delete(&handle).await
     {
-        return Ok(ExpiredUploadReclamationOutcome::StorageDeleteFailed { upload_id, error });
+        return ExpiredUploadReclamationOutcome::StorageDeleteFailed { upload_id, error };
     }
 
     if let Err(error) = state_store.delete(state.id()).await {
-        return Ok(ExpiredUploadReclamationOutcome::StateDeleteFailed { upload_id, error });
+        return ExpiredUploadReclamationOutcome::StateDeleteFailed { upload_id, error };
     }
 
-    Ok(ExpiredUploadReclamationOutcome::Removed { upload_id })
+    ExpiredUploadReclamationOutcome::Removed { upload_id }
 }
 
 #[cfg(test)]
@@ -434,6 +456,60 @@ mod tests {
         assert!(state_store.contains("state-fails"));
     }
 
+    #[tokio::test]
+    async fn reclaim_expired_uploads_reports_preparatory_failures_and_continues() {
+        let storage = TestStorage::default();
+        let state_store = TestStateStore::default();
+        let locker = TestLocker::default();
+        // First candidate cannot be locked (transient locker error); the scan
+        // must record the failure and still reclaim the second candidate.
+        state_store.insert_candidate("lock-fails");
+        state_store.insert_candidate("upload-2");
+        state_store.insert_state(expired_state("lock-fails", "data-1"));
+        state_store.insert_state(expired_state("upload-2", "data-2"));
+        locker.fail_lock("lock-fails");
+
+        let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(report.removed(), 1);
+        assert!(report.has_failures());
+        assert!(matches!(
+            &report.outcomes()[0],
+            ExpiredUploadReclamationOutcome::Failed { upload_id, .. }
+                if upload_id == "lock-fails"
+        ));
+        assert!(matches!(
+            &report.outcomes()[1],
+            ExpiredUploadReclamationOutcome::Removed { upload_id }
+                if upload_id == "upload-2"
+        ));
+        assert_eq!(storage.deleted(), vec!["data-2"]);
+    }
+
+    #[tokio::test]
+    async fn reclaim_expired_uploads_reports_state_load_failures() {
+        let storage = TestStorage::default();
+        let state_store = TestStateStore::default();
+        let locker = TestLocker::default();
+        state_store.insert_candidate("get-fails");
+        state_store.insert_state(expired_state("get-fails", "data-1"));
+        state_store.fail_get("get-fails");
+
+        let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
+            .await
+            .unwrap();
+
+        assert_eq!(report.removed(), 0);
+        assert!(report.has_failures());
+        assert!(matches!(
+            &report.outcomes()[0],
+            ExpiredUploadReclamationOutcome::Failed { upload_id, .. }
+                if upload_id == "get-fails"
+        ));
+    }
+
     fn expired_state(id: &str, storage_key: &str) -> UploadState {
         let mut state = UploadState::new(id).with_expiration(Utc::now() - Duration::hours(1));
         state.set_storage_handle(StorageHandle::new(storage_key));
@@ -533,6 +609,7 @@ mod tests {
         expired: Mutex<Vec<String>>,
         deleted: Mutex<Vec<String>>,
         fail_delete: Mutex<HashSet<String>>,
+        fail_get: Mutex<HashSet<String>>,
         operations: Option<OperationLog>,
     }
 
@@ -560,6 +637,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(upload_id.to_string());
+        }
+
+        fn fail_get(&self, upload_id: &str) {
+            self.fail_get.lock().unwrap().insert(upload_id.to_string());
         }
 
         fn deleted(&self) -> Vec<String> {
@@ -595,6 +676,9 @@ mod tests {
 
         async fn get(&self, id: &str) -> Result<Option<UploadState>> {
             self.record(format!("get {id}"));
+            if self.fail_get.lock().unwrap().contains(id) {
+                return Err(Error::Internal(format!("state get failed for {id}")));
+            }
             Ok(self.states.lock().unwrap().get(id).cloned())
         }
 
@@ -618,6 +702,7 @@ mod tests {
     #[derive(Default)]
     struct TestLocker {
         locked: Mutex<HashSet<String>>,
+        fail_lock: Mutex<HashSet<String>>,
         operations: Option<OperationLog>,
     }
 
@@ -631,6 +716,10 @@ mod tests {
 
         fn mark_locked(&self, upload_id: &str) {
             self.locked.lock().unwrap().insert(upload_id.to_string());
+        }
+
+        fn fail_lock(&self, upload_id: &str) {
+            self.fail_lock.lock().unwrap().insert(upload_id.to_string());
         }
 
         fn record(&self, operation: impl Into<String>) {
@@ -653,6 +742,9 @@ mod tests {
 
         async fn try_lock(&self, upload_id: &str) -> Result<Option<LockGuard>> {
             self.record(format!("try_lock {upload_id}"));
+            if self.fail_lock.lock().unwrap().contains(upload_id) {
+                return Err(Error::Internal(format!("try_lock failed for {upload_id}")));
+            }
             if self.locked.lock().unwrap().contains(upload_id) {
                 return Ok(None);
             }
