@@ -86,12 +86,9 @@ mod tests {
 
     #[tokio::test]
     async fn completion_finish_gate_defaults_rejection_response() {
-        let hooks = HookChain::new().on_pre_finish(|_| async {
-            Ok(PreHookResult {
-                proceed: false,
-                ..Default::default()
-            })
-        });
+        // A bare default is a rejection (`proceed` is false) that specifies no
+        // status or message, exercising the default 400/empty response.
+        let hooks = HookChain::new().on_pre_finish(|_| async { Ok(PreHookResult::default()) });
         let request_info = HookRequestInfo::default();
         let state = UploadState::new("upload-1").with_length(5);
 

@@ -306,12 +306,22 @@ impl Default for PreHookResponse {
 
 impl From<PreHookResponse> for PreHookResult {
     fn from(response: PreHookResponse) -> Self {
-        let mut result = PreHookResult::default();
-        result.proceed = response.proceed;
-        result.metadata = response.metadata;
-        result.reject_status = response.reject_status;
-        result.reject_message = response.reject_message;
-        result.response_headers = response.response_headers.unwrap_or_default();
+        // Build through the constructors so a `proceed: true` webhook response
+        // can never smuggle a rejection status past `PreHookResult`'s invariant.
+        let mut result = if response.proceed {
+            PreHookResult::proceed()
+        } else {
+            PreHookResult::reject(
+                response.reject_status.unwrap_or(400),
+                response.reject_message.unwrap_or_default(),
+            )
+        };
+        if let Some(metadata) = response.metadata {
+            result = result.with_metadata(metadata);
+        }
+        for (name, value) in response.response_headers.unwrap_or_default() {
+            result = result.with_header(name, value);
+        }
         result
     }
 }
@@ -907,11 +917,11 @@ mod tests {
 
         let result: PreHookResult = response.into();
 
-        assert!(!result.proceed);
-        assert_eq!(result.reject_status, Some(403));
-        assert_eq!(result.reject_message, Some("Forbidden".to_string()));
+        assert!(!result.proceeds());
+        assert_eq!(result.reject_status(), Some(403));
+        assert_eq!(result.reject_message(), Some("Forbidden"));
         assert_eq!(
-            result.response_headers.get("X-Custom"),
+            result.response_headers().get("X-Custom"),
             Some(&"value".to_string())
         );
     }
@@ -923,10 +933,10 @@ mod tests {
 
         let result: PreHookResult = response.into();
 
-        assert!(result.proceed);
+        assert!(result.proceeds());
         assert_eq!(
             result
-                .metadata
+                .metadata()
                 .unwrap()
                 .get("filename")
                 .and_then(|value| value.as_str()),
@@ -964,9 +974,9 @@ mod tests {
             .expect("request must include delivery header");
         let body = request_body(&request);
 
-        assert!(!result.proceed);
-        assert_eq!(result.reject_status, Some(409));
-        assert_eq!(result.reject_message.as_deref(), Some("blocked"));
+        assert!(!result.proceeds());
+        assert_eq!(result.reject_status(), Some(409));
+        assert_eq!(result.reject_message(), Some("blocked"));
         assert!(request.starts_with("POST /hook HTTP/1.1"));
         assert!(request_lower.contains("content-type: application/json"));
         assert!(request_lower.contains("x-tus-hook-event: pre-create"));
@@ -1085,7 +1095,7 @@ mod tests {
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let requests = requests.await.unwrap();
 
-        assert!(result.proceed);
+        assert!(result.proceeds());
         assert_eq!(requests.len(), 3);
     }
 
@@ -1198,7 +1208,7 @@ mod tests {
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let requests = requests.await.unwrap();
 
-        assert!(result.proceed);
+        assert!(result.proceeds());
         assert_eq!(requests.len(), 2);
         // The default backoff would retry after 100-150ms; waiting at least
         // ~1s proves `Retry-After: 1` was honored.

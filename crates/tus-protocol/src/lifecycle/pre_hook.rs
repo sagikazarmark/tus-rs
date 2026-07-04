@@ -26,19 +26,19 @@ impl PreHookGate {
         let ctx = HookContext::new(self.event(), state.clone(), request_info.clone());
         let result = hooks.execute_pre(&ctx).await?;
 
-        if !result.proceed {
-            return Err(rejection_error(result));
+        if !result.proceeds() {
+            return Err(rejection_error(&result));
         }
 
         let effects = self.effects();
         if effects.replace_metadata
-            && let Some(metadata) = result.metadata
+            && let Some(metadata) = result.metadata()
         {
-            state.set_metadata(metadata);
+            state.set_metadata(metadata.clone());
         }
 
         let response_headers = if effects.propagate_response_headers {
-            result.response_headers
+            result.response_headers().clone()
         } else {
             HashMap::new()
         };
@@ -87,9 +87,9 @@ struct PreHookEffects {
     propagate_response_headers: bool,
 }
 
-fn rejection_error(result: PreHookResult) -> Error {
+fn rejection_error(result: &PreHookResult) -> Error {
     Error::HookRejected {
-        status_code: result.reject_status.unwrap_or(400),
-        message: result.reject_message.unwrap_or_default(),
+        status_code: result.reject_status().unwrap_or(400),
+        message: result.reject_message().unwrap_or_default().to_string(),
     }
 }
