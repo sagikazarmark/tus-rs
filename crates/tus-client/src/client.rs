@@ -23,7 +23,9 @@ pub use handle::Upload;
 pub use protocol::{NewUpload, ServerCapabilities, UploadInfo};
 #[cfg(all(feature = "source-file", not(target_arch = "wasm32")))]
 pub use upload::FileSource;
-pub use upload::{ParallelUpload, UploadProgress, UploadSource};
+#[cfg(not(target_arch = "wasm32"))]
+pub use upload::ParallelUpload;
+pub use upload::{UploadProgress, UploadSource};
 
 #[cfg(feature = "transport-reqwest")]
 use crate::transport::ReqwestTransport;

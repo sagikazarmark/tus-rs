@@ -124,15 +124,20 @@ impl UploadSource for FileSource {
 /// The fields are private so invalid configurations are unrepresentable:
 /// every setter clamps its value to at least 1 (a zero part size would
 /// otherwise divide by zero when computing the part count).
+///
+/// Only available on native targets: parallel uploads require the
+/// multi-threaded, `Send`-bound machinery that the single-threaded wasm32
+/// runtimes this crate targets do not provide.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct ParallelUpload {
     part_size: usize,
     max_concurrency: usize,
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     progress: Option<std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ParallelUpload {
     /// Creates a new parallel-upload configuration.
     ///
@@ -191,6 +196,7 @@ impl ParallelUpload {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for ParallelUpload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParallelUpload")
