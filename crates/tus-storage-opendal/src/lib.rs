@@ -8,6 +8,13 @@
 //! `services-s3`) forward to the same-named `opendal` features so downstream
 //! crates can enable backends without depending on `opendal` directly.
 //!
+//! Only a curated subset of OpenDAL services has a passthrough feature here
+//! (currently `services-azblob`, `services-fs`, `services-gcs`,
+//! `services-memory`, and `services-s3`). To use any other OpenDAL backend,
+//! add a direct `opendal` dependency (matching the re-exported version) and
+//! enable its `services-*` feature there; `OpendalStorage` works with any
+//! [`opendal::Operator`] regardless of how the backend feature was enabled.
+//!
 //! # Append strategy
 //!
 //! Many OpenDAL backends do not support native append for object writes. Rather
