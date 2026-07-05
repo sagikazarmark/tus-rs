@@ -1,7 +1,13 @@
 [advisories]
-# OpenDAL 0.57.0 pins quick-xml to ^0.39.3 and no crates.io release
-# currently allows the fixed quick-xml >=0.41.0 line.
 ignore = [
+  # OpenDAL 0.57.0 pins quick-xml to ^0.39.3 and no crates.io release
+  # currently allows the fixed quick-xml >=0.41.0 line.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+  # `rsa` (Marvin timing sidechannel; no fixed release exists) is pulled only
+  # by the opendal GCS/Azure request-signing backends (via reqsign) under
+  # --all-features. The attack requires a private-key decryption/blinding
+  # timing oracle; outbound cloud-storage request signing exposes none, so it
+  # is not exploitable in this usage. Revisit if rsa ships a fix.
+  "RUSTSEC-2023-0071",
 ]
