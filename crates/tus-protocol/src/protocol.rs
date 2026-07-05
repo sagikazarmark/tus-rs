@@ -142,10 +142,10 @@ where
 /// protocol dependencies and exposes the same protocol methods directly.
 pub struct ProtocolHandle<S, I, L, H>
 where
-    S: Storage,
-    I: StateStore,
-    L: Locker,
-    H: HookExecutor,
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    L: Locker + ?Sized,
+    H: HookExecutor + ?Sized,
 {
     config: Arc<Config>,
     storage: Arc<S>,
@@ -156,10 +156,10 @@ where
 
 impl<S, I, L, H> std::fmt::Debug for ProtocolHandle<S, I, L, H>
 where
-    S: Storage,
-    I: StateStore,
-    L: Locker,
-    H: HookExecutor,
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    L: Locker + ?Sized,
+    H: HookExecutor + ?Sized,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProtocolHandle")
@@ -172,13 +172,23 @@ where
 
 impl<S, I, L, H> ProtocolHandle<S, I, L, H>
 where
-    S: Storage,
-    I: StateStore,
-    L: Locker,
-    H: HookExecutor,
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    L: Locker + ?Sized,
+    H: HookExecutor + ?Sized,
 {
     /// Creates a new protocol handle from owned dependencies.
-    pub fn new(config: Config, storage: S, state_store: I, locker: L, hooks: H) -> Self {
+    ///
+    /// Takes the backends by value, so they must be `Sized`. To build a handle
+    /// over type-erased `Arc<dyn Storage>` (etc.) backends, use
+    /// [`ProtocolHandle::from_arcs`], which accepts `?Sized` backends.
+    pub fn new(config: Config, storage: S, state_store: I, locker: L, hooks: H) -> Self
+    where
+        S: Sized,
+        I: Sized,
+        L: Sized,
+        H: Sized,
+    {
         Self {
             config: Arc::new(config),
             storage: Arc::new(storage),
@@ -301,10 +311,10 @@ where
 
 impl<S, I, L, H> Clone for ProtocolHandle<S, I, L, H>
 where
-    S: Storage,
-    I: StateStore,
-    L: Locker,
-    H: HookExecutor,
+    S: Storage + ?Sized,
+    I: StateStore + ?Sized,
+    L: Locker + ?Sized,
+    H: HookExecutor + ?Sized,
 {
     fn clone(&self) -> Self {
         Self {

@@ -44,6 +44,15 @@ use crate::runtime::MaybeSendSync;
 /// roll the write back or report enough actual size through [`Storage::size`]
 /// for protocol recovery to reconcile state on the next request.
 ///
+/// # Upload ID safety
+///
+/// Every `upload_id` the protocol passes here has already been validated by
+/// [`UploadId`](crate::protocol::UploadId) parsing, so it is a non-empty,
+/// bounded string free of path separators and control characters. Backends
+/// that derive a filesystem path or object key from the ID should nonetheless
+/// reject IDs that fail their own validity check (defense in depth), never
+/// interpolate an unvalidated ID into a path, and treat the value as opaque.
+///
 /// # Platform Support
 ///
 /// This trait uses conditional bounds:

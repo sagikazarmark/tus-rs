@@ -50,7 +50,7 @@ pub(super) async fn run(command: ServeCli) -> anyhow::Result<()> {
             .max(Duration::from_secs(1));
         tracing::info!(
             interval_secs = scan_interval.as_secs(),
-            "enabling in-process expired upload cleanup"
+            "reclaiming expired upload data and state in-process; disable with --disable-expiration-reclamation"
         );
         crate::expiration::spawn_expiration_sweeper(
             shutdown_notify.clone(),
@@ -113,9 +113,19 @@ async fn build_serve_command_parts(
         },
         draining.clone(),
     )?;
-    let cleanup_targets = if settings.cleanup {
+    // The in-process sweeper reclaims expired upload data and state.
+    // It shares the live protocol's process-local locker, so it is
+    // online-safe and follows --expiration by default; only skip it
+    // when there is nothing to expire or the operator opted out.
+    let expiration_configured = !settings.expiration.as_duration().is_zero();
+    let cleanup_targets = if expiration_configured && !settings.disable_expiration_reclamation {
         vec![runtime.cleanup_target]
     } else {
+        if expiration_configured && settings.disable_expiration_reclamation {
+            tracing::warn!(
+                "expiration is configured but in-process reclamation is disabled; expired upload data and state will accumulate on disk until reclaimed out-of-band (for example with `tus-server cleanup`)"
+            );
+        }
         Vec::new()
     };
 
@@ -155,20 +165,28 @@ mod tests {
 
     use crate::config::{Settings, StorageConfig};
 
-    #[tokio::test]
-    async fn build_serve_command_parts_builds_app_and_cleanup_targets_without_listening() {
-        let root = tempfile::tempdir().unwrap();
-        let settings = Settings {
+    fn settings_with_storage(root: &std::path::Path) -> Settings {
+        Settings {
             storage: StorageConfig {
                 uri: "fs://".to_string(),
                 settings: BTreeMap::from([(
                     "root".to_string(),
-                    root.path().join("uploads").display().to_string(),
+                    root.join("uploads").display().to_string(),
                 )]),
             },
-            state_dir: root.path().join("state"),
-            cleanup: true,
+            state_dir: root.join("state"),
             ..Settings::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn build_serve_command_parts_builds_app_and_cleanup_targets_without_listening() {
+        let root = tempfile::tempdir().unwrap();
+        // Expiration configured and reclamation left at its default (on)
+        // must wire up the in-process sweeper without any opt-in flag.
+        let settings = Settings {
+            expiration: "1h".parse().unwrap(),
+            ..settings_with_storage(root.path())
         };
 
         let config = crate::config::build_tus_config(&settings);
@@ -188,5 +206,30 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(parts.cleanup_targets.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reclamation_can_be_disabled_and_is_absent_without_expiration() {
+        let root = tempfile::tempdir().unwrap();
+
+        // No expiration configured: nothing to reclaim, no sweeper.
+        let settings = settings_with_storage(root.path());
+        let config = crate::config::build_tus_config(&settings);
+        let parts = super::build_serve_command_parts(&settings, config)
+            .await
+            .unwrap();
+        assert!(parts.cleanup_targets.is_empty());
+
+        // Expiration configured but reclamation explicitly disabled.
+        let settings = Settings {
+            expiration: "1h".parse().unwrap(),
+            disable_expiration_reclamation: true,
+            ..settings_with_storage(root.path())
+        };
+        let config = crate::config::build_tus_config(&settings);
+        let parts = super::build_serve_command_parts(&settings, config)
+            .await
+            .unwrap();
+        assert!(parts.cleanup_targets.is_empty());
     }
 }

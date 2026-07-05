@@ -71,17 +71,26 @@ pub(super) async fn prepare(
             } else {
                 // Without Content-Length (chunked transfer, e.g. checksum
                 // trailers) the body size is unknown until the stream is
-                // drained, so intake must buffer. Refuse when nothing bounds
-                // that buffer; otherwise cap it at the tightest limit.
-                let effective_limit = match (body_limit, config.max_chunk_size()) {
-                    (None, None) => return Err(Error::LengthRequired),
-                    (Some(limit), None) => Some(limit),
-                    (None, Some(max_chunk)) => Some(max_chunk),
-                    (Some(limit), Some(max_chunk)) => Some(limit.min(max_chunk)),
+                // drained, so intake must buffer. `body_limit` already encodes
+                // every bound that applies to this path: the caller folds the
+                // per-PATCH `max_chunk_size` cap into it for PATCH and
+                // deliberately excludes it for Creation-With-Upload (whose
+                // initial body travels on the POST, not a PATCH). Re-reading
+                // `max_chunk_size` here would wrongly re-impose the PATCH cap
+                // on a chunked CwU body. Refuse when nothing bounds the buffer.
+                let Some(effective_limit) = body_limit else {
+                    return Err(Error::LengthRequired);
                 };
                 let (bytes, trailers) =
-                    collect_frames(RequestBody::Stream(stream), effective_limit).await?;
-                collect_buffered(config, headers, effective_limit, supplied, bytes, trailers)
+                    collect_frames(RequestBody::Stream(stream), Some(effective_limit)).await?;
+                collect_buffered(
+                    config,
+                    headers,
+                    Some(effective_limit),
+                    supplied,
+                    bytes,
+                    trailers,
+                )
             }
         }
     }
@@ -643,6 +652,53 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(err, Error::UnsupportedChecksum(algorithm) if algorithm == "whirlpool"));
+    }
+
+    #[tokio::test]
+    async fn chunked_body_respects_caller_limit_not_config_max_chunk_size() {
+        // Regression: a chunked body (no Content-Length) must be bounded by the
+        // `body_limit` the caller resolved, not by re-reading
+        // `config.max_chunk_size()`. For Creation-With-Upload the caller
+        // deliberately excludes `max_chunk_size`, so a chunked CwU body larger
+        // than `max_chunk_size` (but within the caller's limit) must be
+        // accepted, matching the Content-Length CwU path.
+        let config = Config::default().with_max_chunk_size(2);
+        let headers = Headers::default();
+        let stream: BodyStream = Box::pin(futures::stream::iter([Ok(BodyFrame::Data(
+            Bytes::from_static(b"hello"),
+        ))]));
+
+        let collected = prepare(
+            &config,
+            &headers,
+            Some(10),
+            RequestBody::from_stream(stream),
+        )
+        .await
+        .expect("chunked body within the caller limit must be accepted");
+
+        assert_eq!(collected.size, 5);
+        assert_eq!(
+            collect_data(collected.data).await.unwrap(),
+            Bytes::from_static(b"hello")
+        );
+    }
+
+    #[tokio::test]
+    async fn chunked_body_without_any_limit_requires_length() {
+        // With no caller limit at all, a chunked body cannot be safely
+        // buffered, so intake refuses it with 411 Length Required.
+        let config = Config::default();
+        let headers = Headers::default();
+        let stream: BodyStream = Box::pin(futures::stream::iter([Ok(BodyFrame::Data(
+            Bytes::from_static(b"hello"),
+        ))]));
+
+        let err = prepare(&config, &headers, None, RequestBody::from_stream(stream))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::LengthRequired));
     }
 
     #[cfg(feature = "checksum")]

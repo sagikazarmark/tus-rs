@@ -13,7 +13,7 @@ use tokio::{
 
 use super::{Client, NewUpload, ServerCapabilities, UploadInfo};
 use crate::error::{Error, Result};
-use crate::helpers::{jittered_backoff_delay, validate_patch_advance, validate_remote_for_resume};
+use crate::helpers::{next_retry_delay, validate_patch_advance, validate_remote_for_resume};
 use crate::runtime::MaybeSend;
 
 use crate::transport::Transport;
@@ -331,13 +331,21 @@ where
             if upload.offset == length {
                 return Ok(upload);
             }
+            // The POST response already reported the offset, so resume from
+            // the created state directly instead of re-probing with a
+            // redundant HEAD.
+            let url = upload.url.clone();
             return self
-                .resume_at_with_progress(&upload.url, source, progress)
+                .resume_at_with_progress_from(&url, source, progress, Some(upload))
                 .await;
         }
 
-        let (handle, _info) = self.create_upload(NewUpload::new(length, metadata)).await?;
-        handle.upload_with_progress(source, progress).await
+        // A freshly created upload is at offset 0; skip the probe HEAD that
+        // the resume path would otherwise send.
+        let info = self.create_upload_info(NewUpload::new(length, metadata)).await?;
+        let url = info.url.clone();
+        self.resume_at_with_progress_from(&url, source, progress, Some(info))
+            .await
     }
 
     /// Uploads a source as multiple partial uploads and concatenates them.
@@ -515,8 +523,33 @@ where
     pub(super) async fn resume_at_with_progress<S, P>(
         &self,
         upload_url: &url::Url,
+        source: S,
+        progress: &mut P,
+    ) -> Result<UploadInfo>
+    where
+        S: UploadSource,
+        P: UploadProgress,
+    {
+        self.resume_at_with_progress_from(upload_url, source, progress, None)
+            .await
+    }
+
+    /// Resumes a remote upload, optionally seeded with the state observed
+    /// when it was just created.
+    ///
+    /// A `Some(created)` skips the initial probe HEAD, which is a guaranteed
+    /// wasted round-trip for a freshly created upload whose offset the POST
+    /// response already reported; the seeded state also carries the declared
+    /// length and metadata so a completed upload can be returned without a
+    /// confirming HEAD either. `None` is the genuine resume path, where the
+    /// server's state is unknown and must be discovered with a HEAD. Either
+    /// way, retries after a failure still re-HEAD to rediscover the offset.
+    pub(super) async fn resume_at_with_progress_from<S, P>(
+        &self,
+        upload_url: &url::Url,
         mut source: S,
         progress: &mut P,
+        created: Option<UploadInfo>,
     ) -> Result<UploadInfo>
     where
         S: UploadSource,
@@ -530,19 +563,25 @@ where
         // out of budget from unrelated hiccups spread across its lifetime.
         let mut attempt = 0;
         let mut last_observed_offset: Option<u64> = None;
+        // Consumed on the first iteration; later iterations always re-HEAD.
+        let mut created = created;
 
         loop {
-            let remote = match self.upload_info_at(upload_url).await {
-                Ok(remote) => remote,
-                Err(error) => {
-                    if !error.is_retryable() || attempt == self.max_retries {
-                        return Err(error);
+            let remote = match created.take() {
+                Some(created) => created,
+                None => match self.upload_info_at(upload_url).await {
+                    Ok(remote) => remote,
+                    Err(error) => {
+                        let retry_after = error.retry_after();
+                        if !error.is_retryable() || attempt == self.max_retries {
+                            return Err(error);
+                        }
+                        self.consult_retry_hook(attempt + 1, error).await?;
+                        self.sleep_before_retry(retry_after, attempt).await;
+                        attempt += 1;
+                        continue;
                     }
-                    self.consult_retry_hook(attempt + 1, error).await?;
-                    sleep_before_retry(self.retry_delay, attempt).await;
-                    attempt += 1;
-                    continue;
-                }
+                },
             };
             validate_remote_for_resume(&remote, source_length)?;
 
@@ -568,28 +607,20 @@ where
                 .await;
             match patch_result {
                 Ok(()) => {
-                    let remote = match self.upload_info_at(upload_url).await {
-                        Ok(remote) => remote,
-                        Err(error) => {
-                            if !error.is_retryable() || attempt == self.max_retries {
-                                return Err(error);
-                            }
-                            self.consult_retry_hook(attempt + 1, error).await?;
-                            sleep_before_retry(self.retry_delay, attempt).await;
-                            attempt += 1;
-                            continue;
-                        }
-                    };
-                    validate_remote_for_resume(&remote, source_length)?;
-                    if remote.offset == source_length {
-                        return Ok(remote);
-                    }
-                    return Err(Error::OffsetDesync {
-                        expected: source_length,
-                        actual: remote.offset,
+                    // `patch_source` drained every remaining byte and
+                    // `validate_patch_advance` confirmed each acked offset, so
+                    // the server offset is provably == source_length. A
+                    // confirming HEAD here would be a guaranteed wasted
+                    // round-trip.
+                    return Ok(UploadInfo {
+                        url: upload_url.clone(),
+                        offset: source_length,
+                        length: remote.length,
+                        metadata: remote.metadata,
                     });
                 }
                 Err(error) => {
+                    let retry_after = error.retry_after();
                     if !error.is_retryable() {
                         return Err(error);
                     }
@@ -604,11 +635,10 @@ where
                     }
 
                     self.consult_retry_hook(attempt + 1, error).await?;
+                    self.sleep_before_retry(retry_after, attempt).await;
+                    attempt += 1;
                 }
             }
-
-            sleep_before_retry(self.retry_delay, attempt).await;
-            attempt += 1;
         }
     }
 
@@ -626,6 +656,16 @@ where
             Ok(true) => Ok(()),
             Ok(false) | Err(_) => Err(error),
         }
+    }
+
+    /// Sleeps before the next retry attempt through the runtime seam in
+    /// [`crate::runtime`] (tokio timers on native targets, the browser event
+    /// loop on `wasm32`).
+    ///
+    /// A valid server `Retry-After` hint takes precedence over the client's
+    /// jittered exponential backoff; see [`next_retry_delay`].
+    async fn sleep_before_retry(&self, retry_after: Option<std::time::Duration>, attempt: usize) {
+        crate::runtime::sleep(next_retry_delay(retry_after, self.retry_delay, attempt)).await;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -699,8 +739,9 @@ where
             if upload.offset == length {
                 return Ok(upload);
             }
+            let url = upload.url.clone();
             return self
-                .resume_at_with_progress(&upload.url, source, progress)
+                .resume_at_with_progress_from(&url, source, progress, Some(upload))
                 .await;
         }
 
@@ -708,7 +749,8 @@ where
             .create_upload_info(NewUpload::new(length, metadata).partial())
             .await?;
         *created_url = Some(upload.url.to_string());
-        self.resume_at_with_progress(&upload.url, source, progress)
+        let url = upload.url.clone();
+        self.resume_at_with_progress_from(&url, source, progress, Some(upload))
             .await
     }
 
@@ -827,12 +869,6 @@ where
     }
 }
 
-/// Sleeps between retry attempts through the runtime seam in
-/// [`crate::runtime`] (tokio timers on native targets, the browser event
-/// loop on `wasm32`).
-async fn sleep_before_retry(base: std::time::Duration, attempt: usize) {
-    crate::runtime::sleep(jittered_backoff_delay(base, attempt)).await;
-}
 
 #[cfg(test)]
 mod tests {
@@ -913,9 +949,7 @@ mod tests {
                 header_map(&[("location", "/files/upload-1"), ("upload-offset", "2")]),
                 Vec::new(),
             )));
-            responses.push_back(Ok(mock_head_response(2, 5)));
             responses.push_back(Ok(mock_patch_response(5)));
-            responses.push_back(Ok(mock_head_response(5, 5)));
         }
         let client = Client::with_transport(endpoint_url(), transport.clone())
             .with_max_initial_upload_size(1024);
@@ -931,16 +965,9 @@ mod tests {
             .iter()
             .map(|request| request.method().clone())
             .collect();
-        assert_eq!(
-            methods,
-            vec![
-                Method::OPTIONS,
-                Method::POST,
-                Method::HEAD,
-                Method::PATCH,
-                Method::HEAD
-            ]
-        );
+        // The POST reports offset 2, so the resume path skips the probe HEAD
+        // and, once the PATCH drains the source, the confirming HEAD too.
+        assert_eq!(methods, vec![Method::OPTIONS, Method::POST, Method::PATCH]);
         let patch = requests
             .iter()
             .find(|request| request.method() == Method::PATCH)
@@ -1483,7 +1510,6 @@ mod tests {
             )));
             responses.push_back(Ok(mock_head_response(2, 4)));
             responses.push_back(Ok(mock_patch_response(4)));
-            responses.push_back(Ok(mock_head_response(4, 4)));
         }
 
         let client = Client::with_transport(endpoint_url(), transport.clone())
@@ -1498,15 +1524,10 @@ mod tests {
 
         let requests = transport.requests.lock().unwrap();
         let methods: Vec<_> = requests.iter().map(|req| req.method().clone()).collect();
+        // The final PATCH drains the source, so no confirming HEAD follows.
         assert_eq!(
             methods,
-            vec![
-                Method::HEAD,
-                Method::PATCH,
-                Method::HEAD,
-                Method::PATCH,
-                Method::HEAD
-            ]
+            vec![Method::HEAD, Method::PATCH, Method::HEAD, Method::PATCH]
         );
         assert_eq!(
             requests[3]
@@ -1534,7 +1555,6 @@ mod tests {
             )));
             responses.push_back(Ok(mock_head_response(0, 4)));
             responses.push_back(Ok(mock_patch_response(4)));
-            responses.push_back(Ok(mock_head_response(4, 4)));
         }
 
         let client = Client::with_transport(endpoint_url(), transport.clone())
@@ -1549,15 +1569,10 @@ mod tests {
 
         let requests = transport.requests.lock().unwrap();
         let methods: Vec<_> = requests.iter().map(|req| req.method().clone()).collect();
+        // The final PATCH drains the source, so no confirming HEAD follows.
         assert_eq!(
             methods,
-            vec![
-                Method::HEAD,
-                Method::PATCH,
-                Method::HEAD,
-                Method::PATCH,
-                Method::HEAD
-            ]
+            vec![Method::HEAD, Method::PATCH, Method::HEAD, Method::PATCH]
         );
     }
 
@@ -2011,13 +2026,13 @@ mod tests {
                 Vec::new(),
             )));
             // Creation-with-upload accepts only part of the body, so the part
-            // task must resume the created partial.
+            // task must resume the created partial. The POST reports the
+            // offset, so the resume skips the probe HEAD and PATCHes directly.
             responses.push_back(Ok(transport_response(
                 201,
                 header_map(&[("location", "/files/part-1"), ("upload-offset", "2")]),
                 Vec::new(),
             )));
-            responses.push_back(Ok(mock_head_response(2, 4)));
             // The resume PATCH fails after the partial already exists.
             responses.push_back(Ok(transport_response(
                 400,
@@ -2098,9 +2113,7 @@ mod tests {
                 header_map(&[("location", "/files/upload-1")]),
                 Vec::new(),
             )));
-            responses.push_back(Ok(mock_head_response(0, 4)));
             responses.push_back(Ok(mock_patch_response(4)));
-            responses.push_back(Ok(mock_head_response(4, 4)));
         }
         let client = Client::with_transport(endpoint_url(), transport.clone())
             .with_max_initial_upload_size(1024);
@@ -2110,6 +2123,14 @@ mod tests {
             .await
             .expect("plain creation must proceed without OPTIONS support");
         assert_eq!(upload.offset, 4);
+        // A just-created upload is at offset 0, so the resume path skips the
+        // probe HEAD; the draining PATCH needs no confirming HEAD either.
+        let requests = transport.requests.lock().unwrap();
+        let methods: Vec<_> = requests
+            .iter()
+            .map(|request| request.method().clone())
+            .collect();
+        assert_eq!(methods, vec![Method::OPTIONS, Method::POST, Method::PATCH]);
     }
 
     /// Capabilities are cached per client: repeated probes reuse the first

@@ -3,9 +3,9 @@
 //! This module defines all error types that can occur during TUS operations.
 //! Each error variant includes the appropriate HTTP status code to return to clients.
 //!
-//! Framework adapters (`tus-axum`, `tus-worker-example`, etc.) build their
-//! HTTP responses from [`Error::error_response`]. This crate intentionally
-//! has no dependency on a specific HTTP framework.
+//! Framework adapters (`tus-axum`, etc.) build their HTTP responses from
+//! [`Error::error_response`]. This crate intentionally has no dependency on a
+//! specific HTTP framework.
 
 /// Errors that can occur during TUS protocol operations.
 #[derive(Debug, thiserror::Error)]
@@ -172,6 +172,13 @@ pub enum Error {
     Internal(String),
 
     /// Method not allowed (405 Method Not Allowed).
+    ///
+    /// Carries the rejected method. RFC 9110 requires a 405 response to carry
+    /// an `Allow` header listing the methods the target resource *does*
+    /// support, but that set is route- and configuration-dependent and is not
+    /// known to this framework-neutral error. Adapters therefore own the
+    /// `Allow` header; `error_response` does not synthesize it. The first-party
+    /// `tus-axum` adapter attaches `Allow` on every 405 path.
     #[error("method not allowed: {0}")]
     MethodNotAllowed(String),
 
@@ -275,6 +282,11 @@ impl Error {
     /// Framework adapters (axum, Cloudflare Workers) build their concrete
     /// `Response` types from the returned [`ErrorResponse`]. Keeping the
     /// mapping in one place stops the adapter code paths from drifting.
+    ///
+    /// One header is deliberately *not* synthesized here: the `Allow` header on
+    /// a `405` ([`Error::MethodNotAllowed`]). Its value is the set of methods
+    /// the target route accepts, which depends on route registration and
+    /// configuration the protocol error cannot see. Adapters own it.
     pub fn error_response(&self) -> ErrorResponse {
         let status = self.status_code();
         let body = if self.should_expose_details() {

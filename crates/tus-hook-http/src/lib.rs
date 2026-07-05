@@ -36,7 +36,16 @@
 //! - **Header**: `X-Tus-Hook-Delivery` with a UUID identifying the delivery.
 //!   All retries of one delivery carry the same UUID, so receivers can
 //!   deduplicate redelivered events.
-//! - **Optional Header**: `X-Tus-Signature-256` with `sha256=<hex-hmac>`
+//! - **Optional Header**: `X-Tus-Signature-256` carrying an HMAC-SHA256
+//!   signature with replay protection, formatted `t=<unix_secs>,v1=<hex-hmac>`
+//!   (Stripe/GitHub style). The signature is computed over the byte string
+//!   `<unix_secs>.<body>` — the Unix send timestamp in seconds, a literal `.`,
+//!   then the raw request body — keyed by the configured signing secret. To
+//!   verify: parse `t` and `v1` from the header, recompute
+//!   `hex(HMAC_SHA256(secret, "{t}.{body}"))`, compare it to `v1` in constant
+//!   time, and reject deliveries whose `t` is too far from the current time.
+//!   The timestamp is captured once per delivery, so it (and therefore the
+//!   signature) stay stable across retries of the same delivery.
 //!
 //! ## Retries
 //!
@@ -94,7 +103,7 @@ use reqwest::{Client, StatusCode, Url, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tus_protocol::{Error, HookContext, HookExecutor, PreHookResult, Result, UploadMetadata};
 use uuid::Uuid;
 
@@ -424,9 +433,35 @@ impl HttpHookExecutor {
         serde_json::to_vec(ctx).map_err(Error::hook)
     }
 
-    fn signature_header_value(secret: &str, body: &[u8]) -> String {
+    /// Renders the webhook URL for logging with any userinfo stripped.
+    ///
+    /// A configured URL such as `https://user:pass@host/hook` retains its
+    /// `user:pass@` credentials in the parsed `Url`; logging it verbatim would
+    /// leak them, defeating the `Debug` redaction elsewhere in this crate. This
+    /// emits only `scheme://host[:port]/path`, dropping userinfo (and the query
+    /// string, which may also carry secrets).
+    fn redacted_url(url: &Url) -> String {
+        use std::fmt::Write as _;
+
+        let mut redacted = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
+        if let Some(port) = url.port() {
+            let _ = write!(redacted, ":{port}");
+        }
+        redacted.push_str(url.path());
+        redacted
+    }
+
+    /// Builds the `X-Tus-Signature-256` value: an HMAC-SHA256 over
+    /// `"{timestamp}.{body}"` in Stripe/GitHub style, formatted
+    /// `t=<unix_secs>,v1=<hex-hmac>`.
+    ///
+    /// Signing the timestamp alongside the body gives receivers replay
+    /// protection: they can reject deliveries whose `t` is too old.
+    fn signature_header_value(secret: &str, timestamp: u64, body: &[u8]) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
             .expect("HMAC accepts keys of any size");
+        mac.update(timestamp.to_string().as_bytes());
+        mac.update(b".");
         mac.update(body);
         let digest = mac.finalize().into_bytes();
 
@@ -436,17 +471,29 @@ impl HttpHookExecutor {
             let _ = write!(&mut hex, "{byte:02x}");
         }
 
-        format!("sha256={hex}")
+        format!("t={timestamp},v1={hex}")
+    }
+
+    /// Returns the current Unix time in whole seconds, used as the signature
+    /// timestamp. Captured once per delivery so it is stable across retries.
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0)
     }
 
     async fn send_webhook(
         &self,
         event: &str,
         delivery_id: &str,
+        timestamp: u64,
         payload: &[u8],
     ) -> std::result::Result<reqwest::Response, reqwest::Error> {
-        // The HMAC signature covers only the body; `X-Tus-Hook-Delivery` and
-        // the other headers are additive and do not affect verification.
+        // The HMAC signature covers `"{timestamp}.{body}"`; the signed
+        // timestamp is emitted in the signature header so receivers get replay
+        // protection. `X-Tus-Hook-Delivery` and the other headers are additive
+        // and do not affect verification.
         let mut request = self
             .client
             .post(self.url.clone())
@@ -459,7 +506,7 @@ impl HttpHookExecutor {
         if let Some(secret) = self.config.signing_secret.as_deref() {
             request = request.header(
                 SIGNATURE_HEADER,
-                Self::signature_header_value(secret, payload),
+                Self::signature_header_value(secret, timestamp, payload),
             );
         }
 
@@ -525,6 +572,9 @@ impl HttpHookExecutor {
     ) -> Result<reqwest::Response> {
         let payload = Self::payload(ctx)?;
         let delivery_id = Uuid::new_v4().to_string();
+        // Captured once per delivery, alongside the delivery id, so both the
+        // signed timestamp and the signature are stable across retries.
+        let timestamp = Self::current_timestamp();
         let max_attempts = if retry_enabled {
             self.config.max_retries.saturating_add(1)
         } else {
@@ -539,7 +589,7 @@ impl HttpHookExecutor {
             let is_last_attempt = attempt.saturating_add(1) >= max_attempts;
 
             let delay = match self
-                .send_webhook(ctx.event.as_str(), &delivery_id, &payload)
+                .send_webhook(ctx.event.as_str(), &delivery_id, timestamp, &payload)
                 .await
             {
                 Ok(response) => {
@@ -660,7 +710,7 @@ impl HookExecutor for HttpHookExecutor {
         tracing::debug!(
             event = ctx.event.as_str(),
             upload_id = %ctx.upload.id(),
-            url = %self.config.url,
+            url = %Self::redacted_url(&self.url),
             "executing pre-hook webhook"
         );
 
@@ -729,7 +779,7 @@ impl HookExecutor for HttpHookExecutor {
         tracing::debug!(
             event = ctx.event.as_str(),
             upload_id = %ctx.upload.id(),
-            url = %self.config.url,
+            url = %Self::redacted_url(&self.url),
             "executing post-hook webhook"
         );
 
@@ -913,13 +963,73 @@ mod tests {
     }
 
     #[test]
-    fn signature_header_value_uses_sha256_hmac() {
-        let signature = HttpHookExecutor::signature_header_value("secret", br#"{"ok":true}"#);
+    fn signature_header_value_signs_timestamped_body() {
+        let secret = "secret";
+        let timestamp = 1_700_000_000u64;
+        let body = br#"{"ok":true}"#;
 
-        assert_eq!(
-            signature,
-            "sha256=f6b4a2841c93f8bf2fb8f2c13d8fb0b6c8e8019f09ee405d248daa8385fad638"
-        );
+        let signature = HttpHookExecutor::signature_header_value(secret, timestamp, body);
+
+        // The header carries a parseable `t=<unix_secs>,v1=<hex-hmac>` value.
+        let (t_part, v1_part) = signature.split_once(',').expect("comma-separated fields");
+        assert_eq!(t_part, "t=1700000000");
+        let hex = v1_part.strip_prefix("v1=").expect("v1 field");
+
+        // The signature is computed over `"{t}.{body}"`, not the body alone.
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(format!("{timestamp}.").as_bytes());
+        mac.update(body);
+        let expected: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(hex, expected);
+
+        // Signing over the raw body only (the pre-replay-protection scheme)
+        // must no longer match, proving the timestamp is covered.
+        let mut body_only = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        body_only.update(body);
+        let body_only: String = body_only
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_ne!(hex, body_only);
+    }
+
+    #[test]
+    fn signature_timestamp_is_recoverable_and_verifies() {
+        // A receiver parses `t`, recomputes the HMAC over `"{t}.{body}"`, and
+        // the documented scheme verifies.
+        let secret = "shared-secret";
+        let body = br#"{"event":"pre-create"}"#;
+        let timestamp = HttpHookExecutor::current_timestamp();
+
+        let header = HttpHookExecutor::signature_header_value(secret, timestamp, body);
+
+        let (t_part, v1_part) = header.split_once(',').unwrap();
+        let parsed_ts: u64 = t_part.strip_prefix("t=").unwrap().parse().unwrap();
+        let signature = v1_part.strip_prefix("v1=").unwrap();
+
+        let recomputed = HttpHookExecutor::signature_header_value(secret, parsed_ts, body);
+        assert_eq!(recomputed, header);
+        assert!(recomputed.ends_with(signature));
+    }
+
+    #[test]
+    fn redacted_url_strips_userinfo() {
+        let url = Url::parse("https://user:pass@hooks.example.com:8443/tus-hook?token=abc").unwrap();
+
+        let redacted = HttpHookExecutor::redacted_url(&url);
+
+        assert_eq!(redacted, "https://hooks.example.com:8443/tus-hook");
+        // Neither the userinfo credentials nor the query secret appear verbatim.
+        assert!(!redacted.contains("user"), "userinfo leaked: {redacted}");
+        assert!(!redacted.contains("pass"), "password leaked: {redacted}");
+        assert!(!redacted.contains("token"), "query secret leaked: {redacted}");
     }
 
     #[test]
@@ -1066,9 +1176,17 @@ mod tests {
         assert!(request_lower.contains("content-type: application/json"));
         assert!(request_lower.contains("x-tus-hook-event: pre-create"));
         assert!(Uuid::parse_str(&delivery).is_ok());
+        // The signature header carries a parseable timestamp; recomputing the
+        // documented `"{t}.{body}"` HMAC with that timestamp reproduces it.
+        let (t_part, _) = signature.split_once(',').expect("comma-separated fields");
+        let sent_ts: u64 = t_part
+            .strip_prefix("t=")
+            .expect("t field")
+            .parse()
+            .expect("numeric timestamp");
         assert_eq!(
             signature,
-            HttpHookExecutor::signature_header_value(secret, body.as_bytes())
+            HttpHookExecutor::signature_header_value(secret, sent_ts, body.as_bytes())
         );
         assert!(request.contains(r#""event":"pre-create""#));
         assert!(request.contains("test-upload-id"));
@@ -1404,7 +1522,6 @@ mod tests {
         let mut request = HookRequestInfo::default();
         request.method = "POST".to_string();
         request.path = "/uploads".to_string();
-        request.remote_addr = Some("127.0.0.1".to_string());
 
         HookContext::new(
             HookEvent::PreCreate,

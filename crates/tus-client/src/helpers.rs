@@ -14,8 +14,8 @@ pub(crate) fn encode_metadata(metadata: &UploadMetadata) -> Result<String> {
     let mut pairs = Vec::with_capacity(metadata.len());
     for (key, value) in metadata {
         if !is_valid_metadata_key(key) {
-            return Err(Error::InvalidHeader {
-                header: "Upload-Metadata",
+            return Err(Error::InvalidDefaultHeader {
+                name: "Upload-Metadata".to_string(),
                 value: key.clone(),
             });
         }
@@ -214,6 +214,124 @@ pub(crate) fn jittered_backoff_delay(base: Duration, attempt: usize) -> Duration
     Duration::from_nanos(nanos.min(max_nanos))
 }
 
+/// The ceiling of the exponential backoff schedule. `backoff_delay`
+/// saturates its multiplier at `1 << 8`, so this is the longest delay the
+/// schedule can ever produce; it bounds a server-provided `Retry-After` so
+/// a hostile or misconfigured value cannot pin the client asleep.
+pub(crate) fn max_backoff_delay(base: Duration) -> Duration {
+    backoff_delay(base, 8)
+}
+
+/// Computes the delay before the next retry attempt.
+///
+/// A valid server `Retry-After` hint wins — clamped to
+/// [`max_backoff_delay`] so an abusive value cannot stall the client
+/// indefinitely — otherwise the client falls back to its own full-jitter
+/// exponential backoff.
+pub(crate) fn next_retry_delay(
+    retry_after: Option<Duration>,
+    base: Duration,
+    attempt: usize,
+) -> Duration {
+    match retry_after {
+        Some(hint) => hint.min(max_backoff_delay(base)),
+        None => jittered_backoff_delay(base, attempt),
+    }
+}
+
+/// Parses a `Retry-After` header value into a delay.
+///
+/// Handles the `delay-seconds` form (a non-negative integer) on every
+/// target, and the preferred IMF-fixdate HTTP-date form on native targets
+/// by differencing against the system clock; a date already in the past
+/// yields a zero delay. Anything unparseable yields `None`, so the caller
+/// falls back to its computed backoff.
+pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    parse_retry_after_date(value)
+}
+
+/// Differences an HTTP-date `Retry-After` against the system clock.
+///
+/// Native only: computing the delay needs a wall clock, which wasm32
+/// targets lack, so date-form values there fall back to jittered backoff.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_retry_after_date(value: &str) -> Option<Duration> {
+    let target = parse_imf_fixdate_unix(value)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(Duration::from_secs(target.saturating_sub(now).max(0) as u64))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_retry_after_date(_value: &str) -> Option<Duration> {
+    None
+}
+
+/// Parses an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, RFC 7231
+/// §7.1.1.1) into seconds since the Unix epoch. Only the fixed-width
+/// preferred form is accepted; the two obsolete date forms are not worth
+/// the surface for a `Retry-After` hint.
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_imf_fixdate_unix(value: &str) -> Option<i64> {
+    let value = value.strip_suffix(" GMT")?;
+    let (_weekday, rest) = value.split_once(", ")?;
+    let mut parts = rest.split(' ');
+    let day: i64 = parts.next()?.parse().ok()?;
+    let month = match parts.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = parts.next()?.parse().ok()?;
+    let time = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let mut hms = time.split(':');
+    let hour: i64 = hms.next()?.parse().ok()?;
+    let minute: i64 = hms.next()?.parse().ok()?;
+    let second: i64 = hms.next()?.parse().ok()?;
+    if hms.next().is_some() {
+        return None;
+    }
+    if !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Days from the Unix epoch (1970-01-01) for a civil date, via Howard
+/// Hinnant's `days_from_civil` algorithm.
+#[cfg(not(target_arch = "wasm32"))]
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[cfg(feature = "checksum")]
 pub(crate) fn encode_checksum(algorithm: tus_protocol::ChecksumAlgorithm, body: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD
@@ -233,6 +351,13 @@ pub(crate) async fn unexpected_response(
     response: TransportResponse,
 ) -> Error {
     let status = response.status().as_u16();
+    // Capture any `Retry-After` before consuming the body so a retryable
+    // response can honor the server's own backoff instead of the client's.
+    let retry_after = response
+        .headers()
+        .get(http::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after);
     let mut bytes = response.into_body();
     let truncated = bytes.len() > MAX_CAPTURED_ERROR_BODY_BYTES;
     if truncated {
@@ -247,6 +372,7 @@ pub(crate) async fn unexpected_response(
         operation,
         status,
         body,
+        retry_after,
     }
 }
 
@@ -401,6 +527,35 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
+    async fn unexpected_response_captures_a_valid_retry_after() {
+        let response = http::Response::builder()
+            .status(503)
+            .header(http::header::RETRY_AFTER, "3")
+            .body(b"slow down".to_vec())
+            .unwrap();
+
+        let error = unexpected_response("patch upload", response).await;
+
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(3)));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn unexpected_response_ignores_an_invalid_retry_after() {
+        let response = http::Response::builder()
+            .status(503)
+            .header(http::header::RETRY_AFTER, "whenever")
+            .body(Vec::new())
+            .unwrap();
+
+        let error = unexpected_response("patch upload", response).await;
+
+        // An unparseable hint leaves the client to fall back to backoff.
+        assert_eq!(error.retry_after(), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
     async fn unexpected_response_keeps_small_bodies_intact() {
         let response = http::Response::builder()
             .status(502)
@@ -430,5 +585,66 @@ mod tests {
             backoff_delay(Duration::from_millis(50), 2),
             Duration::from_millis(200)
         );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn parse_retry_after_reads_delay_seconds() {
+        assert_eq!(parse_retry_after("0"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_retry_after("120"), Some(Duration::from_secs(120)));
+        assert_eq!(parse_retry_after("  30 "), Some(Duration::from_secs(30)));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn parse_retry_after_rejects_garbage() {
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("   "), None);
+        assert_eq!(parse_retry_after("soon"), None);
+        assert_eq!(parse_retry_after("-5"), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parse_imf_fixdate_matches_the_canonical_example() {
+        // RFC 7231's canonical IMF-fixdate example is 784111777 seconds
+        // since the Unix epoch.
+        assert_eq!(
+            parse_imf_fixdate_unix("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        assert_eq!(parse_imf_fixdate_unix("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(parse_imf_fixdate_unix("not a date"), None);
+        assert_eq!(parse_imf_fixdate_unix("Sun, 06 Nov 1994 08:49:37 PST"), None);
+    }
+
+    /// A valid server hint is honored verbatim when it sits under the
+    /// backoff ceiling; an absent one falls back to jittered backoff, which
+    /// never exceeds the schedule for that attempt.
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn next_retry_delay_honors_hint_then_falls_back_to_backoff() {
+        let base = Duration::from_millis(200);
+
+        // A hint below the ceiling is used exactly as given.
+        assert_eq!(
+            next_retry_delay(Some(Duration::from_secs(2)), base, 0),
+            Duration::from_secs(2)
+        );
+
+        // A hostile hint is clamped to the backoff ceiling.
+        assert_eq!(
+            next_retry_delay(Some(Duration::from_secs(86_400)), base, 0),
+            max_backoff_delay(base)
+        );
+
+        // No hint: jittered fallback stays within the schedule for the attempt.
+        for attempt in 0..4 {
+            let delay = next_retry_delay(None, base, attempt);
+            assert!(
+                delay <= backoff_delay(base, attempt),
+                "jittered fallback {delay:?} exceeded backoff for attempt {attempt}"
+            );
+        }
     }
 }

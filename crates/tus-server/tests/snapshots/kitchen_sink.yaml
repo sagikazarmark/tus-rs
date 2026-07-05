@@ -17,7 +17,7 @@ disable_checksum_trailer: false
 disable_concatenation_unfinished: false
 disable_download: false
 
-cleanup: true
+disable_expiration_reclamation: false
 expiration: 3600
 expiration_scan_interval: 60
 

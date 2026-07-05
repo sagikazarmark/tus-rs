@@ -11,7 +11,7 @@
 //! does not cause the router to re-dispatch.
 
 use axum::{
-    extract::{FromRequest, Path, Request, State},
+    extract::{FromRequest, Request, State},
     http::{HeaderValue, Method, header},
     response::{IntoResponse, Response},
 };
@@ -37,7 +37,12 @@ use crate::state::TusProtocol;
 /// reliably uppercased.
 pub(crate) async fn handle_post_with_override<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
-    Path(upload_id): Path<String>,
+    // Validate the upload id through the shared `TusUploadId` extractor rather
+    // than a raw `Path<String>`. A malformed id (e.g. an un-decodable
+    // percent-escape like `%FF`) then yields the same tus-compliant 400 +
+    // `Tus-Resumable` response as the direct PATCH/DELETE/HEAD routes, instead
+    // of axum's default plain-text 400 with no `Tus-Resumable` header.
+    upload_id: TusUploadId,
     req: Request,
 ) -> Result<Response, Error>
 where
@@ -58,7 +63,6 @@ where
         Some(m) if m == Method::PATCH => {
             let headers = TusHeaders::from_header_map(req.headers())?;
             let body = TusBody::from_request(req, &()).await?;
-            let upload_id = TusUploadId::from_string(upload_id)?;
 
             handle_patch(State(protocol), headers, upload_id, body)
                 .await
@@ -66,7 +70,6 @@ where
         }
         Some(m) if m == Method::DELETE => {
             let headers = TusHeaders::from_header_map(req.headers())?;
-            let upload_id = TusUploadId::from_string(upload_id)?;
 
             handle_delete(State(protocol), headers, upload_id)
                 .await

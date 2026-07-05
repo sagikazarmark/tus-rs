@@ -24,13 +24,67 @@ impl<'a> UploadObjects<'a> {
     /// materialization objects, or a completion marker behind (crashes, failed
     /// cleanup). Inheriting them would splice stale bytes into the new upload,
     /// so creation fails if the leftovers cannot be removed.
+    ///
+    /// Upload ids are server-generated UUIDs, so a key is effectively never
+    /// reused and the overwhelming common case is a genuinely-fresh key with
+    /// nothing to clean. Unconditionally issuing the delete+list sweep made
+    /// every `create` pay ~4 mutating round-trips (real latency and per-request
+    /// cost on S3/GCS) to remove objects that are not there. Instead we probe
+    /// cheaply first with read-only ops and only run the mutating sweep when
+    /// leftover state is actually observed. A fresh key therefore pays a few
+    /// stats/one empty list instead of four deletes plus two lists, while a
+    /// genuinely-reused key is still fully cleaned, so the crash-consistency
+    /// and idempotent-repair guarantees are unchanged.
     pub(crate) async fn prepare_for_new_upload(&self) -> Result<()> {
+        if !self.has_stale_state().await? {
+            return Ok(());
+        }
+
         // Same ordering rationale as `delete_all`; the main object is removed
         // too so a reused key cannot report the previous upload's size.
         self.delete_object(&self.completion_marker_key()).await?;
         self.delete_object(self.key).await?;
         self.delete_staged_parts().await?;
         self.delete_temp_objects().await
+    }
+
+    /// Cheaply detects leftover state at the key that would corrupt a fresh
+    /// upload, so the mutating cleanup sweep can be skipped when there is none.
+    ///
+    /// Three independent leftovers can corrupt a reused key, and each lives at a
+    /// distinct key/prefix, so detecting them portably (fs lists directories,
+    /// object stores list by prefix) needs one read-only probe apiece:
+    ///
+    /// * A stale **completion marker** plus the new upload's own first part
+    ///   would let [`ensure_materialized`](Self::ensure_materialized) serve an
+    ///   incomplete upload as complete.
+    /// * A stale **main object** would be served by the read/size paths as the
+    ///   previous upload's bytes.
+    /// * Stale **staged parts** splice into the new upload through
+    ///   append-position recovery (or break it with an offset mismatch).
+    ///
+    /// Temporary objects are deliberately not probed: they are inert (never read
+    /// as upload data, and `materialize` always writes fresh uuid-named temp
+    /// keys), so a lone leftover temp object cannot corrupt anything. It is
+    /// reclaimed by the next [`delete_all`](Self::delete_all), or by this sweep
+    /// when one of the three real leftovers triggers it.
+    async fn has_stale_state(&self) -> Result<bool> {
+        if self.object_exists(&self.completion_marker_key()).await? {
+            return Ok(true);
+        }
+        if self.object_exists(self.key).await? {
+            return Ok(true);
+        }
+        Ok(!self.list_parts().await?.is_empty())
+    }
+
+    /// Stats a single object, mapping a missing object to `false`.
+    async fn object_exists(&self, key: &str) -> Result<bool> {
+        match self.operator.stat(key).await {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Error::storage(e)),
+        }
     }
 
     /// Validates the expected offset and stages the PATCH body as the next

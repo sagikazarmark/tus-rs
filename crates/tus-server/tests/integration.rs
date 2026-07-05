@@ -901,12 +901,13 @@ mod tcp_tests {
 
     #[tokio::test]
     async fn expired_uploads_are_deleted_by_background_cleanup() {
+        // No opt-in flag: setting --expiration must enable in-process
+        // reclamation by default.
         let mut server = spawn_server(&[
             "--expiration",
             "1s",
             "--expiration-scan-interval",
             "1s",
-            "--cleanup",
         ]);
         wait_for_http(&mut server).await;
 
