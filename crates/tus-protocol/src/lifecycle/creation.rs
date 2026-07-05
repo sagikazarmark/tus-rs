@@ -245,7 +245,7 @@ mod tests {
         let config = Config::default()
             .with_extension(Extension::CreationDeferLength)
             .with_extension(Extension::CreationWithUpload)
-            .with_allow_empty_creation(false);
+            .without_empty_creation();
 
         let transition = prepare_creation(&config, request).unwrap();
 

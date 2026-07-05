@@ -75,7 +75,7 @@ impl StateStore for MemoryStateStore {
     async fn set(&self, state: &UploadState, mode: WriteMode) -> Result<()> {
         validate_upload_id(state.id())?;
 
-        let mut states = self.states.write().unwrap();
+        let mut states = self.states.write().map_err(|_| poisoned())?;
 
         if mode == WriteMode::CreateNew && states.contains_key(state.id()) {
             return Err(Error::AlreadyExists(state.id().to_string()));
@@ -88,19 +88,19 @@ impl StateStore for MemoryStateStore {
     async fn get(&self, id: &str) -> Result<Option<UploadState>> {
         validate_upload_id(id)?;
 
-        let states = self.states.read().unwrap();
+        let states = self.states.read().map_err(|_| poisoned())?;
         Ok(states.get(id).cloned())
     }
 
     async fn delete(&self, id: &str) -> Result<()> {
         validate_upload_id(id)?;
 
-        self.states.write().unwrap().remove(id);
+        self.states.write().map_err(|_| poisoned())?.remove(id);
         Ok(())
     }
 
     async fn list_expired(&self, before: DateTime<Utc>) -> Result<Vec<String>> {
-        let states = self.states.read().unwrap();
+        let states = self.states.read().map_err(|_| poisoned())?;
         let expired: Vec<String> = states
             .values()
             .filter(|s| s.expires_before(before))
@@ -113,11 +113,18 @@ impl StateStore for MemoryStateStore {
 #[async_trait]
 impl UploadInventory for MemoryStateStore {
     async fn list_upload_ids(&self, limit: usize, offset: usize) -> Result<Vec<String>> {
-        let states = self.states.read().unwrap();
+        let states = self.states.read().map_err(|_| poisoned())?;
         let mut ids: Vec<String> = states.keys().cloned().collect();
         ids.sort();
         Ok(ids.into_iter().skip(offset).take(limit).collect())
     }
+}
+
+/// Maps a poisoned lock to an internal error instead of panicking, matching
+/// `MemoryLocker`. These critical sections never call user code, so poisoning
+/// is effectively unreachable; this keeps the dev backend panic-free anyway.
+fn poisoned() -> Error {
+    Error::Internal("memory state store lock poisoned".to_string())
 }
 
 #[cfg(test)]

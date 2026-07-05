@@ -1122,9 +1122,7 @@ impl HookExecutor for RejectingHookExecutor {
     async fn execute_pre(&self, _ctx: &HookContext) -> TusResult<PreHookResult> {
         Ok(PreHookResult::reject(self.status, self.message.clone()))
     }
-    async fn execute_post(&self, _ctx: &HookContext) -> TusResult<()> {
-        Ok(())
-    }
+    async fn execute_post(&self, _ctx: &HookContext) {}
 }
 
 fn build_router_with_rejecting_hooks(status: u16, message: &str) -> Router {

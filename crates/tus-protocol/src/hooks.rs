@@ -538,28 +538,24 @@ pub trait HookExecutor: MaybeSendSync {
 
     /// Executes post-hooks for an event.
     ///
-    /// Protocol handlers call post-hooks after committing storage or state
-    /// changes. At those call sites, executor errors are logged and swallowed
-    /// so an already-committed request is not reported as failed to the client.
-    async fn execute_post(&self, ctx: &HookContext) -> Result<()>;
+    /// Post-hooks run after storage or state has already been committed, so
+    /// they are notifications only: the return type is intentionally `()`
+    /// because there is no failure an executor could report that the protocol
+    /// could act on without falsely failing an already-committed request. An
+    /// executor that wants to observe hook failures must log or handle them
+    /// internally (as the built-in [`HookChain`] does).
+    async fn execute_post(&self, ctx: &HookContext);
 }
 
 /// Executes a post-hook notification after protocol state or storage has changed.
 ///
-/// Post-hooks are best-effort: executor failures are logged and swallowed so an
-/// already-committed request is not reported as failed to the client.
+/// Post-hooks are best-effort: the executor cannot fail the request, and any
+/// per-hook failures are logged inside the executor itself.
 pub(crate) async fn execute_post_best_effort<H>(hooks: &H, ctx: &HookContext)
 where
     H: HookExecutor + ?Sized,
 {
-    if let Err(error) = hooks.execute_post(ctx).await {
-        tracing::warn!(
-            event = ctx.event.as_str(),
-            upload_id = %ctx.upload.id(),
-            error = %error,
-            "post-hook executor failed after commit"
-        );
-    }
+    hooks.execute_post(ctx).await;
 }
 
 /// Compile-time proof that hook closures need not be `Send` on `wasm32`.
@@ -874,7 +870,7 @@ impl HookExecutor for HookChain {
         Ok(result)
     }
 
-    async fn execute_post(&self, ctx: &HookContext) -> Result<()> {
+    async fn execute_post(&self, ctx: &HookContext) {
         for hook in &self.hooks {
             if !hook.events().contains(&ctx.event) {
                 continue;
@@ -894,7 +890,6 @@ impl HookExecutor for HookChain {
                 );
             }
         }
-        Ok(())
     }
 }
 
@@ -924,9 +919,7 @@ impl HookExecutor for NoopHookExecutor {
         Ok(PreHookResult::proceed())
     }
 
-    async fn execute_post(&self, _ctx: &HookContext) -> Result<()> {
-        Ok(())
-    }
+    async fn execute_post(&self, _ctx: &HookContext) {}
 }
 
 #[cfg(test)]
@@ -1076,8 +1069,8 @@ mod tests {
         assert!(result.proceed);
         assert!(result.metadata.is_none());
 
-        // Post should also succeed
-        assert!(executor.execute_post(&ctx).await.is_ok());
+        // Post runs to completion (best-effort, no failure surfaced)
+        executor.execute_post(&ctx).await;
     }
 
     #[test]
@@ -1149,7 +1142,7 @@ mod tests {
             }
         });
         let ctx = make_context(HookEvent::PostFinish);
-        chain.execute_post(&ctx).await.unwrap();
+        chain.execute_post(&ctx).await;
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
@@ -1273,7 +1266,7 @@ mod tests {
             });
 
         let ctx = make_context(HookEvent::PostCreate);
-        chain.execute_post(&ctx).await.unwrap();
+        chain.execute_post(&ctx).await;
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
 
@@ -1296,17 +1289,14 @@ mod tests {
 
         chain
             .execute_post(&make_context(HookEvent::PostCreate))
-            .await
-            .unwrap();
+            .await;
         chain
             .execute_post(&make_context(HookEvent::PostFinish))
-            .await
-            .unwrap();
+            .await;
         // Not subscribed; should not fire.
         chain
             .execute_post(&make_context(HookEvent::PostReceive))
-            .await
-            .unwrap();
+            .await;
 
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }

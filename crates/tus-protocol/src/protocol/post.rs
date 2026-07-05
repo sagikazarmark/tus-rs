@@ -233,8 +233,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    struct FailingPostHookExecutor;
-
     #[derive(Clone, Default)]
     struct RecordingHookExecutor {
         events: Arc<Mutex<Vec<HookEvent>>>,
@@ -262,13 +260,12 @@ mod tests {
             Ok(PreHookResult::proceed())
         }
 
-        async fn execute_post(&self, ctx: &HookContext) -> crate::Result<()> {
+        async fn execute_post(&self, ctx: &HookContext) {
             self.events.lock().unwrap().push(ctx.event);
             self.offsets
                 .lock()
                 .unwrap()
                 .push((ctx.event, ctx.upload.offset()));
-            Ok(())
         }
     }
 
@@ -429,17 +426,6 @@ mod tests {
             before: chrono::DateTime<chrono::Utc>,
         ) -> crate::Result<Vec<String>> {
             self.inner.list_expired(before).await
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl HookExecutor for FailingPostHookExecutor {
-        async fn execute_pre(&self, _ctx: &HookContext) -> crate::Result<PreHookResult> {
-            Ok(PreHookResult::proceed())
-        }
-
-        async fn execute_post(&self, _ctx: &HookContext) -> crate::Result<()> {
-            Err(Error::hook(std::io::Error::other("post hook failed")))
         }
     }
 
@@ -649,7 +635,7 @@ mod tests {
         };
 
         let err = call(
-            &Config::default().with_allow_empty_creation(false),
+            &Config::default().without_empty_creation(),
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers,
@@ -664,7 +650,7 @@ mod tests {
     #[tokio::test]
     async fn fixed_length_creation_respects_allow_empty_creation() {
         let err = call(
-            &Config::default().with_allow_empty_creation(false),
+            &Config::default().without_empty_creation(),
             &MemoryStorage::new(),
             &MemoryStateStore::new(),
             headers_with_length(100),
@@ -685,7 +671,7 @@ mod tests {
     #[tokio::test]
     async fn creation_with_upload_is_allowed_when_empty_creation_disabled() {
         let config = Config::default()
-            .with_allow_empty_creation(false)
+            .without_empty_creation()
             .with_extension(Extension::CreationWithUpload);
         let body_data = Bytes::from_static(b"Hello");
         let headers = Headers {
@@ -712,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn deferred_creation_with_upload_is_allowed_when_empty_creation_disabled() {
         let config = Config::default()
-            .with_allow_empty_creation(false)
+            .without_empty_creation()
             .with_extension(Extension::CreationDeferLength)
             .with_extension(Extension::CreationWithUpload);
         let body_data = Bytes::from_static(b"Hello");
@@ -854,7 +840,9 @@ mod tests {
         let store = MemoryStateStore::new();
         let storage = MemoryStorage::new();
         let locker = NoopLocker::new();
-        let hooks = FailingPostHookExecutor;
+        let hooks = HookChain::new().on_post_create(|_ctx| async {
+            Err(Error::hook(std::io::Error::other("post hook failed")))
+        });
 
         let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
             .post(headers_with_length(1000), RequestBody::absent())

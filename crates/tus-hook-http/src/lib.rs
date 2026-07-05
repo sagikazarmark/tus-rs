@@ -171,6 +171,15 @@ pub struct HttpHookConfig {
 
     /// Shared secret used to sign webhook bodies with HMAC-SHA256.
     signing_secret: Option<String>,
+
+    /// Whether an undeliverable pre-hook allows the operation to proceed.
+    ///
+    /// When `false` (the default), a pre-hook that cannot obtain a successful,
+    /// parseable decision fails closed and blocks the operation. When `true`,
+    /// such failures fail open and the operation proceeds. A structured
+    /// rejection (a `2xx` response with `"proceed": false`) is always honored
+    /// regardless of this flag.
+    fail_open: bool,
 }
 
 impl std::fmt::Debug for HttpHookConfig {
@@ -202,6 +211,7 @@ impl std::fmt::Debug for HttpHookConfig {
                 "signing_secret",
                 &self.signing_secret.as_ref().map(|_| "[redacted]"),
             )
+            .field("fail_open", &self.fail_open)
             .finish()
     }
 }
@@ -218,6 +228,7 @@ impl HttpHookConfig {
             retry_deadline: DEFAULT_RETRY_DEADLINE,
             retry_post_hooks: false,
             signing_secret: None,
+            fail_open: false,
         }
     }
 
@@ -274,6 +285,19 @@ impl HttpHookConfig {
     /// Enables HMAC-SHA256 signing of webhook bodies.
     pub fn with_signing_secret(mut self, secret: impl Into<String>) -> Self {
         self.signing_secret = Some(secret.into());
+        self
+    }
+
+    /// Fails open: an undeliverable pre-hook allows the operation to proceed.
+    ///
+    /// By default the executor fails closed — a pre-hook webhook that is
+    /// unreachable, times out, or does not return a successful, parseable
+    /// decision blocks the operation. Enable this for deployments that prefer
+    /// to keep accepting uploads when the webhook endpoint is unavailable. A
+    /// structured rejection (a `2xx` response with `"proceed": false`) is
+    /// always honored regardless of this flag.
+    pub fn with_fail_open(mut self) -> Self {
+        self.fail_open = true;
         self
     }
 }
@@ -718,9 +742,11 @@ impl std::fmt::Debug for HttpHookExecutor {
     }
 }
 
-#[async_trait]
-impl HookExecutor for HttpHookExecutor {
-    async fn execute_pre(&self, ctx: &HookContext) -> Result<PreHookResult> {
+impl HttpHookExecutor {
+    /// Delivers a pre-hook webhook and returns its decision, or an error when
+    /// the webhook could not produce a successful, parseable decision. The
+    /// fail-open policy is applied by the [`HookExecutor::execute_pre`] wrapper.
+    async fn deliver_pre_hook(&self, ctx: &HookContext) -> Result<PreHookResult> {
         tracing::debug!(
             event = ctx.event.as_str(),
             upload_id = %ctx.upload.id(),
@@ -788,8 +814,27 @@ impl HookExecutor for HttpHookExecutor {
 
         Ok(hook_response.into())
     }
+}
 
-    async fn execute_post(&self, ctx: &HookContext) -> Result<()> {
+#[async_trait]
+impl HookExecutor for HttpHookExecutor {
+    async fn execute_pre(&self, ctx: &HookContext) -> Result<PreHookResult> {
+        match self.deliver_pre_hook(ctx).await {
+            Ok(result) => Ok(result),
+            Err(error) if self.config.fail_open => {
+                tracing::warn!(
+                    event = ctx.event.as_str(),
+                    upload_id = %ctx.upload.id(),
+                    error = %error,
+                    "pre-hook webhook did not return a decision; failing open (proceeding)"
+                );
+                Ok(PreHookResult::proceed())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn execute_post(&self, ctx: &HookContext) {
         tracing::debug!(
             event = ctx.event.as_str(),
             upload_id = %ctx.upload.id(),
@@ -828,8 +873,6 @@ impl HookExecutor for HttpHookExecutor {
                 );
             }
         }
-
-        Ok(())
     }
 }
 
@@ -1244,6 +1287,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fail_open_proceeds_when_pre_hook_returns_error_status() {
+        let (url, request) = serve_once(500, "boom").await;
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open()).unwrap();
+
+        let result = executor.execute_pre(&hook_context()).await.unwrap();
+        let _request = request.await.unwrap();
+
+        assert!(result.proceeds());
+    }
+
+    #[tokio::test]
+    async fn fail_open_still_honors_structured_rejection() {
+        let (url, request) = serve_once(200, r#"{"proceed":false,"reject_status":403}"#).await;
+        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open()).unwrap();
+
+        let result = executor.execute_pre(&hook_context()).await.unwrap();
+        let _request = request.await.unwrap();
+
+        assert!(!result.proceeds());
+        assert_eq!(result.reject_status(), Some(403));
+    }
+
+    #[tokio::test]
     async fn execute_pre_truncates_oversized_error_bodies() {
         let (url, request) = serve_once(403, "x".repeat(9 * 1024)).await;
         let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
@@ -1527,7 +1593,7 @@ mod tests {
         )
         .unwrap();
 
-        executor.execute_post(&hook_context()).await.unwrap();
+        executor.execute_post(&hook_context()).await;
         let requests = requests.await.unwrap();
 
         assert_eq!(requests.len(), 2);
@@ -1543,7 +1609,7 @@ mod tests {
         )
         .unwrap();
 
-        executor.execute_post(&hook_context()).await.unwrap();
+        executor.execute_post(&hook_context()).await;
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         server.abort();
@@ -1554,7 +1620,7 @@ mod tests {
         let (url, request) = serve_once(500, "failed").await;
         let executor = HttpHookExecutor::new(HttpHookConfig::new(url)).unwrap();
 
-        executor.execute_post(&hook_context()).await.unwrap();
+        executor.execute_post(&hook_context()).await;
         let _request = request.await.unwrap();
     }
 
