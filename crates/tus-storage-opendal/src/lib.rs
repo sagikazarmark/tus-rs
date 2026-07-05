@@ -998,8 +998,8 @@ mod tests {
         // Upload ids are UUIDs, so the common path is a genuinely-fresh key.
         // create() must not pay the mutating delete+list sweep there: an inert
         // leftover temp object (never read as upload data) is left untouched by
-        // the fast path and reclaimed lazily on delete, proving the sweep did
-        // not run. A stale marker/main/staged part would instead trigger it.
+        // the fast path, proving the sweep did not run. A stale marker/main/
+        // staged part would instead trigger it.
         let storage = create_test_storage();
         storage
             .operator
@@ -1010,7 +1010,13 @@ mod tests {
         let handle = storage.create("fresh-key").await.unwrap();
 
         // The fast path skipped the sweep, so the inert temp object survives.
-        assert!(storage.operator.stat("fresh-key.tmp/orphan-abcdef").await.is_ok());
+        assert!(
+            storage
+                .operator
+                .stat("fresh-key.tmp/orphan-abcdef")
+                .await
+                .is_ok()
+        );
 
         // The fresh upload still works and never inherits stale bytes.
         let handle = storage
@@ -1025,10 +1031,17 @@ mod tests {
         let body = read_all(storage.stream(&handle).await.unwrap()).await;
         assert_eq!(body, b"data");
 
-        // Delete reclaims the inert temp object.
+        // Delete reclaims leftover temp objects. The completing append above
+        // finalized the upload and already swept the original orphan, so seed a
+        // fresh leftover temp object to exercise delete's cleanup directly.
+        storage
+            .operator
+            .write("fresh-key.tmp/orphan-ghijkl", Bytes::from("inert"))
+            .await
+            .unwrap();
         storage.delete(&handle).await.unwrap();
         assert!(matches!(
-            storage.operator.stat("fresh-key.tmp/orphan-abcdef").await,
+            storage.operator.stat("fresh-key.tmp/orphan-ghijkl").await,
             Err(e) if e.kind() == opendal::ErrorKind::NotFound
         ));
     }

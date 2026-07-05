@@ -234,7 +234,8 @@ mod tests {
             MemoryLocker::new(),
             NoopHookExecutor::new(),
         ));
-        let app: axum::Router = tus_axum::create_router(state, &tus_axum::RouterOptions::default()).unwrap();
+        let app: axum::Router =
+            tus_axum::create_router(state, &tus_axum::RouterOptions::default()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {

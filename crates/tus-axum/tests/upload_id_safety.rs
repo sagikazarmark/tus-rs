@@ -322,6 +322,56 @@ async fn method_override_post_with_malformed_id_returns_400_with_tus_resumable()
     sb.assert_no_traversal_writes();
 }
 
+/// The id is validated before the `X-HTTP-Method-Override` header is inspected,
+/// so a malformed id on the override POST path is rejected with the same
+/// tus-compliant 400 + `Tus-Resumable` even when the override header is absent
+/// or unrecognized (the cases that would otherwise fall through to the 405
+/// fallback for a *valid* id). This keeps a malformed id a uniform 400 across
+/// every route rather than depending on the override value.
+#[tokio::test]
+async fn method_override_post_with_malformed_id_rejects_before_405_fallback() {
+    let sb = build_sandbox().await;
+
+    // No override header, and an unrecognized override value: both would drive
+    // the 405 fallback for a well-formed id, but the malformed id short-circuits
+    // to 400 first.
+    let cases: [&[(&str, &str)]; 2] = [
+        &[("tus-resumable", TUS_RESUMABLE)],
+        &[
+            ("tus-resumable", TUS_RESUMABLE),
+            ("x-http-method-override", "BOGUS"),
+        ],
+    ];
+
+    for headers in cases {
+        let mut builder = Request::builder().method(Method::POST).uri("/files/%FF");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let request = builder.body(Body::empty()).unwrap();
+
+        let response = sb.router.clone().oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "malformed id must be 400 regardless of the override header ({headers:?})"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("tus-resumable")
+                .expect("Tus-Resumable header must be present")
+                .to_str()
+                .unwrap(),
+            TUS_RESUMABLE,
+            "malformed-id 400 must carry Tus-Resumable ({headers:?})"
+        );
+    }
+
+    sb.assert_no_traversal_writes();
+}
+
 /// A direct PATCH with the same malformed id is the reference behavior: 400
 /// with `Tus-Resumable`. Pinning it here makes the parity with the
 /// method-override path above explicit.
@@ -329,7 +379,12 @@ async fn method_override_post_with_malformed_id_returns_400_with_tus_resumable()
 async fn direct_patch_with_malformed_id_returns_400_with_tus_resumable() {
     let sb = build_sandbox().await;
 
-    let response = sb.router.clone().oneshot(patch("/files/%FF")).await.unwrap();
+    let response = sb
+        .router
+        .clone()
+        .oneshot(patch("/files/%FF"))
+        .await
+        .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(

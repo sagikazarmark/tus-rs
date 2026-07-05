@@ -342,7 +342,9 @@ where
 
         // A freshly created upload is at offset 0; skip the probe HEAD that
         // the resume path would otherwise send.
-        let info = self.create_upload_info(NewUpload::new(length, metadata)).await?;
+        let info = self
+            .create_upload_info(NewUpload::new(length, metadata))
+            .await?;
         let url = info.url.clone();
         self.resume_at_with_progress_from(&url, source, progress, Some(info))
             .await
@@ -868,7 +870,6 @@ where
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {

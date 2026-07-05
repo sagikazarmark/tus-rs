@@ -613,9 +613,15 @@ mod tests {
             parse_imf_fixdate_unix("Sun, 06 Nov 1994 08:49:37 GMT"),
             Some(784_111_777)
         );
-        assert_eq!(parse_imf_fixdate_unix("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(
+            parse_imf_fixdate_unix("Thu, 01 Jan 1970 00:00:00 GMT"),
+            Some(0)
+        );
         assert_eq!(parse_imf_fixdate_unix("not a date"), None);
-        assert_eq!(parse_imf_fixdate_unix("Sun, 06 Nov 1994 08:49:37 PST"), None);
+        assert_eq!(
+            parse_imf_fixdate_unix("Sun, 06 Nov 1994 08:49:37 PST"),
+            None
+        );
     }
 
     /// A valid server hint is honored verbatim when it sits under the

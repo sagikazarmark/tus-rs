@@ -233,9 +233,10 @@ async fn spawn_head_rewrite_server(
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let app: Router = tus_axum::create_router_with_download(state, &tus_axum::RouterOptions::default())
-        .unwrap()
-        .layer(from_fn_with_state(rewrite, rewrite_file_on_head));
+    let app: Router =
+        tus_axum::create_router_with_download(state, &tus_axum::RouterOptions::default())
+            .unwrap()
+            .layer(from_fn_with_state(rewrite, rewrite_file_on_head));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {

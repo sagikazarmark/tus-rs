@@ -118,9 +118,7 @@ impl ExpiredUploadReclamationOutcome {
     pub fn is_failure(&self) -> bool {
         matches!(
             self,
-            Self::StorageDeleteFailed { .. }
-                | Self::StateDeleteFailed { .. }
-                | Self::Failed { .. }
+            Self::StorageDeleteFailed { .. } | Self::StateDeleteFailed { .. } | Self::Failed { .. }
         )
     }
 }

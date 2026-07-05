@@ -45,7 +45,11 @@
 //!   `hex(HMAC_SHA256(secret, "{t}.{body}"))`, compare it to `v1` in constant
 //!   time, and reject deliveries whose `t` is too far from the current time.
 //!   The timestamp is captured once per delivery, so it (and therefore the
-//!   signature) stay stable across retries of the same delivery.
+//!   signature) stay stable across retries of the same delivery. Because `t`
+//!   does not advance across retries, keep
+//!   [`HttpHookConfig::with_retry_deadline`] below the freshness tolerance your
+//!   receiver enforces (Stripe-style verifiers typically allow ±5 minutes), or
+//!   a late retry of a long-running delivery can be rejected as stale.
 //!
 //! ## Retries
 //!
@@ -241,6 +245,11 @@ impl HttpHookConfig {
     /// Once the next retry (including its backoff delay) would exceed this
     /// deadline, the executor stops retrying and reports the last outcome.
     /// Defaults to 30 seconds.
+    ///
+    /// When webhook signing is enabled, keep this below the freshness tolerance
+    /// your receiver enforces on the signature timestamp: the timestamp is
+    /// fixed per delivery, so a retry sent near a large deadline can be rejected
+    /// as stale (see the crate-level signature docs).
     pub fn with_retry_deadline(mut self, deadline: Duration) -> Self {
         self.retry_deadline = deadline;
         self
@@ -1021,7 +1030,8 @@ mod tests {
 
     #[test]
     fn redacted_url_strips_userinfo() {
-        let url = Url::parse("https://user:pass@hooks.example.com:8443/tus-hook?token=abc").unwrap();
+        let url =
+            Url::parse("https://user:pass@hooks.example.com:8443/tus-hook?token=abc").unwrap();
 
         let redacted = HttpHookExecutor::redacted_url(&url);
 
@@ -1029,7 +1039,10 @@ mod tests {
         // Neither the userinfo credentials nor the query secret appear verbatim.
         assert!(!redacted.contains("user"), "userinfo leaked: {redacted}");
         assert!(!redacted.contains("pass"), "password leaked: {redacted}");
-        assert!(!redacted.contains("token"), "query secret leaked: {redacted}");
+        assert!(
+            !redacted.contains("token"),
+            "query secret leaked: {redacted}"
+        );
     }
 
     #[test]
