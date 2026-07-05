@@ -428,7 +428,10 @@ mod tests {
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(1000);
         final_upload.set_offset(0);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -466,7 +469,10 @@ mod tests {
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -493,7 +499,10 @@ mod tests {
         let mut final_upload = UploadState::new("final-1").with_length(4);
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let observed_offsets = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new().on_post_finish({
@@ -540,7 +549,10 @@ mod tests {
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(0);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let locker = NoopLocker::new();
@@ -587,7 +599,10 @@ mod tests {
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let locker = NoopLocker::new();
@@ -629,7 +644,10 @@ mod tests {
         final_upload.mark_final(vec!["a".to_string(), "b".to_string()]);
         final_upload.set_length(1000);
         final_upload.set_offset(1000);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -653,7 +671,10 @@ mod tests {
         final_upload.mark_final(vec!["missing-part".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();

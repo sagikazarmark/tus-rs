@@ -165,8 +165,8 @@ mod tests {
 
     #[test]
     fn length_required_maps_to_411() {
-        let response =
-            <TusRejection as From<ProtocolError>>::from(ProtocolError::LengthRequired).into_response();
+        let response = <TusRejection as From<ProtocolError>>::from(ProtocolError::LengthRequired)
+            .into_response();
         assert_eq!(response.status(), StatusCode::LENGTH_REQUIRED);
     }
 

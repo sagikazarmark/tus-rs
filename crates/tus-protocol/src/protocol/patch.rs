@@ -661,7 +661,10 @@ mod tests {
         let mut final_upload = UploadState::new("final-1").with_length(4);
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new()
@@ -742,7 +745,10 @@ mod tests {
         let mut final_upload = UploadState::new("final-1").with_length(4);
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new().on_pre_finish({

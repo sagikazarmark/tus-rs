@@ -954,7 +954,8 @@ mod tests {
 
     #[test]
     fn debug_redacts_url_userinfo_and_query() {
-        let config = HttpHookConfig::new("https://user:pass@example.com/webhook?token=super-secret");
+        let config =
+            HttpHookConfig::new("https://user:pass@example.com/webhook?token=super-secret");
 
         let rendered = format!("{config:?}");
 

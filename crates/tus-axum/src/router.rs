@@ -495,7 +495,10 @@ mod tests {
             upload.set_storage_handle(handle);
         }
 
-        state_store.set(&upload, WriteMode::CreateNew).await.unwrap();
+        state_store
+            .set(&upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
     }
 
     struct UploadOnlyStorage;

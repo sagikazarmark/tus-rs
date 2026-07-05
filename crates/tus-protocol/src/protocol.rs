@@ -373,7 +373,10 @@ mod handle_tests {
         let storage = MemoryStorage::new();
         let state_store = MemoryStateStore::new();
         let upload = UploadState::new("test-id").with_length(42);
-        state_store.set(&upload, WriteMode::CreateNew).await.unwrap();
+        state_store
+            .set(&upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let handle = ProtocolHandle::new(
             Config::default(),
@@ -407,7 +410,10 @@ mod handle_tests {
             .unwrap();
         upload.set_storage_handle(handle);
         upload.set_offset(5);
-        state_store.set(&upload, WriteMode::CreateNew).await.unwrap();
+        state_store
+            .set(&upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let handle = ProtocolHandle::new(
             Config::default(),

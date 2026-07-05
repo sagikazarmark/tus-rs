@@ -838,7 +838,10 @@ mod materialization_tests {
         let mut final_upload = UploadState::new("final-1");
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(10);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -869,7 +872,10 @@ mod materialization_tests {
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -904,7 +910,10 @@ mod materialization_tests {
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -947,7 +956,10 @@ mod materialization_tests {
         final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -985,7 +997,10 @@ mod materialization_tests {
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(10);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -1014,7 +1029,10 @@ mod materialization_tests {
         let handle = storage.create(final_upload.id()).await.unwrap();
         final_upload.set_storage_handle(handle.clone());
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new().on_pre_finish({
@@ -1057,7 +1075,10 @@ mod materialization_tests {
         final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let observed = Arc::new(Mutex::new(None));
         let hooks = HookChain::new().on_pre_finish({
@@ -1138,7 +1159,10 @@ mod materialization_tests {
         final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["missing-part".to_string()]);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -1175,7 +1199,10 @@ mod materialization_tests {
             .unwrap();
         final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["missing-part".to_string()]);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let hooks = NoopHookExecutor::new();
@@ -1366,7 +1393,10 @@ mod materialization_tests {
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new()
@@ -1431,7 +1461,10 @@ mod materialization_tests {
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
-        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
+        store
+            .set(&final_upload, WriteMode::CreateNew)
+            .await
+            .unwrap();
 
         let hooks = HookChain::new()
             .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) });

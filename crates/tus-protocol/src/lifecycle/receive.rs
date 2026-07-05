@@ -8,8 +8,8 @@ use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
 use crate::protocol::{Headers, RequestBody};
-use crate::state::{StateStore, WriteMode};
 use crate::state::UploadState;
+use crate::state::{StateStore, WriteMode};
 use crate::storage::{AppendRequest, ChunkStream, Storage, StorageHandle};
 
 use super::{PreHookGate, UploadCompletion, ensure_active};

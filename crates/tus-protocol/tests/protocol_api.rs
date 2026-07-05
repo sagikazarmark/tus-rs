@@ -563,7 +563,10 @@ async fn protocol_head_accepts_expired_completed_final_upload() {
         .unwrap()
         .unwrap()
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
-    state_store.set(&final_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&final_state, WriteMode::Update)
+        .await
+        .unwrap();
 
     let response = protocol.head(&final_id).await.unwrap();
     let expired = state_store.list_expired(Utc::now()).await.unwrap();
@@ -670,7 +673,10 @@ async fn protocol_head_rejects_expired_completed_partial_upload() {
         .unwrap()
         .unwrap()
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
-    state_store.set(&part_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&part_state, WriteMode::Update)
+        .await
+        .unwrap();
 
     let err = protocol.head(&part_id).await.unwrap_err();
     let expired = state_store.list_expired(Utc::now()).await.unwrap();
@@ -717,7 +723,10 @@ async fn protocol_head_rejects_expired_unfinished_final_upload() {
         .unwrap()
         .unwrap()
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
-    state_store.set(&final_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&final_state, WriteMode::Update)
+        .await
+        .unwrap();
 
     let err = protocol.head(&final_id).await.unwrap_err();
     let expired = state_store.list_expired(Utc::now()).await.unwrap();
@@ -764,7 +773,10 @@ async fn protocol_head_rejects_planned_final_upload_with_expired_partial() {
         .unwrap()
         .unwrap()
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
-    state_store.set(&part_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&part_state, WriteMode::Update)
+        .await
+        .unwrap();
 
     let err = protocol.head(&final_id).await.unwrap_err();
 
@@ -809,7 +821,10 @@ async fn protocol_head_rejects_planned_final_upload_with_reclaimed_partial() {
         .unwrap()
         .unwrap()
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
-    state_store.set(&part_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&part_state, WriteMode::Update)
+        .await
+        .unwrap();
     let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
         .await
         .unwrap();
@@ -854,7 +869,10 @@ async fn protocol_planned_final_upload_expires_with_earliest_partial() {
         .unwrap()
         .unwrap()
         .with_expiration(part_expires);
-    state_store.set(&part_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&part_state, WriteMode::Update)
+        .await
+        .unwrap();
 
     let final_response = protocol
         .post(final_post_headers(&[&part_id]), RequestBody::absent())
@@ -918,7 +936,10 @@ async fn protocol_head_accepts_materialized_final_upload_after_partial_reclamati
         .unwrap()
         .unwrap()
         .with_expiration(Utc::now() - ChronoDuration::minutes(1));
-    state_store.set(&part_state, WriteMode::Update).await.unwrap();
+    state_store
+        .set(&part_state, WriteMode::Update)
+        .await
+        .unwrap();
     let report = reclaim_expired_uploads(&storage, &state_store, &locker, Utc::now())
         .await
         .unwrap();

@@ -328,7 +328,11 @@ where
     S: StateStore + ?Sized,
 {
     for id in ["", "../escape", "nested/id", "nested\\id", "bad\nnewline"] {
-        assert_invalid_upload_id(store.set(&UploadState::new(id), WriteMode::CreateNew).await, "set", id);
+        assert_invalid_upload_id(
+            store.set(&UploadState::new(id), WriteMode::CreateNew).await,
+            "set",
+            id,
+        );
         assert_invalid_upload_id(
             store.set(&UploadState::new(id), WriteMode::Update).await,
             "set update",
@@ -447,7 +451,10 @@ where
         .await
         .expect("creating expired state should succeed");
     store
-        .set(&UploadState::new(&partial_id).with_partial(), WriteMode::CreateNew)
+        .set(
+            &UploadState::new(&partial_id).with_partial(),
+            WriteMode::CreateNew,
+        )
         .await
         .expect("creating partial state should succeed");
 
