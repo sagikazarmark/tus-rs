@@ -33,22 +33,6 @@ use crate::error::{Error, Result};
 use crate::runtime::MaybeSendSync;
 use crate::storage::StorageHandle;
 
-/// How a [`StateStore::set`] call should reconcile with any existing record.
-///
-/// Replaces the former `create: bool` flag so call sites read intentionally
-/// (`WriteMode::CreateNew` vs `WriteMode::Update`) instead of a bare boolean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WriteMode {
-    /// Create a brand-new record, failing with `Error::AlreadyExists` if the
-    /// upload ID is already present. Backends with compare-and-set or
-    /// conditional-create support should make the existence check atomic with
-    /// the write.
-    CreateNew,
-    /// Overwrite the existing record (or insert if absent), used for progress
-    /// and lifecycle updates after creation.
-    Update,
-}
-
 /// Trait for persisting upload state.
 ///
 /// Implementors should provide atomic operations for storing and retrieving
@@ -99,6 +83,22 @@ pub trait StateStore: MaybeSendSync {
     ///
     /// Used by expiration cleanup jobs.
     async fn list_expired(&self, before: DateTime<Utc>) -> Result<Vec<String>>;
+}
+
+/// How a [`StateStore::set`] call should reconcile with any existing record.
+///
+/// Replaces the former `create: bool` flag so call sites read intentionally
+/// (`WriteMode::CreateNew` vs `WriteMode::Update`) instead of a bare boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WriteMode {
+    /// Create a brand-new record, failing with `Error::AlreadyExists` if the
+    /// upload ID is already present. Backends with compare-and-set or
+    /// conditional-create support should make the existence check atomic with
+    /// the write.
+    CreateNew,
+    /// Overwrite the existing record (or insert if absent), used for progress
+    /// and lifecycle updates after creation.
+    Update,
 }
 
 /// Optional trait for operational upload inventory.

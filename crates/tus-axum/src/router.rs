@@ -418,13 +418,12 @@ mod tests {
     use std::convert::Infallible;
     use std::sync::Arc;
     use tower::ServiceExt;
-    use tus_protocol::WriteMode;
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
     use tus_protocol::{
         AppendRequest, ChunkStream, ConcatRequest, Extension, HookChain, NoopHookExecutor,
-        NoopLocker, PreHookResult, ProtocolHandle, Result, StorageHandle, UploadState,
+        NoopLocker, PreHookResult, ProtocolHandle, Result, StorageHandle, UploadState, WriteMode,
     };
 
     fn upload_only_router() -> Router {
