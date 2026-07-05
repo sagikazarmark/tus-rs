@@ -80,6 +80,29 @@
 //! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. `PreFinish` runs after the completing bytes and state are durably committed; a rejection fails the PATCH response and skips `PostFinish`, but the upload remains stored and complete. It is gate-only. |
 //! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PreTerminate` may reject or add response headers. `PostTerminate` runs after state deletion and best-effort storage deletion. |
 //! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths reconcile final concatenation uploads. If complete referenced parts can materialize or repair the final upload, `PreFinish` gates that commit and `PostFinish` follows it. `PreFinish` is gate-only. |
+//!
+//! ## Completion ordering differs by path (by design)
+//!
+//! When a request both receives bytes *and* completes the upload, the two
+//! entry paths order their hooks differently, and the difference is
+//! intentional:
+//!
+//! - **Creation-With-Upload** runs every pre-hook before any post-hook
+//!   (`PreCreate` → `PreReceive` → `PreFinish` → `PostCreate` → `PostReceive`
+//!   → `PostFinish`). The upload resource is brand new, so a `PreFinish`
+//!   rejection rolls the whole creation back and *no* post-hooks fire.
+//!
+//! - **A completing `PATCH`** runs `PreReceive` → `PostReceive` →
+//!   `PreFinish` → `PostFinish`. The received bytes are durably committed
+//!   before `PreFinish` runs and cannot be un-committed, so `PostReceive`
+//!   fires for those bytes even if `PreFinish` then rejects completion. A
+//!   `PreFinish` rejection fails the PATCH response and skips `PostFinish`,
+//!   but the upload remains stored and complete on disk.
+//!
+//! The consequence for hook authors: on the `PATCH` path, do not treat
+//! `PostReceive` side effects as conditional on `PreFinish` acceptance. If a
+//! `PreFinish` gate must run before receive side effects, gate in `PreReceive`
+//! instead, since only `PreReceive` precedes the commit on both paths.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -385,9 +408,6 @@ pub struct HookRequestInfo {
 
     /// Request path.
     pub path: String,
-
-    /// Remote address of the client.
-    pub remote_addr: Option<String>,
 
     /// Selected request headers (subset for security).
     #[serde(default)]

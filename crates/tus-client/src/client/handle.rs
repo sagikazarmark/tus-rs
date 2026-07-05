@@ -316,7 +316,6 @@ mod tests {
             let responses = &mut *transport.responses.lock().unwrap();
             responses.push_back(Ok(mock_head_response(0, 4)));
             responses.push_back(Ok(mock_patch_response(4)));
-            responses.push_back(Ok(mock_head_response(4, 4)));
         }
         let client =
             Client::with_transport(endpoint_url(), transport.clone()).with_max_chunk_size(4);
@@ -335,7 +334,9 @@ mod tests {
             .iter()
             .map(|request| request.method().clone())
             .collect();
-        assert_eq!(methods, vec![Method::HEAD, Method::PATCH, Method::HEAD]);
+        // A genuine resume probes with the initial HEAD, but the PATCH that
+        // drains the source needs no confirming HEAD afterward.
+        assert_eq!(methods, vec![Method::HEAD, Method::PATCH]);
         assert!(
             requests
                 .iter()

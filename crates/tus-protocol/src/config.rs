@@ -28,9 +28,8 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 ///
 /// [`Config::default`] enables Creation, Termination, and
 /// Creation-Defer-Length; accepts standard empty Creation requests; uses
-/// `/files` as the base path; has no maximum upload size, no expiration, no
-/// CORS origins, and a 30-second lock timeout; and does not trust forwarded
-/// proxy headers.
+/// `/files` as the base path; has no maximum upload size, no expiration, and a
+/// 30-second lock timeout; and does not trust forwarded proxy headers.
 ///
 /// # Examples
 ///

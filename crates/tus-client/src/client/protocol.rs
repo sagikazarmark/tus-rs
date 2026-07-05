@@ -444,14 +444,16 @@ mod tests {
                 .await;
 
             match result {
-                Err(Error::InvalidHeader { header, value }) => {
-                    assert_eq!(header, "Upload-Metadata");
+                Err(Error::InvalidDefaultHeader { name, value }) => {
+                    assert_eq!(name, "Upload-Metadata");
                     assert!(
                         value.contains(key),
                         "invalid key should be named in error: {value}"
                     );
                 }
-                other => panic!("expected InvalidHeader for metadata key {key:?}, got {other:?}"),
+                other => {
+                    panic!("expected InvalidDefaultHeader for metadata key {key:?}, got {other:?}")
+                }
             }
             assert!(
                 transport.requests.lock().unwrap().is_empty(),

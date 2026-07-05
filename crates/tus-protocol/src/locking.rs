@@ -43,6 +43,15 @@ use crate::runtime::{MaybeSend, MaybeSendSync};
 /// long as the guard is alive and treat a lost lease as a fatal error for the
 /// holder.
 ///
+/// # Upload ID safety
+///
+/// Every `upload_id` the protocol passes here has already been validated by
+/// [`UploadId`](crate::protocol::UploadId) parsing, so it is a non-empty,
+/// bounded string free of path separators and control characters. Backends
+/// that derive a lock file path or lock key from the ID should nonetheless
+/// reject IDs that fail their own validity check (defense in depth) and treat
+/// the value as opaque.
+///
 /// # Platform Support
 ///
 /// This trait uses conditional bounds:

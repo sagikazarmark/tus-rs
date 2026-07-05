@@ -273,8 +273,8 @@ where
                 request.headers_mut().insert(
                     HeaderName::from_static("upload-checksum"),
                     HeaderValue::from_str(&format!("{} {}", algorithm.as_str(), checksum))
-                        .map_err(|_| Error::InvalidHeader {
-                            header: "Upload-Checksum",
+                        .map_err(|_| Error::InvalidDefaultHeader {
+                            name: "Upload-Checksum".to_string(),
                             value: checksum.clone(),
                         })?,
                 );

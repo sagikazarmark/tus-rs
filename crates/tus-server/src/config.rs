@@ -203,8 +203,16 @@ pub(crate) struct ServeCli {
     #[arg(long, value_enum)]
     pub(crate) log_format: Option<LogFormat>,
 
-    #[arg(long = "cleanup", action = clap::ArgAction::Set, default_missing_value = "true", num_args = 0..=1, require_equals = true)]
-    pub(crate) cleanup: Option<bool>,
+    /// Disable the in-process sweeper that reclaims expired upload data and state. Env: TUS_DISABLE_EXPIRATION_RECLAMATION.
+    ///
+    /// Reclamation deletes the on-disk data and state of uploads that
+    /// have passed their expiration deadline. It runs automatically
+    /// whenever --expiration is set, so expired uploads do not
+    /// accumulate. Pass this flag to keep expiry enforced on access
+    /// while leaving expired data in place, for example to reclaim it
+    /// out-of-band with the `cleanup` subcommand.
+    #[arg(long = "disable-expiration-reclamation", action = clap::ArgAction::Set, default_missing_value = "true", num_args = 0..=1, require_equals = true)]
+    pub(crate) disable_expiration_reclamation: Option<bool>,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -257,7 +265,7 @@ pub(crate) struct Settings {
     pub(crate) request_header_read_timeout: u64,
     pub(crate) auth_token: Vec<String>,
     pub(crate) log_format: LogFormat,
-    pub(crate) cleanup: bool,
+    pub(crate) disable_expiration_reclamation: bool,
 }
 
 impl Default for Settings {
@@ -287,7 +295,7 @@ impl Default for Settings {
             request_header_read_timeout: DEFAULT_REQUEST_HEADER_READ_TIMEOUT_SECS,
             auth_token: Vec::new(),
             log_format: LogFormat::Text,
-            cleanup: false,
+            disable_expiration_reclamation: false,
         }
     }
 }
@@ -387,7 +395,7 @@ pub(crate) struct SettingsPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) log_format: Option<LogFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cleanup: Option<bool>,
+    pub(crate) disable_expiration_reclamation: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -456,7 +464,7 @@ impl ServeCli {
             request_header_read_timeout: self.request_header_read_timeout,
             auth_token: self.auth_token.clone(),
             log_format: self.log_format,
-            cleanup: self.cleanup,
+            disable_expiration_reclamation: self.disable_expiration_reclamation,
         }
     }
 }
@@ -764,7 +772,9 @@ where
             }
             "TUS_AUTH_TOKEN" => patch.auth_token = Some(split_csv(value)),
             "TUS_LOG_FORMAT" => patch.log_format = Some(parse_env_value(key, value)?),
-            "TUS_CLEANUP" => patch.cleanup = Some(parse_env_value(key, value)?),
+            "TUS_DISABLE_EXPIRATION_RECLAMATION" => {
+                patch.disable_expiration_reclamation = Some(parse_env_value(key, value)?);
+            }
             _ => {}
         }
     }
@@ -793,7 +803,6 @@ const KNOWN_TUS_ENV_KEYS: &[&str] = &[
     "TUS_AUTH_TOKEN",
     "TUS_BASE_PATH",
     "TUS_BASE_URL",
-    "TUS_CLEANUP",
     "TUS_CLEANUP_FORCE",
     "TUS_CONFIG",
     "TUS_CORS",
@@ -801,6 +810,7 @@ const KNOWN_TUS_ENV_KEYS: &[&str] = &[
     "TUS_DISABLE_CHECKSUM_TRAILER",
     "TUS_DISABLE_CONCATENATION_UNFINISHED",
     "TUS_DISABLE_DOWNLOAD",
+    "TUS_DISABLE_EXPIRATION_RECLAMATION",
     "TUS_DRAIN_DELAY",
     "TUS_EXPIRATION",
     "TUS_EXPIRATION_SCAN_INTERVAL",
@@ -1435,7 +1445,7 @@ root = "uploads"
         let patch = cleanup_settings_patch_from_env_vars([
             ("TUS_ADDR", "not-an-addr"),
             ("TUS_BASE_PATH", "123"),
-            ("TUS_CLEANUP", "not-a-bool"),
+            ("TUS_DISABLE_EXPIRATION_RECLAMATION", "not-a-bool"),
             ("TUS_STORAGE_URI", "fs://"),
             ("TUS_STORAGE_ROOT", "uploads"),
             ("TUS_STATE_DIR", "./state"),
@@ -1754,7 +1764,7 @@ auth_token = ["token"]
             "127.0.0.1:9000",
             "--base-path",
             "/uploads",
-            "--cleanup",
+            "--disable-expiration-reclamation",
         ]);
 
         let Command::Serve(serve) = cli.command else {
@@ -1765,7 +1775,31 @@ auth_token = ["token"]
             Some(BindTarget::Tcp("127.0.0.1:9000".parse().unwrap()))
         );
         assert_eq!(serve.base_path.as_deref(), Some("/uploads"));
-        assert_eq!(serve.cleanup, Some(true));
+        assert_eq!(serve.disable_expiration_reclamation, Some(true));
+    }
+
+    #[test]
+    fn expiration_reclamation_defaults_on_and_can_be_disabled() {
+        // The sweeper follows expiration by default: no opt-in flag is
+        // required, and the setting resolves to "enabled".
+        let cli = parse_serve(["tus-server", "serve"]);
+        let (settings, _) = load_serve_settings(&cli).unwrap();
+        assert!(!settings.disable_expiration_reclamation);
+
+        // Operators can still opt out via flag, env, or config file.
+        let cli = parse_serve(["tus-server", "serve", "--disable-expiration-reclamation"]);
+        let (settings, _) = load_serve_settings(&cli).unwrap();
+        assert!(settings.disable_expiration_reclamation);
+
+        let patch =
+            settings_patch_from_env_vars([("TUS_DISABLE_EXPIRATION_RECLAMATION", "true")]).unwrap();
+        assert_eq!(patch.disable_expiration_reclamation, Some(true));
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "disable_expiration_reclamation = true\n").unwrap();
+        let settings = load_settings_from_sources(Some(&path), SettingsPatch::default()).unwrap();
+        assert!(settings.disable_expiration_reclamation);
     }
 
     #[test]

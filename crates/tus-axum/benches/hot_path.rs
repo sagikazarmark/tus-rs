@@ -257,7 +257,10 @@ fn bench_lifecycle(c: &mut Criterion) {
                     MemoryLocker::new(),
                     NoopHookExecutor::new(),
                 ));
-                (create_router(state, &RouterOptions::default()).unwrap(), payload_template.clone())
+                (
+                    create_router(state, &RouterOptions::default()).unwrap(),
+                    payload_template.clone(),
+                )
             },
             |(router, payload)| async move {
                 // POST

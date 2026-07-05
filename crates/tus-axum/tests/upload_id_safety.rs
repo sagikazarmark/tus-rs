@@ -275,3 +275,127 @@ async fn patch_with_encoded_slash_id_does_not_write_anywhere() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     sb.assert_no_traversal_writes();
 }
+
+// ---------------------------------------------------------------------------
+// X-HTTP-Method-Override POST path: a malformed upload id must be rejected the
+// same way as the equivalent direct PATCH/DELETE — a tus-compliant 400 that
+// still carries the `Tus-Resumable` header — rather than axum's default
+// plain-text 400 with no such header.
+// ---------------------------------------------------------------------------
+
+/// `%FF` is not a valid UTF-8 percent-escape, so axum's raw `Path<String>`
+/// extractor fails to decode the segment. The `TusUploadId` extractor maps
+/// that failure to a `tus_protocol::Error`, which the response layer renders
+/// with the `Tus-Resumable` header.
+#[tokio::test]
+async fn method_override_post_with_malformed_id_returns_400_with_tus_resumable() {
+    let sb = build_sandbox().await;
+
+    for override_method in ["PATCH", "DELETE"] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/files/%FF")
+            .header("tus-resumable", TUS_RESUMABLE)
+            .header("x-http-method-override", override_method)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = sb.router.clone().oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "method-override POST->{override_method} with malformed id should be 400"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("tus-resumable")
+                .expect("Tus-Resumable header must be present, matching direct PATCH/DELETE")
+                .to_str()
+                .unwrap(),
+            TUS_RESUMABLE,
+            "method-override POST->{override_method} 400 must carry Tus-Resumable"
+        );
+    }
+
+    sb.assert_no_traversal_writes();
+}
+
+/// The id is validated before the `X-HTTP-Method-Override` header is inspected,
+/// so a malformed id on the override POST path is rejected with the same
+/// tus-compliant 400 + `Tus-Resumable` even when the override header is absent
+/// or unrecognized (the cases that would otherwise fall through to the 405
+/// fallback for a *valid* id). This keeps a malformed id a uniform 400 across
+/// every route rather than depending on the override value.
+#[tokio::test]
+async fn method_override_post_with_malformed_id_rejects_before_405_fallback() {
+    let sb = build_sandbox().await;
+
+    // No override header, and an unrecognized override value: both would drive
+    // the 405 fallback for a well-formed id, but the malformed id short-circuits
+    // to 400 first.
+    let cases: [&[(&str, &str)]; 2] = [
+        &[("tus-resumable", TUS_RESUMABLE)],
+        &[
+            ("tus-resumable", TUS_RESUMABLE),
+            ("x-http-method-override", "BOGUS"),
+        ],
+    ];
+
+    for headers in cases {
+        let mut builder = Request::builder().method(Method::POST).uri("/files/%FF");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let request = builder.body(Body::empty()).unwrap();
+
+        let response = sb.router.clone().oneshot(request).await.unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "malformed id must be 400 regardless of the override header ({headers:?})"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("tus-resumable")
+                .expect("Tus-Resumable header must be present")
+                .to_str()
+                .unwrap(),
+            TUS_RESUMABLE,
+            "malformed-id 400 must carry Tus-Resumable ({headers:?})"
+        );
+    }
+
+    sb.assert_no_traversal_writes();
+}
+
+/// A direct PATCH with the same malformed id is the reference behavior: 400
+/// with `Tus-Resumable`. Pinning it here makes the parity with the
+/// method-override path above explicit.
+#[tokio::test]
+async fn direct_patch_with_malformed_id_returns_400_with_tus_resumable() {
+    let sb = build_sandbox().await;
+
+    let response = sb
+        .router
+        .clone()
+        .oneshot(patch("/files/%FF"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response
+            .headers()
+            .get("tus-resumable")
+            .expect("Tus-Resumable header must be present")
+            .to_str()
+            .unwrap(),
+        TUS_RESUMABLE,
+    );
+
+    sb.assert_no_traversal_writes();
+}

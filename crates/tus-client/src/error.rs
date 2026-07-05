@@ -1,5 +1,7 @@
 //! Error types for the TUS client.
 
+use std::time::Duration;
+
 /// Result type returned by the client.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -35,7 +37,11 @@ pub enum Error {
     #[error("missing required `{0}` header")]
     MissingHeader(&'static str),
 
-    /// The server sent a malformed response header.
+    /// The server sent a response header the client could not parse — a
+    /// non-UTF-8 value, a non-numeric `Upload-Offset`/`Upload-Length`, or a
+    /// malformed `Upload-Metadata`. Returned only while decoding a server
+    /// response; client-built request headers surface as
+    /// [`InvalidDefaultHeader`](Error::InvalidDefaultHeader).
     #[error("invalid `{header}` header value `{value}`")]
     #[non_exhaustive]
     InvalidHeader {
@@ -45,7 +51,11 @@ pub enum Error {
         value: String,
     },
 
-    /// A protocol header could not be built from an internal name/value.
+    /// A request header the client constructs could not be built — a
+    /// protocol header (`Upload-Offset`, `Upload-Length`, `Upload-Concat`),
+    /// the encoded `Upload-Metadata`, or the `Upload-Checksum` value. This
+    /// is a client-side construction failure (e.g. a metadata key or value
+    /// that cannot form a valid header), never a response the server sent.
     #[error("invalid `{name}` header: {value}")]
     #[non_exhaustive]
     InvalidDefaultHeader {
@@ -109,6 +119,11 @@ pub enum Error {
         /// Response body, for diagnostics. Bodies are truncated to a few
         /// KiB; a truncated body ends with `...[truncated]`.
         body: String,
+        /// The delay requested by a valid `Retry-After` response header, if
+        /// present. Populated for every response but only meaningful on
+        /// retryable statuses (429/503/408), where the client honors it in
+        /// place of its computed backoff.
+        retry_after: Option<Duration>,
     },
 
     /// A transport failed to execute a request.
@@ -193,6 +208,18 @@ impl Error {
             _ => false,
         }
     }
+
+    /// Returns the delay a server requested via a valid `Retry-After`
+    /// response header, when the error carries one. Only
+    /// [`UnexpectedResponse`](Error::UnexpectedResponse) can; every other
+    /// variant returns `None`. The client uses this to honor server-driven
+    /// backoff on retryable responses instead of its own jittered delay.
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Error::UnexpectedResponse { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
 }
 
 fn transport_failure_message(retryable: &bool) -> &'static str {
@@ -246,26 +273,31 @@ mod tests {
                 operation: "patch upload",
                 status: 503,
                 body: String::new(),
+                retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
                 status: 429,
                 body: String::new(),
+                retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
                 status: 408,
                 body: String::new(),
+                retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
                 status: 409,
                 body: String::new(),
+                retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
                 status: 460,
                 body: String::new(),
+                retry_after: None,
             },
         ];
         for error in retryable {
@@ -289,6 +321,7 @@ mod tests {
                 operation: "patch upload",
                 status: 400,
                 body: String::new(),
+                retry_after: None,
             },
             Error::UnsupportedExtension("concatenation"),
             Error::Internal("task panicked".into()),
@@ -296,5 +329,27 @@ mod tests {
         for error in permanent {
             assert!(!error.is_retryable(), "expected permanent: {error}");
         }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn retry_after_is_carried_only_by_unexpected_response() {
+        let with_hint = Error::UnexpectedResponse {
+            operation: "patch upload",
+            status: 503,
+            body: String::new(),
+            retry_after: Some(Duration::from_secs(7)),
+        };
+        assert_eq!(with_hint.retry_after(), Some(Duration::from_secs(7)));
+
+        let without_hint = Error::UnexpectedResponse {
+            operation: "patch upload",
+            status: 503,
+            body: String::new(),
+            retry_after: None,
+        };
+        assert_eq!(without_hint.retry_after(), None);
+
+        assert_eq!(Error::transport("connection reset").retry_after(), None);
     }
 }

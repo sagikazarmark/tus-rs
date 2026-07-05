@@ -19,6 +19,16 @@ use crate::storage::{
 ///
 /// Stores all upload data in a HashMap protected by a RwLock.
 /// Thread-safe and suitable for single-process use.
+///
+/// # Memory use with untrusted input
+///
+/// This backend buffers each upload's bytes fully in memory, and `append`
+/// collects a streamed chunk into memory before committing it. The protocol
+/// only bounds that intake by the client-declared `Content-Length` (or the
+/// configured chunk/size limits). For deployments that accept untrusted
+/// uploads, configure [`Config::with_max_chunk_size`](crate::Config::with_max_chunk_size)
+/// and a maximum upload size, or use a streaming backend such as `FileStorage`
+/// — otherwise a client can drive allocation up to its declared body size.
 pub struct MemoryStorage {
     data: RwLock<HashMap<String, BytesMut>>,
 }

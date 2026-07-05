@@ -21,8 +21,9 @@ disable_checksum_trailer = false
 disable_concatenation_unfinished = false
 disable_download = false
 
-# Expiration background sweep
-cleanup = true
+# Expiration background sweep (reclamation follows expiration by
+# default; set this to true to keep expired data on disk instead)
+disable_expiration_reclamation = false
 expiration = 3600
 expiration_scan_interval = 60
 

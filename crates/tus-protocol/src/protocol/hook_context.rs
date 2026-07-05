@@ -83,7 +83,6 @@ impl<'a> HookRequestFacts<'a> {
         HookRequestInfo {
             method: self.method.as_str().to_string(),
             path: self.path(config),
-            remote_addr: None,
             headers: self.selected_headers(),
         }
     }
