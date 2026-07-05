@@ -66,13 +66,6 @@ fn validate_upload_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Maps a poisoned lock to an internal error instead of panicking, matching
-/// `MemoryLocker`. These critical sections never call user code, so poisoning
-/// is effectively unreachable; this keeps the dev backend panic-free anyway.
-fn poisoned() -> Error {
-    Error::Internal("memory state store lock poisoned".to_string())
-}
-
 #[async_trait]
 impl StateStore for MemoryStateStore {
     fn name(&self) -> &'static str {
@@ -125,6 +118,13 @@ impl UploadInventory for MemoryStateStore {
         ids.sort();
         Ok(ids.into_iter().skip(offset).take(limit).collect())
     }
+}
+
+/// Maps a poisoned lock to an internal error instead of panicking, matching
+/// `MemoryLocker`. These critical sections never call user code, so poisoning
+/// is effectively unreachable; this keeps the dev backend panic-free anyway.
+fn poisoned() -> Error {
+    Error::Internal("memory state store lock poisoned".to_string())
 }
 
 #[cfg(test)]

@@ -79,13 +79,6 @@ impl std::fmt::Debug for MemoryStorage {
     }
 }
 
-/// Maps a poisoned lock to an internal error instead of panicking, matching
-/// `MemoryLocker`. These critical sections never call user code, so poisoning
-/// is effectively unreachable; this keeps the dev backend panic-free anyway.
-fn poisoned() -> Error {
-    Error::Internal("memory storage lock poisoned".to_string())
-}
-
 #[async_trait]
 impl Storage for MemoryStorage {
     fn name(&self) -> &'static str {
@@ -231,6 +224,13 @@ impl StorageReader for MemoryStorage {
             async move { Ok(slice) },
         )))
     }
+}
+
+/// Maps a poisoned lock to an internal error instead of panicking, matching
+/// `MemoryLocker`. These critical sections never call user code, so poisoning
+/// is effectively unreachable; this keeps the dev backend panic-free anyway.
+fn poisoned() -> Error {
+    Error::Internal("memory storage lock poisoned".to_string())
 }
 
 #[cfg(test)]
