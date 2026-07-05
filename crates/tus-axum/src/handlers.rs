@@ -12,7 +12,7 @@ use axum::extract::State;
 use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
 
 use crate::error::Error;
-use crate::extractors::{Headers, TusBody, UploadId};
+use crate::extractors::{TusBody, TusHeaders, TusUploadId};
 use crate::response::TusResponse;
 use crate::state::TusProtocol;
 
@@ -35,7 +35,7 @@ where
 /// Handles POST requests to create new uploads.
 pub(crate) async fn handle_post<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
-    Headers(headers): Headers,
+    TusHeaders(headers): TusHeaders,
     body: TusBody,
 ) -> Result<TusResponse, Error>
 where
@@ -51,12 +51,12 @@ where
         .into())
 }
 
-/// Handles HEAD requests. The `Headers` extractor validates the
+/// Handles HEAD requests. The `TusHeaders` extractor validates the
 /// `Tus-Resumable` header; its value is otherwise unused here.
 pub(crate) async fn handle_head<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
-    Headers(_): Headers,
-    UploadId(upload_id): UploadId,
+    TusHeaders(_): TusHeaders,
+    TusUploadId(upload_id): TusUploadId,
 ) -> Result<TusResponse, Error>
 where
     S: Storage + Send + Sync + 'static,
@@ -70,8 +70,8 @@ where
 /// Handles PATCH requests to upload data.
 pub(crate) async fn handle_patch<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
-    Headers(headers): Headers,
-    UploadId(upload_id): UploadId,
+    TusHeaders(headers): TusHeaders,
+    TusUploadId(upload_id): TusUploadId,
     body: TusBody,
 ) -> Result<TusResponse, Error>
 where
@@ -91,8 +91,8 @@ where
 /// Handles DELETE requests to terminate uploads.
 pub(crate) async fn handle_delete<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
-    Headers(headers): Headers,
-    UploadId(upload_id): UploadId,
+    TusHeaders(headers): TusHeaders,
+    TusUploadId(upload_id): TusUploadId,
 ) -> Result<TusResponse, Error>
 where
     S: Storage + Send + Sync + 'static,

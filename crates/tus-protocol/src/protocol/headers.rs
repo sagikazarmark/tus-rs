@@ -176,7 +176,7 @@ impl Headers {
     }
 
     /// Validates Content-Type for PATCH requests.
-    pub fn validate_patch_content_type(&self) -> Result<(), Error> {
+    pub(crate) fn validate_patch_content_type(&self) -> Result<(), Error> {
         match &self.content_type {
             Some(ct) if ct.starts_with("application/offset+octet-stream") => Ok(()),
             Some(ct) => Err(Error::InvalidContentType {

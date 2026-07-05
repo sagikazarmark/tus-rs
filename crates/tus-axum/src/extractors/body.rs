@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, Request},
 };
 use bytes::Bytes;
-use futures::stream;
+use futures_util::stream;
 use http_body::Body as _;
 use http_body_util::BodyExt;
 

@@ -84,9 +84,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 #[cfg(not(target_arch = "wasm32"))]
-use futures::future::BoxFuture;
+use futures_util::future::BoxFuture;
 #[cfg(target_arch = "wasm32")]
-use futures::future::LocalBoxFuture;
+use futures_util::future::LocalBoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

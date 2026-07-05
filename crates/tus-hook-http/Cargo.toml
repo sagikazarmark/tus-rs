@@ -16,7 +16,7 @@ tus-protocol = { workspace = true }
 async-trait = { workspace = true }
 fastrand = { workspace = true }
 hmac = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = ["json"] }
+reqwest = { workspace = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -28,9 +28,11 @@ uuid = { workspace = true, features = ["v4"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread"] }
 
 [features]
-# reqwest's default features include its default TLS stack, which on
-# reqwest 0.13 is rustls (aws-lc-rs) with the platform certificate verifier.
-default = ["reqwest/default"]
+# Default to the rustls TLS stack only, rather than reqwest's `default`
+# umbrella (which also drags in charset, http2, and system-proxy config the
+# webhook client does not need). HTTPS webhooks work out of the box; opt into
+# extras or native-tls explicitly.
+default = ["reqwest-rustls"]
 # TLS passthrough for builds that disable default features (which drops the
 # rustls TLS stack above): re-add rustls, or opt into native-tls (OpenSSL /
 # system TLS) instead.

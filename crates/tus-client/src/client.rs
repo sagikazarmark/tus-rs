@@ -1,8 +1,10 @@
 //! TUS client implementation.
 
 use async_trait::async_trait;
-use http::header::{HeaderMap, HeaderName, HeaderValue};
-use http::{Method, Uri};
+use http::{
+    Method, Uri,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

@@ -21,7 +21,7 @@ services-s3 = ["opendal/services-s3"]
 
 [dependencies]
 async-trait = { workspace = true }
-futures = { workspace = true }
+futures-util = { workspace = true }
 opendal = { workspace = true }
 tracing = { workspace = true }
 tus-protocol = { workspace = true }
@@ -29,6 +29,7 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 bytes = { workspace = true }
+futures = { workspace = true }
 opendal = { workspace = true, features = ["services-fs", "services-memory"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

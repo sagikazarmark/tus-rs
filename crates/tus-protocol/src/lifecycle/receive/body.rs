@@ -2,7 +2,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use bytes::{Bytes, BytesMut};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use http::HeaderMap;
 
 use crate::config::{Config, Extension};
@@ -104,9 +104,10 @@ fn validated_stream(
         deferred_error.clone(),
     );
 
-    Box::pin(futures::stream::unfold(state, |mut state| async move {
-        state.next_chunk().await.map(|chunk| (chunk, state))
-    }))
+    Box::pin(futures_util::stream::unfold(
+        state,
+        |mut state| async move { state.next_chunk().await.map(|chunk| (chunk, state)) },
+    ))
 }
 
 fn collect_buffered(

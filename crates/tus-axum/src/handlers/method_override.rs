@@ -19,7 +19,7 @@ use axum::{
 use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
 
 use crate::error::Error;
-use crate::extractors::{Headers, TusBody, UploadId};
+use crate::extractors::{TusBody, TusHeaders, TusUploadId};
 use crate::handlers::{handle_delete, handle_patch};
 use crate::router::UPLOAD_ALLOW;
 use crate::state::TusProtocol;
@@ -56,17 +56,17 @@ where
 
     match override_method {
         Some(m) if m == Method::PATCH => {
-            let headers = Headers::from_header_map(req.headers())?;
+            let headers = TusHeaders::from_header_map(req.headers())?;
             let body = TusBody::from_request(req, &()).await?;
-            let upload_id = UploadId::from_string(upload_id)?;
+            let upload_id = TusUploadId::from_string(upload_id)?;
 
             handle_patch(State(protocol), headers, upload_id, body)
                 .await
                 .map(IntoResponse::into_response)
         }
         Some(m) if m == Method::DELETE => {
-            let headers = Headers::from_header_map(req.headers())?;
-            let upload_id = UploadId::from_string(upload_id)?;
+            let headers = TusHeaders::from_header_map(req.headers())?;
+            let upload_id = TusUploadId::from_string(upload_id)?;
 
             handle_delete(State(protocol), headers, upload_id)
                 .await

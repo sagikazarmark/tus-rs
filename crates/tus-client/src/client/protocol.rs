@@ -52,7 +52,7 @@ impl UploadInfo {
 }
 
 /// Parameters for creating a new upload resource.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NewUpload {
     pub(crate) metadata: UploadMetadata,
     pub(crate) content: NewUploadContent,
@@ -86,7 +86,7 @@ impl NewUpload {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum NewUploadContent {
     Length(u64),
     Body(Vec<u8>),

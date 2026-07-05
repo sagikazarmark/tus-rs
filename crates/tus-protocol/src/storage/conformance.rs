@@ -20,7 +20,7 @@ use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use futures::StreamExt;
+use futures_util::StreamExt;
 
 use super::{
     AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
@@ -135,7 +135,7 @@ where
     let handle =
         create_with_bytes(storage, "stale-offset", Bytes::from_static(b"seed"), false).await;
 
-    let stream: ByteStream = Box::pin(futures::stream::once(async {
+    let stream: ByteStream = Box::pin(futures_util::stream::once(async {
         panic!("body stream should not be read when storage offset is stale");
         #[allow(unreachable_code)]
         Ok(Bytes::from_static(b"must not be consumed"))
@@ -173,7 +173,7 @@ where
     )
     .await;
 
-    let stream: ByteStream = Box::pin(futures::stream::iter(vec![
+    let stream: ByteStream = Box::pin(futures_util::stream::iter(vec![
         Ok(Bytes::from_static(b"partial-")),
         Err(io::Error::new(
             io::ErrorKind::ConnectionReset,

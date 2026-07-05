@@ -16,8 +16,8 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 fs2 = { version = "0.4", optional = true }
-futures = { workspace = true }
 futures-core = { workspace = true }
+futures-util = { workspace = true }
 http = { workspace = true }
 percent-encoding = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -43,6 +43,7 @@ sha2 = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4", "js"] }
 
 [dev-dependencies]
+futures = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 

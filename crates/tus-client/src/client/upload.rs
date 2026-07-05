@@ -12,9 +12,7 @@ use tokio::{
 };
 
 use super::{Client, NewUpload, ServerCapabilities, UploadInfo};
-use crate::error::Error;
-use crate::error::Result;
-
+use crate::error::{Error, Result};
 use crate::helpers::{jittered_backoff_delay, validate_patch_advance, validate_remote_for_resume};
 use crate::runtime::MaybeSend;
 

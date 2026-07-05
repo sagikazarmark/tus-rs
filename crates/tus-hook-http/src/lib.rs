@@ -19,12 +19,12 @@
 //!
 //! # TLS
 //!
-//! The crate's default features enable the bundled [`reqwest`] client's default
-//! TLS support. Disabling default features (`default-features = false`) drops
-//! TLS from the bundled `reqwest`, so `https://` webhook URLs will fail unless
-//! you re-enable a backend via the `reqwest-native-tls` or `reqwest-rustls`
-//! passthrough features, or supply your own TLS-capable client via
-//! [`HttpHookExecutor::with_client`].
+//! The crate's default features enable the bundled [`reqwest`] client's rustls
+//! TLS stack (via the `reqwest-rustls` feature). Disabling default features
+//! (`default-features = false`) drops TLS from the bundled `reqwest`, so
+//! `https://` webhook URLs will fail unless you re-enable a backend via the
+//! `reqwest-native-tls` or `reqwest-rustls` passthrough features, or supply
+//! your own TLS-capable client via [`HttpHookExecutor::with_client`].
 //!
 //! # Webhook Protocol
 //!
@@ -122,7 +122,7 @@ const SIGNATURE_HEADER: &str = "X-Tus-Signature-256";
 /// representation without a breaking change; the type is also
 /// `#[non_exhaustive]` so new webhook knobs can be added without a major
 /// version bump.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct HttpHookConfig {
     /// The webhook endpoint URL.
@@ -158,6 +158,34 @@ pub struct HttpHookConfig {
 
     /// Shared secret used to sign webhook bodies with HMAC-SHA256.
     signing_secret: Option<String>,
+}
+
+impl std::fmt::Debug for HttpHookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never render header values or the signing secret: custom headers
+        // routinely carry `Authorization` tokens and `signing_secret` is an
+        // HMAC key. Both would otherwise leak into any log that debug-formats
+        // the config (directly or via `HttpHookExecutor`).
+        f.debug_struct("HttpHookConfig")
+            .field("url", &self.url)
+            .field("timeout", &self.timeout)
+            .field(
+                "headers",
+                &self
+                    .headers
+                    .keys()
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
+            .field("retry_enabled", &self.retry_enabled)
+            .field("max_retries", &self.max_retries)
+            .field("retry_deadline", &self.retry_deadline)
+            .field("retry_post_hooks", &self.retry_post_hooks)
+            .field(
+                "signing_secret",
+                &self.signing_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl HttpHookConfig {
@@ -829,6 +857,35 @@ mod tests {
         assert_eq!(config.retry_deadline, Duration::from_secs(10));
         assert!(config.retry_post_hooks);
         assert_eq!(config.signing_secret.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn debug_redacts_signing_secret_and_header_values() {
+        let config = HttpHookConfig::new("https://example.com/webhook")
+            .with_header("Authorization", "Bearer super-secret-token")
+            .with_signing_secret("hmac-signing-key");
+        let executor = HttpHookExecutor::new(config.clone()).unwrap();
+
+        for rendered in [format!("{config:?}"), format!("{executor:?}")] {
+            assert!(
+                !rendered.contains("hmac-signing-key"),
+                "signing secret leaked: {rendered}"
+            );
+            assert!(
+                !rendered.contains("Bearer super-secret-token"),
+                "header value leaked: {rendered}"
+            );
+            // Structure is still useful: the secret's presence and the header
+            // name are visible, only the sensitive values are hidden.
+            assert!(
+                rendered.contains("[redacted]"),
+                "no redaction marker: {rendered}"
+            );
+            assert!(
+                rendered.contains("Authorization"),
+                "header name hidden: {rendered}"
+            );
+        }
     }
 
     #[test]
