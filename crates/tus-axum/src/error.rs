@@ -6,15 +6,15 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-/// Wrapper around [`tus_protocol::Error`] that carries axum's [`IntoResponse`] impl.
+/// Extractor/handler rejection wrapping [`tus_protocol::Error`] with axum's [`IntoResponse`] impl.
 ///
 /// Construct through `From<tus_protocol::Error>`; the conversion is where
 /// transport-level body-limit failures are remapped to a 413 response (see
-/// [`Error::into_inner`]). The inner error is private so the remap invariant
-/// is enforced by construction — read it through [`Error::inner`] or
-/// [`Error::into_inner`].
+/// [`TusRejection::into_inner`]). The inner error is private so the remap invariant
+/// is enforced by construction — read it through [`TusRejection::inner`] or
+/// [`TusRejection::into_inner`].
 #[derive(Debug)]
-pub struct Error {
+pub struct TusRejection {
     inner: tus_protocol::Error,
     /// Response body override used when the inner error was remapped from a
     /// transport body-limit failure and the variant's own message would be
@@ -29,7 +29,7 @@ pub struct Error {
 /// "upload size N exceeds maximum M" message.
 const BODY_LIMIT_EXCEEDED_BODY: &str = "request body exceeds the configured body size limit";
 
-impl Error {
+impl TusRejection {
     /// Returns a reference to the wrapped protocol error.
     pub fn inner(&self) -> &tus_protocol::Error {
         &self.inner
@@ -46,13 +46,13 @@ impl Error {
     }
 }
 
-impl AsRef<tus_protocol::Error> for Error {
+impl AsRef<tus_protocol::Error> for TusRejection {
     fn as_ref(&self) -> &tus_protocol::Error {
         &self.inner
     }
 }
 
-impl From<tus_protocol::Error> for Error {
+impl From<tus_protocol::Error> for TusRejection {
     fn from(err: tus_protocol::Error) -> Self {
         match map_transport_body_error(err) {
             (inner, true) => Self {
@@ -67,7 +67,7 @@ impl From<tus_protocol::Error> for Error {
     }
 }
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for TusRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.body_override {
             Some(body) => f.write_str(body),
@@ -76,7 +76,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
+impl std::error::Error for TusRejection {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self.body_override {
             // The remapped variant carries no source; point at the protocol
@@ -126,7 +126,7 @@ fn chain_contains_length_limit(err: &(dyn std::error::Error + 'static)) -> bool 
     false
 }
 
-impl IntoResponse for Error {
+impl IntoResponse for TusRejection {
     fn into_response(self) -> Response {
         let response = self.inner.error_response();
         let body = match self.body_override {
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn from_protocol_error_wraps_inner() {
-        let err: Error = ProtocolError::NotFound("upload-7".into()).into();
+        let err: TusRejection = ProtocolError::NotFound("upload-7".into()).into();
         assert!(matches!(err.inner(), ProtocolError::NotFound(s) if s == "upload-7"));
         assert!(matches!(err.as_ref(), ProtocolError::NotFound(_)));
         assert!(matches!(err.into_inner(), ProtocolError::NotFound(s) if s == "upload-7"));
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn length_required_maps_to_411() {
         let response =
-            <Error as From<ProtocolError>>::from(ProtocolError::LengthRequired).into_response();
+            <TusRejection as From<ProtocolError>>::from(ProtocolError::LengthRequired).into_response();
         assert_eq!(response.status(), StatusCode::LENGTH_REQUIRED);
     }
 
@@ -190,7 +190,7 @@ mod tests {
         // io::Error -> axum::Error -> LengthLimitError.
         let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
 
-        let err: Error = ProtocolError::Io(io_err).into();
+        let err: TusRejection = ProtocolError::Io(io_err).into();
         assert!(matches!(
             err.inner(),
             ProtocolError::SizeExceeded { size: 0, max: 0 }
@@ -206,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn transport_body_limit_413_has_sensible_body() {
         let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
-        let err: Error = ProtocolError::Io(io_err).into();
+        let err: TusRejection = ProtocolError::Io(io_err).into();
         assert_eq!(err.to_string(), BODY_LIMIT_EXCEEDED_BODY);
 
         let response = err.into_response();
@@ -223,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn transport_body_limit_413_keeps_protocol_headers() {
         let io_err = std::io::Error::other(axum::Error::new(length_limit_error().await));
-        let err: Error = ProtocolError::Io(io_err).into();
+        let err: TusRejection = ProtocolError::Io(io_err).into();
 
         let expected_headers = ProtocolError::SizeExceeded { size: 0, max: 0 }
             .error_response()
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn plain_io_error_is_not_remapped() {
-        let err: Error = ProtocolError::Io(std::io::Error::other("connection reset")).into();
+        let err: TusRejection = ProtocolError::Io(std::io::Error::other("connection reset")).into();
         assert!(matches!(err.inner(), ProtocolError::Io(_)));
 
         let response = err.into_response();
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn display_and_source_delegate_to_inner_for_plain_errors() {
-        let err: Error = ProtocolError::NotFound("upload-7".into()).into();
+        let err: TusRejection = ProtocolError::NotFound("upload-7".into()).into();
         assert_eq!(
             err.to_string(),
             ProtocolError::NotFound("upload-7".into()).to_string()
@@ -327,7 +327,7 @@ mod tests {
             let expected_headers = expected.headers;
             let expected_body = expected.body;
 
-            let response = <Error as From<ProtocolError>>::from(make()).into_response();
+            let response = <TusRejection as From<ProtocolError>>::from(make()).into_response();
             let actual_status = response.status().as_u16();
             assert_eq!(actual_status, expected_status, "status mismatch");
 

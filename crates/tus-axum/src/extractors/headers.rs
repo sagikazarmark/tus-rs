@@ -8,7 +8,7 @@ use axum::{
     http::{HeaderMap, request::Parts},
 };
 
-use crate::error::Error;
+use crate::error::TusRejection;
 
 /// Axum extractor that parses TUS request headers and validates
 /// `Tus-Resumable: 1.0.0`.
@@ -32,10 +32,10 @@ use crate::error::Error;
 pub struct TusHeaders(pub tus_protocol::Headers);
 
 impl TusHeaders {
-    pub(crate) fn from_header_map(headers: &HeaderMap) -> Result<Self, Error> {
+    pub(crate) fn from_header_map(headers: &HeaderMap) -> Result<Self, TusRejection> {
         tus_protocol::Headers::from_headers(headers)
             .map(Self)
-            .map_err(Error::from)
+            .map_err(TusRejection::from)
     }
 }
 
@@ -43,7 +43,7 @@ impl<S> FromRequestParts<S> for TusHeaders
 where
     S: Send + Sync,
 {
-    type Rejection = Error;
+    type Rejection = TusRejection;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         Self::from_header_map(&parts.headers)

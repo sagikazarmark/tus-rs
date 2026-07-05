@@ -418,6 +418,7 @@ mod tests {
     use std::convert::Infallible;
     use std::sync::Arc;
     use tower::ServiceExt;
+    use tus_protocol::WriteMode;
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::memory::MemoryStateStore;
     use tus_protocol::storage::memory::MemoryStorage;
@@ -495,7 +496,7 @@ mod tests {
             upload.set_storage_handle(handle);
         }
 
-        state_store.set(&upload, true).await.unwrap();
+        state_store.set(&upload, WriteMode::CreateNew).await.unwrap();
     }
 
     struct UploadOnlyStorage;
@@ -981,7 +982,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state_store = Arc::new(MemoryStateStore::new());
         seed_upload(&storage, &state_store, "upload-1", 100, None).await;
-        let router = router_with_parts(Config::with_all_extensions(), storage, state_store.clone());
+        let router = router_with_parts(Config::all_extensions(), storage, state_store.clone());
 
         let response = router
             .oneshot(
@@ -1007,7 +1008,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state_store = Arc::new(MemoryStateStore::new());
         seed_upload(&storage, &state_store, "upload-1", 100, None).await;
-        let router = router_with_parts(Config::with_all_extensions(), storage, state_store.clone());
+        let router = router_with_parts(Config::all_extensions(), storage, state_store.clone());
 
         let response = router
             .oneshot(
@@ -1031,7 +1032,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state_store = Arc::new(MemoryStateStore::new());
         seed_upload(&storage, &state_store, "upload-1", 100, None).await;
-        let router = router_with_parts(Config::with_all_extensions(), storage, state_store.clone());
+        let router = router_with_parts(Config::all_extensions(), storage, state_store.clone());
 
         let response = router
             .oneshot(
@@ -1055,7 +1056,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let state_store = Arc::new(MemoryStateStore::new());
         seed_upload(&storage, &state_store, "upload-1", 100, None).await;
-        let router = router_with_parts(Config::with_all_extensions(), storage, state_store.clone());
+        let router = router_with_parts(Config::all_extensions(), storage, state_store.clone());
 
         let response = router
             .oneshot(

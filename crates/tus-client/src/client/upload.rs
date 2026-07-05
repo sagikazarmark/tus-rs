@@ -165,21 +165,33 @@ impl ParallelUpload {
         self
     }
 
-    /// Sets a progress callback invoked as `(uploaded, total)` while the
-    /// parallel upload runs.
+    /// Sets a progress reporter invoked as `on_progress(uploaded, total)`
+    /// while the parallel upload runs.
+    ///
+    /// Accepts the same [`UploadProgress`] reporter as the sequential
+    /// [`Client::upload_from_with_progress`], so one implementation works for
+    /// both paths; a bare `FnMut(u64, u64)` closure qualifies through the
+    /// blanket impl. The reporter must additionally be `Send + 'static`
+    /// because parts upload from separate tasks; invocations are serialized
+    /// (through an internal `Mutex`), so it does not need to be `Sync`.
     ///
     /// Progress is aggregated across all parts: `uploaded` is the total
     /// number of bytes acknowledged by the server across every partial
     /// upload so far and is monotonically non-decreasing between
-    /// invocations; `total` is the size of the whole source. Because parts
-    /// upload concurrently the callback must be `Fn + Send + Sync`; it may
-    /// be called from multiple tasks, but invocations are serialized.
+    /// invocations; `total` is the size of the whole source.
     #[must_use]
-    pub fn with_progress<F>(mut self, progress: F) -> Self
+    pub fn with_progress<P>(mut self, progress: P) -> Self
     where
-        F: Fn(u64, u64) + Send + Sync + 'static,
+        P: UploadProgress + Send + 'static,
     {
-        self.progress = Some(std::sync::Arc::new(progress));
+        // Adapt the `&mut self` reporter to the internal shared `Fn` callback:
+        // a `Mutex` provides the interior mutability `on_progress` needs and
+        // the `Send + Sync` the shared callback requires (satisfied by
+        // `P: Send`). The parallel aggregator serializes calls regardless.
+        let progress = std::sync::Mutex::new(progress);
+        self.progress = Some(std::sync::Arc::new(move |uploaded, total| {
+            progress.lock().unwrap().on_progress(uploaded, total);
+        }));
         self
     }
 
@@ -205,9 +217,18 @@ impl std::fmt::Debug for ParallelUpload {
     }
 }
 
-/// Progress callback for uploads.
+/// Progress reporter for uploads, invoked as the remote offset advances.
+///
+/// The same reporter drives both the sequential
+/// [`Client::upload_from_with_progress`] and the parallel
+/// [`ParallelUpload::with_progress`], so one implementation covers both paths.
+/// A bare `FnMut(u64, u64)` closure implements this trait through the blanket
+/// impl below.
 pub trait UploadProgress {
     /// Called after the client successfully advances the remote offset.
+    ///
+    /// `uploaded` is the number of bytes the server has acknowledged so far
+    /// (monotonically non-decreasing); `total` is the full source size.
     fn on_progress(&mut self, uploaded: u64, total: u64);
 }
 
@@ -1170,6 +1191,64 @@ mod tests {
             "total must be the whole source size: {updates:?}"
         );
         assert_eq!(updates.last(), Some(&(8, 8)));
+    }
+
+    /// A custom [`UploadProgress`] implementation (not a closure) must drive
+    /// the parallel path, proving the reporter type is unified with the
+    /// sequential `upload_from_with_progress` API.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[async_test]
+    async fn upload_parallel_accepts_upload_progress_impl() {
+        struct Recording(Arc<std::sync::Mutex<Vec<(u64, u64)>>>);
+        impl UploadProgress for Recording {
+            fn on_progress(&mut self, uploaded: u64, total: u64) {
+                self.0.lock().unwrap().push((uploaded, total));
+            }
+        }
+
+        let transport = MockTransport::default();
+        {
+            let responses = &mut *transport.responses.lock().unwrap();
+            responses.push_back(Ok(transport_response(
+                204,
+                header_map(&[
+                    ("tus-version", "1.0.0"),
+                    ("tus-extension", "creation-with-upload,concatenation"),
+                ]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-1"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/part-2"), ("upload-offset", "4")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(transport_response(
+                201,
+                header_map(&[("location", "/files/final")]),
+                Vec::new(),
+            )));
+            responses.push_back(Ok(mock_head_response(8, 8)));
+        }
+        let client =
+            Client::with_transport(endpoint_url(), transport).with_max_initial_upload_size(1024);
+        let updates: Arc<std::sync::Mutex<Vec<(u64, u64)>>> = Arc::default();
+
+        let options = ParallelUpload::new(4)
+            .with_max_concurrency(1)
+            .with_progress(Recording(updates.clone()));
+        let upload = client
+            .upload_parallel(b"abcdefgh".to_vec(), UploadMetadata::new(), options)
+            .await
+            .unwrap();
+
+        assert_eq!(upload.offset, 8);
+        let updates = updates.lock().unwrap().clone();
+        assert_eq!(updates.last(), Some(&(8, 8)), "reporter saw final progress");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

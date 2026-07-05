@@ -290,7 +290,7 @@ mod tests {
     use crate::hooks::NoopHookExecutor;
     use crate::locking::NoopLocker;
     use crate::protocol::Protocol;
-    use crate::state::{StateStore, UploadMetadata, UploadState, memory::MemoryStateStore};
+    use crate::state::{StateStore, UploadMetadata, UploadState, WriteMode, memory::MemoryStateStore};
     use crate::storage::{AppendRequest, ChunkStream, Storage, memory::MemoryStorage};
 
     async fn completed_upload(bytes: &'static [u8]) -> (MemoryStorage, MemoryStateStore) {
@@ -314,7 +314,7 @@ mod tests {
             .unwrap();
         state.set_storage_handle(handle);
         state.set_offset(bytes.len() as u64);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         (storage, store)
     }
@@ -441,17 +441,17 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part1 = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part1 = UploadState::new("part-1").with_length(4).with_partial();
         let handle = storage.create(part1.id()).await.unwrap();
         part1.set_storage_handle(handle);
         append_storage(&storage, &mut part1, Bytes::from_static(b"ABCD")).await;
-        store.set(&part1, true).await.unwrap();
+        store.set(&part1, WriteMode::CreateNew).await.unwrap();
 
-        let mut part2 = UploadState::new("part-2").with_length(4).as_partial();
+        let mut part2 = UploadState::new("part-2").with_length(4).with_partial();
         let handle = storage.create(part2.id()).await.unwrap();
         part2.set_storage_handle(handle);
         append_storage(&storage, &mut part2, Bytes::from_static(b"EFGH")).await;
-        store.set(&part2, true).await.unwrap();
+        store.set(&part2, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
         let handle = storage.create(final_upload.id()).await.unwrap();
@@ -459,7 +459,7 @@ mod tests {
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let locker = NoopLocker::new();
         let hooks = NoopHookExecutor::new();
@@ -492,7 +492,7 @@ mod tests {
         let handle = storage.create(final_upload.id()).await.unwrap();
         final_upload.set_storage_handle(handle);
         final_upload.mark_final(vec!["missing-part".to_string()]);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let locker = NoopLocker::new();
         let hooks = NoopHookExecutor::new();

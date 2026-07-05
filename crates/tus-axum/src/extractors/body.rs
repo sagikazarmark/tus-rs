@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 
 use tus_protocol::{BodyFrame, RequestBody};
 
-use crate::error::Error as AxumError;
+use crate::error::TusRejection as AxumError;
 
 /// Extracted TUS body mapped to protocol body frames.
 #[non_exhaustive]

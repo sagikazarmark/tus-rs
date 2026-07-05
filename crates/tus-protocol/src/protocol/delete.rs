@@ -101,7 +101,7 @@ mod tests {
     use crate::config::Config;
     use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
-    use crate::state::{UploadState, memory::MemoryStateStore};
+    use crate::state::{UploadState, WriteMode, memory::MemoryStateStore};
     use crate::storage::{StorageHandle, memory::MemoryStorage};
     use std::sync::{Arc, Mutex};
 
@@ -112,7 +112,7 @@ mod tests {
     async fn setup(state: UploadState) -> (MemoryStorage, MemoryStateStore) {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         (storage, store)
     }
 
@@ -215,7 +215,7 @@ mod tests {
         state.set_storage_handle(StorageHandle::new("uploads/test-id"));
         let storage = DeleteFailingStorage(MemoryStorage::new());
         let store = MemoryStateStore::new();
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         let locker = NoopLocker::new();
         let hooks = NoopHookExecutor::new();
         let upload_id: UploadId = "test-id".parse().unwrap();

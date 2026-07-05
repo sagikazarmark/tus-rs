@@ -3,14 +3,14 @@ use axum::{
     http::request::Parts,
 };
 
-use crate::error::Error;
+use crate::error::TusRejection;
 
 /// Axum path extractor for a validated TUS upload ID.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TusUploadId(pub tus_protocol::UploadId);
 
 impl TusUploadId {
-    pub(crate) fn from_string(upload_id: String) -> Result<Self, Error> {
+    pub(crate) fn from_string(upload_id: String) -> Result<Self, TusRejection> {
         Ok(tus_protocol::UploadId::try_from(upload_id).map(Self)?)
     }
 }
@@ -19,7 +19,7 @@ impl<S> FromRequestParts<S> for TusUploadId
 where
     S: Send + Sync,
 {
-    type Rejection = Error;
+    type Rejection = TusRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let Path(upload_id): Path<String> =

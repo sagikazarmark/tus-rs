@@ -170,7 +170,7 @@ mod tests {
     use chrono::{Duration as ChronoDuration, Utc};
     use tus_protocol::locking::memory::MemoryLocker;
     use tus_protocol::state::file::FileStateStore;
-    use tus_protocol::{AppendRequest, ChunkStream, StateStore, Storage, UploadState};
+    use tus_protocol::{AppendRequest, ChunkStream, StateStore, Storage, UploadState, WriteMode};
     use tus_storage_opendal::OpendalStorage;
 
     use super::*;
@@ -204,7 +204,7 @@ mod tests {
             .await
             .unwrap();
         state.set_storage_handle(handle);
-        state_store.set(&state, true).await.unwrap();
+        state_store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         assert_eq!(
             storage

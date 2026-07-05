@@ -5,7 +5,7 @@ use http::{HeaderMap, HeaderValue, header};
 
 use tus_protocol::{DownloadRequest, HookExecutor, Locker, StateStore, Storage, StorageReader};
 
-use crate::error::Error;
+use crate::error::TusRejection;
 use crate::extractors::TusUploadId;
 use crate::router::UPLOAD_ALLOW;
 use crate::state::TusProtocol;
@@ -18,7 +18,7 @@ pub(crate) async fn handle_get<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     headers: HeaderMap,
     TusUploadId(upload_id): TusUploadId,
-) -> Result<Response, Error>
+) -> Result<Response, TusRejection>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
@@ -47,7 +47,7 @@ where
         // carry an `Allow` header. GET is excluded because the config
         // rejects it even though the route is registered.
         Err(err @ tus_protocol::Error::MethodNotAllowed(_)) => {
-            let mut response = Error::from(err).into_response();
+            let mut response = TusRejection::from(err).into_response();
             response
                 .headers_mut()
                 .insert(header::ALLOW, HeaderValue::from_static(UPLOAD_ALLOW));

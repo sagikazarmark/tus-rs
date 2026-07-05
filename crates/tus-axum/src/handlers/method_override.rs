@@ -18,7 +18,7 @@ use axum::{
 
 use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
 
-use crate::error::Error;
+use crate::error::TusRejection;
 use crate::extractors::{TusBody, TusHeaders, TusUploadId};
 use crate::handlers::{handle_delete, handle_patch};
 use crate::router::UPLOAD_ALLOW;
@@ -44,7 +44,7 @@ pub(crate) async fn handle_post_with_override<S, I, L, H>(
     // of axum's default plain-text 400 with no `Tus-Resumable` header.
     upload_id: TusUploadId,
     req: Request,
-) -> Result<Response, Error>
+) -> Result<Response, TusRejection>
 where
     S: Storage + Send + Sync + 'static,
     I: StateStore + Send + Sync + 'static,
@@ -79,7 +79,7 @@ where
             // RFC 9110 requires 405 responses to carry an `Allow` header.
             // The protocol error mapping does not know the route table, so
             // the header is attached here on the axum side.
-            let mut response = Error::from(tus_protocol::Error::MethodNotAllowed(
+            let mut response = TusRejection::from(tus_protocol::Error::MethodNotAllowed(
                 "POST is not allowed on upload resources without X-HTTP-Method-Override"
                     .to_string(),
             ))

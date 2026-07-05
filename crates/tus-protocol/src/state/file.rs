@@ -10,7 +10,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
-use crate::state::{StateStore, UploadInventory, UploadState};
+use crate::state::{StateStore, UploadInventory, UploadState, WriteMode};
 
 /// File-based state store.
 ///
@@ -182,10 +182,11 @@ impl StateStore for FileStateStore {
         "file"
     }
 
-    async fn set(&self, state: &UploadState, create: bool) -> Result<()> {
+    async fn set(&self, state: &UploadState, mode: WriteMode) -> Result<()> {
         let path = self.state_path(state.id())?;
 
-        self.write_state(&path, state, create).await
+        self.write_state(&path, state, mode == WriteMode::CreateNew)
+            .await
     }
 
     async fn get(&self, id: &str) -> Result<Option<UploadState>> {
@@ -298,7 +299,7 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         let state = UploadState::new("test-1").with_length(1000);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let retrieved = store.get("test-1").await.unwrap().unwrap();
         assert_eq!(retrieved.id(), "test-1");
@@ -312,7 +313,7 @@ mod tests {
         // A valid, already-expired candidate.
         let expired =
             UploadState::new("expired-1").with_expiration(Utc::now() - Duration::hours(1));
-        store.set(&expired, true).await.unwrap();
+        store.set(&expired, WriteMode::CreateNew).await.unwrap();
 
         // A malformed `.json` file that must not abort the scan.
         fs::write(dir.path().join("garbage.json"), b"{ not valid json")
@@ -331,7 +332,7 @@ mod tests {
         let (store, dir) = create_test_store().await;
 
         store
-            .set(&UploadState::new("real-upload"), true)
+            .set(&UploadState::new("real-upload"), WriteMode::CreateNew)
             .await
             .unwrap();
 
@@ -358,7 +359,7 @@ mod tests {
         {
             let store = FileStateStore::new(temp_dir.path()).await.unwrap();
             let state = UploadState::new("persistent").with_length(5000);
-            store.set(&state, true).await.unwrap();
+            store.set(&state, WriteMode::CreateNew).await.unwrap();
         }
 
         // Create new store instance and verify state persisted
@@ -375,9 +376,9 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         let state = UploadState::new("test-1");
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
-        let result = store.set(&state, true).await;
+        let result = store.set(&state, WriteMode::CreateNew).await;
         assert!(matches!(result, Err(Error::AlreadyExists(_))));
     }
 
@@ -389,7 +390,7 @@ mod tests {
         let _ = std::fs::remove_file(&escape_path);
         let state = UploadState::new(format!("../{escape_id}"));
 
-        let err = store.set(&state, true).await.unwrap_err();
+        let err = store.set(&state, WriteMode::CreateNew).await.unwrap_err();
 
         assert!(matches!(err, Error::InvalidUploadId(_)));
         assert!(!escape_path.exists());
@@ -400,7 +401,7 @@ mod tests {
         let (store, _dir) = create_test_store().await;
         let state = UploadState::new("a".repeat(251));
 
-        let err = store.set(&state, true).await.unwrap_err();
+        let err = store.set(&state, WriteMode::CreateNew).await.unwrap_err();
 
         assert!(matches!(err, Error::InvalidUploadId(_)));
     }
@@ -422,7 +423,7 @@ mod tests {
                     metadata.insert("payload", "x".repeat(32 * 1024));
                     let state = UploadState::new("same-id").with_metadata(metadata);
                     barrier.wait().await;
-                    store.set(&state, true).await
+                    store.set(&state, WriteMode::CreateNew).await
                 })
             })
             .collect();
@@ -446,11 +447,11 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         let state = UploadState::new("test-1").with_length(1000);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let mut updated = state.clone();
         updated.set_offset(500);
-        store.set(&updated, false).await.unwrap();
+        store.set(&updated, WriteMode::Update).await.unwrap();
 
         let retrieved = store.get("test-1").await.unwrap().unwrap();
         assert_eq!(retrieved.offset(), 500);
@@ -468,7 +469,7 @@ mod tests {
         let (store, _dir) = create_test_store().await;
 
         let state = UploadState::new("test-1");
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         store.delete("test-1").await.unwrap();
         assert!(store.get("test-1").await.unwrap().is_none());
@@ -484,15 +485,15 @@ mod tests {
         // Not expired
         let state1 =
             UploadState::new("not-expired").with_expiration(Utc::now() + Duration::hours(1));
-        store.set(&state1, true).await.unwrap();
+        store.set(&state1, WriteMode::CreateNew).await.unwrap();
 
         // Expired
         let state2 = UploadState::new("expired").with_expiration(Utc::now() - Duration::hours(1));
-        store.set(&state2, true).await.unwrap();
+        store.set(&state2, WriteMode::CreateNew).await.unwrap();
 
         // No expiration
         let state3 = UploadState::new("no-expiration");
-        store.set(&state3, true).await.unwrap();
+        store.set(&state3, WriteMode::CreateNew).await.unwrap();
 
         let expired = store.list_expired(Utc::now()).await.unwrap();
         assert_eq!(expired.len(), 1);
@@ -504,7 +505,7 @@ mod tests {
         let (store, dir) = create_test_store().await;
 
         let state = UploadState::new("atomic-test").with_length(1000);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         // Verify no temp file remains
         let temp_path = dir.path().join("atomic-test.json.tmp");
@@ -526,7 +527,7 @@ mod tests {
         let state = UploadState::new("with-metadata")
             .with_length(1000)
             .with_metadata(metadata);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let retrieved = store.get("with-metadata").await.unwrap().unwrap();
         assert_eq!(

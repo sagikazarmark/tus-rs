@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::error::{Error, Result};
-use crate::state::{StateStore, UploadInventory, UploadState};
+use crate::state::{StateStore, UploadInventory, UploadState, WriteMode};
 
 /// In-memory state store.
 ///
@@ -72,12 +72,12 @@ impl StateStore for MemoryStateStore {
         "memory"
     }
 
-    async fn set(&self, state: &UploadState, create: bool) -> Result<()> {
+    async fn set(&self, state: &UploadState, mode: WriteMode) -> Result<()> {
         validate_upload_id(state.id())?;
 
         let mut states = self.states.write().unwrap();
 
-        if create && states.contains_key(state.id()) {
+        if mode == WriteMode::CreateNew && states.contains_key(state.id()) {
             return Err(Error::AlreadyExists(state.id().to_string()));
         }
 
@@ -144,7 +144,7 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let state = UploadState::new("test-1").with_length(1000);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let retrieved = store.get("test-1").await.unwrap().unwrap();
         assert_eq!(retrieved.id(), "test-1");
@@ -156,9 +156,9 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let state = UploadState::new("test-1");
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
-        let result = store.set(&state, true).await;
+        let result = store.set(&state, WriteMode::CreateNew).await;
         assert!(matches!(result, Err(Error::AlreadyExists(_))));
     }
 
@@ -167,11 +167,11 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let state = UploadState::new("test-1").with_length(1000);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let mut updated = state.clone();
         updated.set_offset(500);
-        store.set(&updated, false).await.unwrap(); // create=false allows update
+        store.set(&updated, WriteMode::Update).await.unwrap(); // create=false allows update
 
         let retrieved = store.get("test-1").await.unwrap().unwrap();
         assert_eq!(retrieved.offset(), 500);
@@ -189,7 +189,7 @@ mod tests {
         let store = MemoryStateStore::new();
 
         let state = UploadState::new("test-1");
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         assert_eq!(store.len(), 1);
 
         store.delete("test-1").await.unwrap();
@@ -204,15 +204,15 @@ mod tests {
         // Not expired
         let state1 =
             UploadState::new("not-expired").with_expiration(Utc::now() + Duration::hours(1));
-        store.set(&state1, true).await.unwrap();
+        store.set(&state1, WriteMode::CreateNew).await.unwrap();
 
         // Expired
         let state2 = UploadState::new("expired").with_expiration(Utc::now() - Duration::hours(1));
-        store.set(&state2, true).await.unwrap();
+        store.set(&state2, WriteMode::CreateNew).await.unwrap();
 
         // No expiration
         let state3 = UploadState::new("no-expiration");
-        store.set(&state3, true).await.unwrap();
+        store.set(&state3, WriteMode::CreateNew).await.unwrap();
 
         let expired = store.list_expired(Utc::now()).await.unwrap();
         assert_eq!(expired.len(), 1);
@@ -225,7 +225,7 @@ mod tests {
 
         for i in 0..5 {
             let state = UploadState::new(format!("upload-{}", i));
-            store.set(&state, true).await.unwrap();
+            store.set(&state, WriteMode::CreateNew).await.unwrap();
         }
 
         assert_eq!(store.len(), 5);

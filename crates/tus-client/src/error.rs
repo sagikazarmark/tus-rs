@@ -214,7 +214,10 @@ impl Error {
     /// [`UnexpectedResponse`](Error::UnexpectedResponse) can; every other
     /// variant returns `None`. The client uses this to honor server-driven
     /// backoff on retryable responses instead of its own jittered delay.
-    pub(crate) fn retry_after(&self) -> Option<Duration> {
+    ///
+    /// Exposed so a custom [`RetryHook`](crate::RetryHook) can honor the same
+    /// server-driven backoff the built-in retry loop uses.
+    pub fn retry_after(&self) -> Option<Duration> {
         match self {
             Error::UnexpectedResponse { retry_after, .. } => *retry_after,
             _ => None,

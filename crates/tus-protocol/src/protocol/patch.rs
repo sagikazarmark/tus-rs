@@ -121,7 +121,7 @@ mod tests {
     use crate::config::Config;
     use crate::hooks::{HookChain, HookEvent, NoopHookExecutor, PreHookResult};
     use crate::locking::NoopLocker;
-    use crate::state::{UploadMetadata, UploadState, memory::MemoryStateStore};
+    use crate::state::{UploadMetadata, UploadState, WriteMode, memory::MemoryStateStore};
     use crate::storage::{AppendRequest, ChunkStream, memory::MemoryStorage};
     use bytes::Bytes;
     use chrono::{Duration, Utc};
@@ -199,7 +199,7 @@ mod tests {
         let store = MemoryStateStore::new();
         let mut st = state;
         create_storage(&storage, &mut st).await;
-        store.set(&st, true).await.unwrap();
+        store.set(&st, WriteMode::CreateNew).await.unwrap();
         (storage, store)
     }
 
@@ -320,7 +320,7 @@ mod tests {
         let mut state = UploadState::new("test-id").with_length(10);
         let handle = storage.create(state.id()).await.unwrap();
         state.set_storage_handle(handle);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         let locker = NoopLocker::new();
         let hooks = NoopHookExecutor::new();
         let upload_id: UploadId = "test-id".parse().unwrap();
@@ -518,7 +518,7 @@ mod tests {
         create_storage(&storage, &mut state).await;
         append_storage(&storage, &mut state, b"hello").await;
         state.set_offset(0);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let response = call(
             &Config::default(),
@@ -560,7 +560,7 @@ mod tests {
         let mut state = UploadState::new("test-id").with_length(100);
         create_storage(&storage, &mut state).await;
         append_storage(&storage, &mut state, &[b'x'; 50]).await;
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         let err = call(
             &Config::default(),
             &storage,
@@ -624,7 +624,7 @@ mod tests {
         create_storage(&storage, &mut state).await;
         append_storage(&storage, &mut state, b"hello").await;
         state.set_offset(0);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Expiration);
         let err = call(&config, &storage, &store, headers(0), "test-id", b"world")
@@ -653,15 +653,15 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part = UploadState::new("part-1").with_length(4).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, b"ABCD").await;
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1").with_length(4);
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new()
@@ -734,15 +734,15 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part = UploadState::new("part-1").with_length(4).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, b"ABCD").await;
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1").with_length(4);
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new().on_pre_finish({

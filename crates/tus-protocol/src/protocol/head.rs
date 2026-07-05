@@ -152,7 +152,7 @@ mod tests {
     use crate::config::Config;
     use crate::hooks::{HookChain, NoopHookExecutor, PreHookResult};
     use crate::locking::{LockGuard, Locker, NoopLocker};
-    use crate::state::{UploadState, memory::MemoryStateStore};
+    use crate::state::{UploadState, WriteMode, memory::MemoryStateStore};
     use crate::storage::{
         AppendRequest, ChunkStream, Storage, StorageReader, memory::MemoryStorage,
     };
@@ -199,7 +199,7 @@ mod tests {
 
     async fn store_with(state: UploadState) -> MemoryStateStore {
         let store = MemoryStateStore::new();
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         store
     }
 
@@ -312,7 +312,7 @@ mod tests {
         let mut state = UploadState::new("test-id").with_length(1000);
         create_storage(&storage, &mut state).await;
         append_storage(&storage, &mut state, Bytes::from(vec![0; 500])).await;
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
         let response = call(&Config::default(), &storage, &store, "test-id")
             .await
             .unwrap();
@@ -378,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn partial_concat_header() {
         let storage = MemoryStorage::new();
-        let state = UploadState::new("test-id").with_length(1000).as_partial();
+        let state = UploadState::new("test-id").with_length(1000).with_partial();
         let store = store_with(state).await;
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "test-id").await.unwrap();
@@ -418,17 +418,17 @@ mod tests {
     async fn unfinished_final_omits_upload_offset() {
         let storage = MemoryStorage::new();
         // Partial not yet complete.
-        let mut partial = UploadState::new("part-1").with_length(1000).as_partial();
+        let mut partial = UploadState::new("part-1").with_length(1000).with_partial();
         partial.set_offset(250);
         let store = MemoryStateStore::new();
-        store.set(&partial, true).await.unwrap();
+        store.set(&partial, WriteMode::CreateNew).await.unwrap();
 
         // Final pointing at it (not complete).
         let mut final_upload = UploadState::new("final-1");
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(1000);
         final_upload.set_offset(0);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -451,22 +451,22 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part1 = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part1 = UploadState::new("part-1").with_length(4).with_partial();
         create_storage(&storage, &mut part1).await;
         append_storage(&storage, &mut part1, Bytes::from_static(b"ABCD")).await;
-        store.set(&part1, true).await.unwrap();
+        store.set(&part1, WriteMode::CreateNew).await.unwrap();
 
-        let mut part2 = UploadState::new("part-2").with_length(4).as_partial();
+        let mut part2 = UploadState::new("part-2").with_length(4).with_partial();
         create_storage(&storage, &mut part2).await;
         append_storage(&storage, &mut part2, Bytes::from_static(b"EFGH")).await;
-        store.set(&part2, true).await.unwrap();
+        store.set(&part2, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string(), "part-2".to_string()]);
         final_upload.set_length(8);
         final_upload.set_offset(4);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -485,15 +485,15 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part = UploadState::new("part-1").with_length(4).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, Bytes::from_static(b"ABCD")).await;
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1").with_length(4);
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let observed_offsets = Arc::new(Mutex::new(Vec::new()));
         let hooks = HookChain::new().on_post_finish({
@@ -530,17 +530,17 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part = UploadState::new("part-1").with_length(4).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, Bytes::from_static(b"ABCD")).await;
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(0);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let locker = NoopLocker::new();
@@ -577,17 +577,17 @@ mod tests {
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
 
-        let mut part = UploadState::new("part-1").with_length(4).as_partial();
+        let mut part = UploadState::new("part-1").with_length(4).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, Bytes::from_static(b"ABCD")).await;
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let mut final_upload = UploadState::new("final-1");
         create_storage(&storage, &mut final_upload).await;
         final_upload.mark_final(vec!["part-1".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let locker = NoopLocker::new();
@@ -629,7 +629,7 @@ mod tests {
         final_upload.mark_final(vec!["a".to_string(), "b".to_string()]);
         final_upload.set_length(1000);
         final_upload.set_offset(1000);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -653,7 +653,7 @@ mod tests {
         final_upload.mark_final(vec!["missing-part".to_string()]);
         final_upload.set_length(4);
         final_upload.set_offset(4);
-        store.set(&final_upload, true).await.unwrap();
+        store.set(&final_upload, WriteMode::CreateNew).await.unwrap();
 
         let config = Config::default().with_extension(Extension::Concatenation);
         let response = call(&config, &storage, &store, "final-1").await.unwrap();
@@ -669,7 +669,7 @@ mod tests {
         create_storage(&storage, &mut state).await;
         append_storage(&storage, &mut state, Bytes::from_static(b"hello")).await;
         state.set_offset(0);
-        store.set(&state, true).await.unwrap();
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
 
         let response = call(&Config::default(), &storage, &store, "test-id")
             .await

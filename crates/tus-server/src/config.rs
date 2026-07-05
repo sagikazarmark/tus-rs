@@ -1066,7 +1066,7 @@ pub(crate) fn build_storage_operator(
 
 pub(crate) fn build_tus_config(settings: &Settings) -> TusConfig {
     let mut config = if settings.all_extensions {
-        TusConfig::with_all_extensions()
+        TusConfig::all_extensions()
     } else {
         TusConfig::default()
     };

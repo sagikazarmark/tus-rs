@@ -33,6 +33,22 @@ use crate::error::{Error, Result};
 use crate::runtime::MaybeSendSync;
 use crate::storage::StorageHandle;
 
+/// How a [`StateStore::set`] call should reconcile with any existing record.
+///
+/// Replaces the former `create: bool` flag so call sites read intentionally
+/// (`WriteMode::CreateNew` vs `WriteMode::Update`) instead of a bare boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WriteMode {
+    /// Create a brand-new record, failing with `Error::AlreadyExists` if the
+    /// upload ID is already present. Backends with compare-and-set or
+    /// conditional-create support should make the existence check atomic with
+    /// the write.
+    CreateNew,
+    /// Overwrite the existing record (or insert if absent), used for progress
+    /// and lifecycle updates after creation.
+    Update,
+}
+
 /// Trait for persisting upload state.
 ///
 /// Implementors should provide atomic operations for storing and retrieving
@@ -42,10 +58,10 @@ use crate::storage::StorageHandle;
 /// calling [`StateStore::set`] again.
 ///
 /// `delete` should be idempotent, and `list_expired` does not guarantee a stable
-/// ordering unless an implementation documents one. When `create` is true,
-/// implementations should reject an already existing upload ID; backends with
-/// compare-and-set or conditional-create support should make that check atomic
-/// with the write.
+/// ordering unless an implementation documents one. For
+/// [`WriteMode::CreateNew`], implementations should reject an already existing
+/// upload ID; backends with compare-and-set or conditional-create support
+/// should make that check atomic with the write.
 ///
 /// Implementations should reject upload IDs that fail
 /// [`UploadId`](crate::protocol::UploadId) validation on `set`, `get`, and
@@ -65,11 +81,13 @@ pub trait StateStore: MaybeSendSync {
 
     /// Stores or updates upload state.
     ///
-    /// If `create` is true, this fails when the upload already exists.
+    /// [`WriteMode::CreateNew`] requires the upload not to exist yet;
+    /// [`WriteMode::Update`] overwrites the existing record.
     ///
     /// # Errors
-    /// Returns `Error::AlreadyExists` if `create` is true and the upload exists.
-    async fn set(&self, state: &UploadState, create: bool) -> Result<()>;
+    /// Returns `Error::AlreadyExists` when `mode` is [`WriteMode::CreateNew`]
+    /// and the upload already exists.
+    async fn set(&self, state: &UploadState, mode: WriteMode) -> Result<()>;
 
     /// Retrieves upload state by ID.
     async fn get(&self, id: &str) -> Result<Option<UploadState>>;
@@ -237,14 +255,14 @@ impl UploadState {
 
     /// Marks as a partial upload.
     #[must_use]
-    pub fn as_partial(mut self) -> Self {
+    pub fn with_partial(mut self) -> Self {
         self.is_partial = true;
         self
     }
 
     /// Marks as a final concatenated upload.
     #[must_use]
-    pub fn as_final(mut self, parts: Vec<String>) -> Self {
+    pub fn with_final(mut self, parts: Vec<String>) -> Self {
         self.is_final = true;
         self.parts = Some(parts);
         self
@@ -808,7 +826,7 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        let state = UploadState::new("test-id").with_length(1024).as_partial();
+        let state = UploadState::new("test-id").with_length(1024).with_partial();
 
         let json = serde_json::to_string(&state).unwrap();
         let deserialized: UploadState = serde_json::from_str(&json).unwrap();
@@ -820,12 +838,12 @@ mod tests {
 
     #[test]
     fn test_partial_and_final() {
-        let partial = UploadState::new("part1").as_partial();
+        let partial = UploadState::new("part1").with_partial();
         assert!(partial.is_partial());
         assert!(!partial.is_final());
 
         let final_upload =
-            UploadState::new("final").as_final(vec!["part1".to_string(), "part2".to_string()]);
+            UploadState::new("final").with_final(vec!["part1".to_string(), "part2".to_string()]);
         assert!(!final_upload.is_partial());
         assert!(final_upload.is_final());
         assert_eq!(
@@ -872,7 +890,7 @@ mod tests {
         let mut partial = UploadState::new("partial")
             .with_length(5)
             .with_expiration(expires_at)
-            .as_partial();
+            .with_partial();
         partial.set_offset(5);
 
         assert_eq!(deliverable.expires_header(), None);

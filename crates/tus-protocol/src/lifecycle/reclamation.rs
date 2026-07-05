@@ -213,7 +213,7 @@ mod tests {
     use super::*;
     use crate::error::Error;
     use crate::locking::LockGuard;
-    use crate::state::UploadState;
+    use crate::state::{UploadState, WriteMode};
     use crate::storage::{AppendRequest, ConcatRequest, StorageHandle};
 
     type OperationLog = Arc<Mutex<Vec<String>>>;
@@ -372,10 +372,10 @@ mod tests {
         let storage = TestStorage::default();
         let state_store = TestStateStore::default();
         let locker = TestLocker::default();
-        let partial = expired_state("part-1", "part-data").as_partial();
+        let partial = expired_state("part-1", "part-data").with_partial();
         let mut final_upload = active_state("final-1", "final-data")
             .with_length(10)
-            .as_final(vec!["part-1".to_string()]);
+            .with_final(vec!["part-1".to_string()]);
         final_upload.set_offset(5);
         state_store.insert_candidate("part-1");
         state_store.insert_state(partial);
@@ -663,9 +663,9 @@ mod tests {
             "test"
         }
 
-        async fn set(&self, state: &UploadState, create: bool) -> Result<()> {
+        async fn set(&self, state: &UploadState, mode: WriteMode) -> Result<()> {
             let mut states = self.states.lock().unwrap();
-            if create && states.contains_key(state.id()) {
+            if mode == WriteMode::CreateNew && states.contains_key(state.id()) {
                 return Err(Error::AlreadyExists(state.id().to_string()));
             }
             states.insert(state.id().to_string(), state.clone());

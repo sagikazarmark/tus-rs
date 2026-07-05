@@ -8,7 +8,7 @@ use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
 use crate::protocol::{Headers, RequestBody};
-use crate::state::StateStore;
+use crate::state::{StateStore, WriteMode};
 use crate::state::UploadState;
 use crate::storage::{AppendRequest, ChunkStream, Storage, StorageHandle};
 
@@ -158,7 +158,7 @@ where
 
         let handle = self.storage.create(state.id()).await?;
         state.set_storage_handle(handle);
-        if let Err(err) = self.state_store.set(&state, true).await {
+        if let Err(err) = self.state_store.set(&state, WriteMode::CreateNew).await {
             // Best-effort rollback: the storage object created above must not
             // leak when the state record cannot be persisted.
             self.rollback_creation(&state).await;
@@ -399,7 +399,7 @@ where
     }
 
     apply_receive_commit(state, prepared.projection, handle);
-    state_store.set(state, false).await?;
+    state_store.set(state, WriteMode::Update).await?;
 
     Ok(())
 }

@@ -123,7 +123,7 @@ impl Config {
     /// [`Config::default()`] plus explicit `.with_extension(...)` calls
     /// and don't enable `ConcatenationUnfinished`.
     #[must_use]
-    pub fn with_all_extensions() -> Self {
+    pub fn all_extensions() -> Self {
         Self {
             extensions: Extension::supported().iter().copied().collect(),
             checksum_algorithms: [
