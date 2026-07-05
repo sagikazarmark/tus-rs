@@ -284,16 +284,15 @@ impl Config {
         self
     }
 
-    /// Controls whether empty creation requests are allowed.
+    /// Rejects empty creation requests.
     ///
     /// The tus Creation extension uses an empty `POST` with `Upload-Length` as
-    /// its standard creation example. Leave this enabled for compliant tus
-    /// behavior. Setting it to `false` is an opt-in non-compliant mode for
-    /// deployments that only want Creation-With-Upload requests to create new
-    /// resources.
+    /// its standard creation example, and it is accepted by default. Calling
+    /// this is an opt-in non-compliant mode for deployments that only want
+    /// Creation-With-Upload requests to create new resources.
     #[must_use]
-    pub fn with_allow_empty_creation(mut self, allow: bool) -> Self {
-        self.allow_empty_creation = allow;
+    pub fn without_empty_creation(mut self) -> Self {
+        self.allow_empty_creation = false;
         self
     }
 
@@ -423,7 +422,7 @@ pub enum Extension {
 
 impl Extension {
     /// Returns the extension name as used in the Tus-Extension header.
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Extension::Creation => "creation",
             Extension::CreationWithUpload => "creation-with-upload",
@@ -496,7 +495,7 @@ pub enum ChecksumAlgorithm {
 
 impl ChecksumAlgorithm {
     /// Returns the algorithm name as used in the Tus-Checksum-Algorithm header.
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             ChecksumAlgorithm::Sha1 => "sha1",
             ChecksumAlgorithm::Sha256 => "sha256",

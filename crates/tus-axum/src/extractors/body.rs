@@ -8,6 +8,7 @@ use axum::{
     extract::FromRequest,
     http::{HeaderMap, Request},
 };
+#[cfg(test)]
 use bytes::Bytes;
 use futures_util::stream;
 use http_body::Body as _;
@@ -25,14 +26,19 @@ pub struct TusBody {
 
 impl TusBody {
     /// Creates a new TusBody for requests where no body was supplied.
-    pub fn absent() -> Self {
+    ///
+    /// Crate-internal: only the `FromRequest` extractor and tests construct
+    /// bodies; downstream users obtain a `TusBody` through extraction and
+    /// consume it with [`TusBody::into_body`].
+    pub(crate) fn absent() -> Self {
         Self {
             body: RequestBody::absent(),
         }
     }
 
     /// Creates a new TusBody with buffered data and optional trailers.
-    pub fn buffered(bytes: Bytes, trailers: Option<HeaderMap>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn buffered(bytes: Bytes, trailers: Option<HeaderMap>) -> Self {
         let body = match trailers {
             Some(trailers) => {
                 let frames = stream::iter([

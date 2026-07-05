@@ -24,7 +24,11 @@ use crate::error::Error;
 static NEXT_UPLOAD_ID: AtomicU64 = AtomicU64::new(1);
 
 /// How a held lock is expected to become available after its guard is dropped.
+///
+/// `#[non_exhaustive]` so the suite can grow new release models (matches on it
+/// downstream must use a wildcard arm); existing variants stay constructible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReleaseExpectation {
     /// Dropping the returned [`LockGuard`](super::LockGuard) releases the lock
     /// immediately enough for a following `try_lock` to acquire it.
@@ -38,7 +42,12 @@ pub enum ReleaseExpectation {
 }
 
 /// Timing and release behavior used by the locker conformance suite.
+///
+/// Start from [`LockerConformanceConfig::default`] and refine with the `with_*`
+/// builders. The type is `#[non_exhaustive]` so new timing knobs can be added
+/// without breaking adapters that construct it; fields stay public for reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LockerConformanceConfig {
     /// Timeout used for lock acquisitions that should eventually succeed.
     pub acquisition_timeout: Duration,
@@ -58,6 +67,36 @@ impl Default for LockerConformanceConfig {
             release_delay: Duration::from_millis(25),
             release_expectation: ReleaseExpectation::GuardDrop,
         }
+    }
+}
+
+impl LockerConformanceConfig {
+    /// Sets the timeout used for lock acquisitions that should succeed.
+    #[must_use]
+    pub fn with_acquisition_timeout(mut self, timeout: Duration) -> Self {
+        self.acquisition_timeout = timeout;
+        self
+    }
+
+    /// Sets the timeout used when asserting that a contended lock times out.
+    #[must_use]
+    pub fn with_blocked_timeout(mut self, timeout: Duration) -> Self {
+        self.blocked_timeout = timeout;
+        self
+    }
+
+    /// Sets the delay before dropping a held guard in the waited-lock scenario.
+    #[must_use]
+    pub fn with_release_delay(mut self, delay: Duration) -> Self {
+        self.release_delay = delay;
+        self
+    }
+
+    /// Sets the expected release behavior after a guard is dropped.
+    #[must_use]
+    pub fn with_release_expectation(mut self, expectation: ReleaseExpectation) -> Self {
+        self.release_expectation = expectation;
+        self
     }
 }
 

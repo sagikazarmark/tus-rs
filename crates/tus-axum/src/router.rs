@@ -6,6 +6,8 @@
 //! CORS is opt-in through [`RouterOptions`] (an HTTP-adapter concern), not
 //! part of [`tus_protocol::Config`].
 
+use std::marker::PhantomData;
+
 use axum::{
     Router,
     http::{HeaderName, HeaderValue, Method, StatusCode, header},
@@ -112,8 +114,7 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let router = build_upload_router(state.config(), UPLOAD_ALLOW)?;
-    finish_router(router, state, options, false)
+    TusRouter::new(state).cors(options.clone()).build()
 }
 
 /// Creates an axum Router for TUS endpoints plus non-standard GET downloads.
@@ -140,11 +141,175 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let paths = route_paths(state.config())?;
-    let router = build_upload_router(state.config(), UPLOAD_ALLOW_WITH_DOWNLOAD)?
-        .route(&paths.upload, get(handlers::handle_get::<S, I, L, H>));
+    TusRouter::new(state)
+        .with_download()
+        .cors(options.clone())
+        .build()
+}
 
-    finish_router(router, state, options, true)
+/// Download-route type-state for [`TusRouter`]: the standard upload routes
+/// only, no non-standard GET download endpoint.
+#[derive(Debug)]
+pub struct WithoutDownload(());
+
+/// Download-route type-state for [`TusRouter`]: the upload routes plus the
+/// non-standard `GET /{upload_id}` download endpoint. Only reachable once the
+/// storage backend is known to implement [`StorageReader`].
+#[derive(Debug)]
+pub struct WithDownload(());
+
+/// Builder for the TUS axum route table.
+///
+/// This is the extensible entry point: start from [`TusRouter::new`], opt into
+/// axes with the builder methods, then call [`build`](TusRouter::build). New
+/// router-level axes are added as builder methods rather than as new
+/// constructor functions.
+///
+/// The non-standard GET download route is a compile-time type-state: calling
+/// [`with_download`](TusRouter::with_download) transitions the builder so that
+/// [`build`](TusRouter::build) additionally requires the storage backend to
+/// implement [`StorageReader`]. Upload-only storages simply never call it.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use tus_axum::{RouterOptions, TusRouter, TusState};
+/// # use tus_protocol::{
+/// #     Config, NoopHookExecutor, ProtocolHandle,
+/// #     locking::memory::MemoryLocker,
+/// #     state::memory::MemoryStateStore,
+/// #     storage::memory::MemoryStorage,
+/// # };
+/// # fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let protocol = ProtocolHandle::new(
+///     Config::default(),
+///     MemoryStorage::new(),
+///     MemoryStateStore::new(),
+///     MemoryLocker::new(),
+///     NoopHookExecutor::new(),
+/// );
+/// let router = TusRouter::new(TusState::new(protocol))
+///     .cors(RouterOptions::new().with_cors_any_origin())
+///     .build()?;
+/// # let _ = router;
+/// # Ok(())
+/// # }
+/// ```
+pub struct TusRouter<S, I, L, H, D = WithoutDownload>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    state: TusState<S, I, L, H>,
+    options: RouterOptions,
+    _download: PhantomData<fn() -> D>,
+}
+
+// Manual Debug: the backend type parameters need not be Debug.
+impl<S, I, L, H, D> std::fmt::Debug for TusRouter<S, I, L, H, D>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TusRouter")
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S, I, L, H> TusRouter<S, I, L, H, WithoutDownload>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    /// Starts a router builder over the given application state.
+    ///
+    /// No CORS layer is applied unless configured through [`cors`](Self::cors).
+    #[must_use]
+    pub fn new(state: TusState<S, I, L, H>) -> Self {
+        Self {
+            state,
+            options: RouterOptions::default(),
+            _download: PhantomData,
+        }
+    }
+
+    /// Registers the non-standard `GET /{upload_id}` download route.
+    ///
+    /// This transitions the builder to the download type-state, so
+    /// [`build`](TusRouter::build) will require the storage backend to
+    /// implement [`StorageReader`].
+    #[must_use]
+    pub fn with_download(self) -> TusRouter<S, I, L, H, WithDownload> {
+        TusRouter {
+            state: self.state,
+            options: self.options,
+            _download: PhantomData,
+        }
+    }
+}
+
+impl<S, I, L, H, D> TusRouter<S, I, L, H, D>
+where
+    S: Storage,
+    I: StateStore,
+    L: Locker,
+    H: HookExecutor,
+{
+    /// Sets the router-level options (CORS configuration).
+    #[must_use]
+    pub fn cors(mut self, options: RouterOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+
+impl<S, I, L, H> TusRouter<S, I, L, H, WithoutDownload>
+where
+    S: Storage + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    /// Builds the axum router with the standard TUS upload routes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouterError`] when the base path or CORS configuration is
+    /// invalid (see the variant docs).
+    pub fn build(self) -> Result<Router, RouterError> {
+        let router = build_upload_router(self.state.config(), UPLOAD_ALLOW)?;
+        finish_router(router, self.state, &self.options, false)
+    }
+}
+
+impl<S, I, L, H> TusRouter<S, I, L, H, WithDownload>
+where
+    S: Storage + StorageReader + Send + Sync + 'static,
+    I: StateStore + Send + Sync + 'static,
+    L: Locker + Send + Sync + 'static,
+    H: HookExecutor + Send + Sync + 'static,
+{
+    /// Builds the axum router with the standard TUS upload routes plus the
+    /// non-standard GET download route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouterError`] when the base path or CORS configuration is
+    /// invalid (see the variant docs).
+    pub fn build(self) -> Result<Router, RouterError> {
+        let paths = route_paths(self.state.config())?;
+        let router = build_upload_router(self.state.config(), UPLOAD_ALLOW_WITH_DOWNLOAD)?
+            .route(&paths.upload, get(handlers::handle_get::<S, I, L, H>));
+        finish_router(router, self.state, &self.options, true)
+    }
 }
 
 /// Router-level options for the TUS axum integration.
@@ -154,6 +319,8 @@ where
 #[derive(Debug, Clone, Default)]
 pub struct RouterOptions {
     cors_allowed_origins: Vec<String>,
+    cors_allow_credentials: bool,
+    cors_extra_allowed_headers: Vec<String>,
 }
 
 impl RouterOptions {
@@ -181,8 +348,45 @@ impl RouterOptions {
         self
     }
 
+    /// Allows credentialed (cookie / `Authorization`) cross-origin requests.
+    ///
+    /// The Fetch standard forbids credentialed requests against a wildcard
+    /// origin, so this cannot be combined with [`with_cors_any_origin`]: the
+    /// origins must be listed explicitly with [`with_cors_allowed_origins`].
+    /// Enabling this with a wildcard origin fails router construction with
+    /// [`RouterError::CredentialsRequireExplicitOrigin`].
+    ///
+    /// [`with_cors_any_origin`]: RouterOptions::with_cors_any_origin
+    /// [`with_cors_allowed_origins`]: RouterOptions::with_cors_allowed_origins
+    #[must_use]
+    pub fn with_cors_allow_credentials(mut self) -> Self {
+        self.cors_allow_credentials = true;
+        self
+    }
+
+    /// Adds request header names to the CORS preflight allowlist, on top of the
+    /// TUS protocol headers the layer already allows.
+    ///
+    /// Use this for deployment-specific request headers (for example a custom
+    /// `X-Api-Key` or a non-`Authorization` auth header) that clients send on
+    /// cross-origin upload requests.
+    #[must_use]
+    pub fn with_cors_extra_allowed_headers<I, S>(mut self, headers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.cors_extra_allowed_headers
+            .extend(headers.into_iter().map(Into::into));
+        self
+    }
+
     fn cors_enabled(&self) -> bool {
         !self.cors_allowed_origins.is_empty()
+    }
+
+    fn allows_any_origin(&self) -> bool {
+        self.cors_allowed_origins.iter().any(|origin| origin == "*")
     }
 }
 
@@ -192,6 +396,14 @@ impl RouterOptions {
 pub enum RouterError {
     /// A configured CORS origin is not a valid header value.
     InvalidCorsOrigin(String),
+    /// A configured extra allowed CORS header name is not a valid header name.
+    InvalidAllowedHeader(String),
+    /// Credentialed CORS was requested together with a wildcard (`*`) origin.
+    ///
+    /// The Fetch standard forbids sending credentials to a wildcard origin, and
+    /// `tower-http` panics if the two are combined, so this must fail startup.
+    /// List the allowed origins explicitly instead.
+    CredentialsRequireExplicitOrigin,
     /// The configured base path is empty or does not start with `/`.
     ///
     /// Feeding such a path into `axum::Router::route` would panic at
@@ -205,6 +417,14 @@ impl std::fmt::Display for RouterError {
             RouterError::InvalidCorsOrigin(origin) => {
                 write!(f, "invalid CORS origin: {origin:?}")
             }
+            RouterError::InvalidAllowedHeader(name) => {
+                write!(f, "invalid CORS allowed header name: {name:?}")
+            }
+            RouterError::CredentialsRequireExplicitOrigin => write!(
+                f,
+                "credentialed CORS cannot be combined with a wildcard origin; \
+                 list allowed origins explicitly"
+            ),
             RouterError::InvalidBasePath(path) => {
                 write!(f, "invalid TUS base path {path:?}: must start with '/'")
             }
@@ -353,7 +573,13 @@ fn exposed_headers(download: bool) -> Vec<HeaderName> {
 /// Only called when CORS is enabled (the origin list is non-empty). The
 /// CorsLayer intercepts OPTIONS requests for preflight handling.
 fn build_cors_layer(options: &RouterOptions, download: bool) -> Result<CorsLayer, RouterError> {
-    let cors = CorsLayer::new()
+    // Credentialed CORS against a wildcard origin is forbidden by the Fetch
+    // standard and panics inside tower-http; reject it before building.
+    if options.cors_allow_credentials && options.allows_any_origin() {
+        return Err(RouterError::CredentialsRequireExplicitOrigin);
+    }
+
+    let mut cors = CorsLayer::new()
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -362,36 +588,15 @@ fn build_cors_layer(options: &RouterOptions, download: bool) -> Result<CorsLayer
             Method::HEAD,
             Method::OPTIONS,
         ])
-        .allow_headers(vec![
-            // Request-side headers the client sends.
-            HeaderName::from_static("authorization"),
-            HeaderName::from_static("tus-resumable"),
-            HeaderName::from_static("upload-length"),
-            HeaderName::from_static("upload-offset"),
-            HeaderName::from_static("upload-metadata"),
-            HeaderName::from_static("upload-defer-length"),
-            HeaderName::from_static("upload-concat"),
-            HeaderName::from_static("upload-checksum"),
-            HeaderName::from_static("trailer"),
-            HeaderName::from_static("content-type"),
-            HeaderName::from_static("content-length"),
-            // Response-side headers clients may echo via preflight.
-            HeaderName::from_static("tus-version"),
-            HeaderName::from_static("tus-extension"),
-            HeaderName::from_static("tus-max-size"),
-            HeaderName::from_static("tus-checksum-algorithm"),
-            HeaderName::from_static("upload-expires"),
-            // For clients behind proxies that block PATCH/DELETE.
-            HeaderName::from_static("x-http-method-override"),
-        ])
+        .allow_headers(allowed_request_headers(options)?)
         .expose_headers(exposed_headers(download))
         .max_age(std::time::Duration::from_secs(86400));
 
-    if options
-        .cors_allowed_origins
-        .iter()
-        .any(|origin| origin == "*")
-    {
+    if options.cors_allow_credentials {
+        cors = cors.allow_credentials(true);
+    }
+
+    if options.allows_any_origin() {
         Ok(cors.allow_origin(Any))
     } else {
         let origins = options
@@ -405,6 +610,51 @@ fn build_cors_layer(options: &RouterOptions, download: bool) -> Result<CorsLayer
             .collect::<Result<Vec<_>, _>>()?;
         Ok(cors.allow_origin(origins))
     }
+}
+
+/// The CORS preflight request-header allowlist: the fixed TUS protocol headers
+/// plus any deployment-specific headers from
+/// [`RouterOptions::with_cors_extra_allowed_headers`].
+fn allowed_request_headers(options: &RouterOptions) -> Result<Vec<HeaderName>, RouterError> {
+    // The TUS 1.0 request-header set is fixed by the protocol, so this list is
+    // stable. Deployment-specific headers (custom auth, API keys) are added
+    // through RouterOptions rather than edited in here.
+    let mut headers: Vec<HeaderName> = [
+        // Request-side headers the client sends.
+        "authorization",
+        "tus-resumable",
+        "upload-length",
+        "upload-offset",
+        "upload-metadata",
+        "upload-defer-length",
+        "upload-concat",
+        "upload-checksum",
+        "trailer",
+        "content-type",
+        "content-length",
+        // Response-side headers clients may echo via preflight.
+        "tus-version",
+        "tus-extension",
+        "tus-max-size",
+        "tus-checksum-algorithm",
+        "upload-expires",
+        // For clients behind proxies that block PATCH/DELETE.
+        "x-http-method-override",
+    ]
+    .into_iter()
+    .map(HeaderName::from_static)
+    .collect();
+
+    for name in &options.cors_extra_allowed_headers {
+        let parsed = name
+            .parse::<HeaderName>()
+            .map_err(|_| RouterError::InvalidAllowedHeader(name.clone()))?;
+        if !headers.contains(&parsed) {
+            headers.push(parsed);
+        }
+    }
+
+    Ok(headers)
 }
 
 #[cfg(test)]
@@ -1111,6 +1361,121 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), b"hello");
+    }
+
+    #[test]
+    fn tus_router_builder_creates_upload_only_router() {
+        let protocol = ProtocolHandle::new(
+            Config::default(),
+            UploadOnlyStorage,
+            MemoryStateStore::new(),
+            NoopLocker::new(),
+            NoopHookExecutor::new(),
+        );
+        let _router = TusRouter::new(TusState::new(protocol)).build().unwrap();
+    }
+
+    #[test]
+    fn credentialed_cors_with_wildcard_origin_is_rejected() {
+        let options = RouterOptions::new()
+            .with_cors_any_origin()
+            .with_cors_allow_credentials();
+        let err = build_cors_layer(&options, false).unwrap_err();
+        assert!(matches!(err, RouterError::CredentialsRequireExplicitOrigin));
+    }
+
+    #[test]
+    fn credentialed_cors_with_explicit_origins_builds() {
+        let options = RouterOptions::new()
+            .with_cors_allowed_origins(["https://example.com"])
+            .with_cors_allow_credentials();
+        let _ = build_cors_layer(&options, false).unwrap();
+    }
+
+    #[test]
+    fn extra_allowed_headers_reject_invalid_names() {
+        let options = RouterOptions::new()
+            .with_cors_any_origin()
+            .with_cors_extra_allowed_headers(["x-api-key", "bad header"]);
+        let err = build_cors_layer(&options, false).unwrap_err();
+        assert!(matches!(err, RouterError::InvalidAllowedHeader(name) if name == "bad header"));
+    }
+
+    #[tokio::test]
+    async fn credentialed_cors_sets_allow_credentials_header() {
+        use axum::body::Body;
+        use axum::http::{Request, Response, StatusCode};
+        use tower::{ServiceBuilder, ServiceExt, service_fn};
+
+        let options = RouterOptions::new()
+            .with_cors_allowed_origins(["https://example.com"])
+            .with_cors_allow_credentials();
+        let service = ServiceBuilder::new()
+            .layer(build_cors_layer(&options, false).unwrap())
+            .service(service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri("/files/test-id")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-credentials")
+                .unwrap(),
+            "true"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_extra_configured_header() {
+        use axum::body::Body;
+        use axum::http::{Request, Response, StatusCode};
+        use tower::{ServiceBuilder, ServiceExt, service_fn};
+
+        let options = RouterOptions::new()
+            .with_cors_any_origin()
+            .with_cors_extra_allowed_headers(["x-api-key"]);
+        let service = ServiceBuilder::new()
+            .layer(build_cors_layer(&options, false).unwrap())
+            .service(service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "PATCH")
+                    .header("access-control-request-headers", "x-api-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let allow_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(allow_headers.contains("x-api-key"));
     }
 
     #[test]

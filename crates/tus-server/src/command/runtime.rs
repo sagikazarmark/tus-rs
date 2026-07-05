@@ -36,7 +36,7 @@ impl HookExecutor for ServerHooks {
         }
     }
 
-    async fn execute_post(&self, ctx: &HookContext) -> tus_protocol::Result<()> {
+    async fn execute_post(&self, ctx: &HookContext) {
         match self {
             ServerHooks::Noop(h) => h.execute_post(ctx).await,
             ServerHooks::Http(h) => h.execute_post(ctx).await,

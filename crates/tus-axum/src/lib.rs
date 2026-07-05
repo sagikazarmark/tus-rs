@@ -51,16 +51,19 @@
 //!
 //! # Example
 //!
-//! [`create_router`] builds the standard upload route table. Non-standard GET
-//! downloads are opt-in through [`create_router_with_download`] and require a
-//! storage adapter that implements [`tus_protocol::StorageReader`].
+//! [`TusRouter`] is the primary entry point: it builds the standard upload
+//! route table, and opting into the non-standard GET download route through
+//! [`TusRouter::with_download`] additionally requires a storage adapter that
+//! implements [`tus_protocol::StorageReader`]. The [`create_router`] /
+//! [`create_router_with_download`] free functions remain as shortcuts for the
+//! common cases and delegate to the builder.
 //!
 //! See [`examples/server.rs`] for a complete runnable server.
 //!
 //! [`examples/server.rs`]: https://github.com/sagikazarmark/tus-rs/blob/main/crates/tus-axum/examples/server.rs
 //!
 //! ```rust,no_run
-//! # use tus_axum::{create_router, RouterOptions, TusState};
+//! # use tus_axum::{RouterOptions, TusRouter, TusState};
 //! # use tus_protocol::{
 //! #     Config, NoopHookExecutor, ProtocolHandle,
 //! #     locking::memory::MemoryLocker,
@@ -76,7 +79,7 @@
 //!     NoopHookExecutor::new(),
 //! );
 //! let state = TusState::new(protocol);
-//! let router = create_router(state, &RouterOptions::default())?;
+//! let router = TusRouter::new(state).build()?;
 //! let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
 //! axum::serve(listener, router).await?;
 //! # Ok(())
@@ -102,5 +105,8 @@ pub use {axum, tus_protocol};
 pub use error::TusRejection;
 pub use extractors::{TusBody, TusHeaders, TusUploadId};
 pub use response::TusResponse;
-pub use router::{RouterError, RouterOptions, create_router, create_router_with_download};
+pub use router::{
+    RouterError, RouterOptions, TusRouter, WithDownload, WithoutDownload, create_router,
+    create_router_with_download,
+};
 pub use state::{TusProtocol, TusState};

@@ -79,6 +79,13 @@ impl std::fmt::Debug for MemoryStorage {
     }
 }
 
+/// Maps a poisoned lock to an internal error instead of panicking, matching
+/// `MemoryLocker`. These critical sections never call user code, so poisoning
+/// is effectively unreachable; this keeps the dev backend panic-free anyway.
+fn poisoned() -> Error {
+    Error::Internal("memory storage lock poisoned".to_string())
+}
+
 #[async_trait]
 impl Storage for MemoryStorage {
     fn name(&self) -> &'static str {
@@ -89,7 +96,7 @@ impl Storage for MemoryStorage {
         let key = format!("memory://{}", upload_id);
         self.data
             .write()
-            .unwrap()
+            .map_err(|_| poisoned())?
             .insert(key.clone(), BytesMut::new());
         Ok(StorageHandle::new(key))
     }
@@ -104,7 +111,7 @@ impl Storage for MemoryStorage {
         let key = handle.key().to_string();
 
         {
-            let storage = self.data.read().unwrap();
+            let storage = self.data.read().map_err(|_| poisoned())?;
             let entry = storage
                 .get(&key)
                 .ok_or_else(|| Error::NotFound(key.clone()))?;
@@ -127,7 +134,7 @@ impl Storage for MemoryStorage {
             }
         };
 
-        let mut storage = self.data.write().unwrap();
+        let mut storage = self.data.write().map_err(|_| poisoned())?;
         let entry = storage
             .get_mut(&key)
             .ok_or_else(|| Error::NotFound(key.clone()))?;
@@ -149,7 +156,7 @@ impl Storage for MemoryStorage {
         let mut combined = BytesMut::new();
 
         {
-            let storage = self.data.read().unwrap();
+            let storage = self.data.read().map_err(|_| poisoned())?;
             for part in &parts {
                 let part_key = part.key();
                 let part_data = storage
@@ -159,19 +166,22 @@ impl Storage for MemoryStorage {
             }
         }
 
-        let mut storage = self.data.write().unwrap();
+        let mut storage = self.data.write().map_err(|_| poisoned())?;
         storage.insert(target_key.to_string(), combined);
 
         Ok(target)
     }
 
     async fn delete(&self, handle: &StorageHandle) -> Result<()> {
-        self.data.write().unwrap().remove(handle.key());
+        self.data
+            .write()
+            .map_err(|_| poisoned())?
+            .remove(handle.key());
         Ok(())
     }
 
     async fn size(&self, handle: &StorageHandle) -> Result<Option<u64>> {
-        let storage = self.data.read().unwrap();
+        let storage = self.data.read().map_err(|_| poisoned())?;
         Ok(storage.get(handle.key()).map(|d| d.len() as u64))
     }
 }
@@ -181,7 +191,7 @@ impl StorageReader for MemoryStorage {
     async fn stream(&self, handle: &StorageHandle) -> Result<ByteStream> {
         let key = handle.key();
 
-        let storage = self.data.read().unwrap();
+        let storage = self.data.read().map_err(|_| poisoned())?;
         let data = storage
             .get(key)
             .ok_or_else(|| Error::NotFound(key.to_string()))?
@@ -201,7 +211,7 @@ impl StorageReader for MemoryStorage {
     ) -> Result<ByteStream> {
         let key = handle.key();
 
-        let storage = self.data.read().unwrap();
+        let storage = self.data.read().map_err(|_| poisoned())?;
         let data = storage
             .get(key)
             .ok_or_else(|| Error::NotFound(key.to_string()))?

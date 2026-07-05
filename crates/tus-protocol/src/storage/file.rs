@@ -1,8 +1,29 @@
 //! File-based storage implementation.
 //!
-//! This storage backend persists upload bytes as files in a directory. It is a
-//! small native default backend; provider-backed object storage lives in
+//! This storage backend persists upload bytes as files in a directory. It is
+//! the native default backend; provider-backed object storage lives in
 //! separate integration crates.
+//!
+//! # Durability
+//!
+//! Writes are crash-safe, not best-effort:
+//!
+//! - [`create`](Storage::create) creates the file exclusively (`O_CREAT |
+//!   O_EXCL`), `fsync`s it, and `fsync`s the parent directory so the new entry
+//!   survives a crash.
+//! - [`append`](Storage::append) streams bytes to disk and `fdatasync`s them
+//!   before returning success. If the request body stream errors mid-append,
+//!   the file is truncated back to the request's `expected_offset` and
+//!   `fdatasync`ed, so a failed PATCH never leaves partially written bytes
+//!   past the acknowledged offset.
+//! - [`concat`](Storage::concat) writes the combined output to a temporary
+//!   file, `fsync`s it, atomically renames it into place, and `fsync`s the
+//!   parent directory, so a concatenated target never appears partially built.
+//!
+//! Directory `fsync` is best-effort on platforms that cannot open a directory
+//! as a file (notably Windows); everywhere else it is enforced. Recovery still
+//! reconciles the recorded offset against the on-disk size on the next request,
+//! so a lost directory entry is detected rather than silently trusted.
 
 use std::io;
 use std::path::{Component, Path, PathBuf};

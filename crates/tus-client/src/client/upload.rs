@@ -516,8 +516,14 @@ where
 
         let part_urls: Vec<String> = part_urls
             .into_iter()
-            .map(|url| url.expect("every joined part records its upload URL"))
-            .collect();
+            .map(|url| {
+                url.ok_or_else(|| {
+                    Error::Internal(
+                        "parallel part completed without recording its upload URL".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<_>>()?;
         self.concatenate_uploads(&part_urls, metadata).await
     }
 

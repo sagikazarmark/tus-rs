@@ -115,9 +115,7 @@ impl HookExecutor for FinishSideEffectHook {
         Ok(PreHookResult::proceed_with_metadata(metadata).with_header("x-finish", "ignored"))
     }
 
-    async fn execute_post(&self, _ctx: &HookContext) -> tus_protocol::Result<()> {
-        Ok(())
-    }
+    async fn execute_post(&self, _ctx: &HookContext) {}
 }
 
 #[test]
@@ -255,7 +253,7 @@ async fn protocol_success_response_headers_are_covered_by_header_facts() {
 
 #[tokio::test]
 async fn protocol_can_opt_into_rejecting_standard_empty_creation_requests() {
-    let config = Config::default().with_allow_empty_creation(false);
+    let config = Config::default().without_empty_creation();
     let storage = MemoryStorage::new();
     let state_store = MemoryStateStore::new();
     let locker = NoopLocker::new();
