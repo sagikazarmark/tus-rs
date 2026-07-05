@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 
 use tus_protocol::{BodyFrame, RequestBody};
 
-use crate::error::Error as AxumError;
+use crate::error::TusRejection;
 
 /// Extracted TUS body mapped to protocol body frames.
 #[non_exhaustive]
@@ -64,7 +64,7 @@ impl<S> FromRequest<S> for TusBody
 where
     S: Send + Sync,
 {
-    type Rejection = AxumError;
+    type Rejection = TusRejection;
 
     async fn from_request(req: Request<Body>, _state: &S) -> Result<Self, Self::Rejection> {
         let (parts, body) = req.into_parts();

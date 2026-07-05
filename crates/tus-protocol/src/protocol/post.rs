@@ -10,7 +10,7 @@ use crate::lifecycle::{
     UploadCompletion, prepare_creation,
 };
 use crate::locking::Locker;
-use crate::state::{StateStore, UploadState};
+use crate::state::{StateStore, UploadState, WriteMode};
 use crate::storage::Storage;
 
 use super::body::RequestBody;
@@ -88,7 +88,7 @@ where
 
             let handle = self.storage.create(state.id()).await?;
             state.set_storage_handle(handle);
-            if let Err(err) = self.state_store.set(&state, true).await {
+            if let Err(err) = self.state_store.set(&state, WriteMode::CreateNew).await {
                 // Best-effort rollback: the storage object created above must
                 // not leak when the state record cannot be persisted.
                 if let Some(handle) = state.storage_handle()
@@ -110,10 +110,25 @@ where
             if state.is_complete()
                 && let Err(err) = completion.finish_gate(state.clone()).await
             {
-                if let Some(handle) = state.storage_handle() {
-                    let _ = self.storage.delete(&handle).await;
+                // Best-effort rollback of the just-created resource; log
+                // failures so an orphaned storage object or state record leaves
+                // a trace (mirrors the rollback above).
+                if let Some(handle) = state.storage_handle()
+                    && let Err(rollback_err) = self.storage.delete(&handle).await
+                {
+                    tracing::warn!(
+                        upload_id = %state.id(),
+                        error = %rollback_err,
+                        "failed to roll back storage object after finish-gate rejection"
+                    );
                 }
-                let _ = self.state_store.delete(state.id()).await;
+                if let Err(rollback_err) = self.state_store.delete(state.id()).await {
+                    tracing::warn!(
+                        upload_id = %state.id(),
+                        error = %rollback_err,
+                        "failed to roll back state record after finish-gate rejection"
+                    );
+                }
                 return Err(err);
             }
 
@@ -392,13 +407,13 @@ mod tests {
             "failing-set"
         }
 
-        async fn set(&self, state: &UploadState, create: bool) -> crate::Result<()> {
-            if create && self.fail_creates.load(Ordering::SeqCst) {
+        async fn set(&self, state: &UploadState, mode: WriteMode) -> crate::Result<()> {
+            if mode == WriteMode::CreateNew && self.fail_creates.load(Ordering::SeqCst) {
                 return Err(Error::state_store(std::io::Error::other(
                     "state set failed",
                 )));
             }
-            self.inner.set(state, create).await
+            self.inner.set(state, mode).await
         }
 
         async fn get(&self, id: &str) -> crate::Result<Option<UploadState>> {
@@ -556,10 +571,10 @@ mod tests {
         let locker = NoopLocker::new();
         let hooks = NoopHookExecutor::new();
 
-        let mut part = UploadState::new("part1").with_length(5).as_partial();
+        let mut part = UploadState::new("part1").with_length(5).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, Bytes::from_static(b"Hello")).await;
-        store.inner.set(&part, true).await.unwrap();
+        store.inner.set(&part, WriteMode::CreateNew).await.unwrap();
         store.arm();
 
         let headers = Headers {
@@ -903,15 +918,15 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Seed two complete partial uploads (in both state store and storage).
-        let mut part1 = UploadState::new("part1").with_length(50).as_partial();
+        let mut part1 = UploadState::new("part1").with_length(50).with_partial();
         create_storage(&storage, &mut part1).await;
         append_storage(&storage, &mut part1, Bytes::copy_from_slice(&[0u8; 50])).await;
-        store.set(&part1, true).await.unwrap();
+        store.set(&part1, WriteMode::CreateNew).await.unwrap();
 
-        let mut part2 = UploadState::new("part2").with_length(50).as_partial();
+        let mut part2 = UploadState::new("part2").with_length(50).with_partial();
         create_storage(&storage, &mut part2).await;
         append_storage(&storage, &mut part2, Bytes::copy_from_slice(&[0u8; 50])).await;
-        store.set(&part2, true).await.unwrap();
+        store.set(&part2, WriteMode::CreateNew).await.unwrap();
 
         let headers = Headers {
             upload_concat: Some(UploadConcat::Final(vec![
@@ -936,10 +951,10 @@ mod tests {
         let store = MemoryStateStore::new();
         let storage = MemoryStorage::new();
 
-        let mut part = UploadState::new("part1").with_length(5).as_partial();
+        let mut part = UploadState::new("part1").with_length(5).with_partial();
         create_storage(&storage, &mut part).await;
         append_storage(&storage, &mut part, Bytes::from_static(b"Hello")).await;
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let headers = Headers {
             upload_concat: Some(UploadConcat::Final(vec!["/files/part1".to_string()])),
@@ -970,10 +985,10 @@ mod tests {
         let config = Config::default().with_extension(Extension::Concatenation);
         let store = MemoryStateStore::new();
 
-        let mut part1 = UploadState::new("part1").with_length(50).as_partial();
+        let mut part1 = UploadState::new("part1").with_length(50).with_partial();
         part1.set_offset(25);
         part1.set_storage_handle(StorageHandle::new("uploads/part1"));
-        store.set(&part1, true).await.unwrap();
+        store.set(&part1, WriteMode::CreateNew).await.unwrap();
 
         let headers = Headers {
             upload_concat: Some(UploadConcat::Final(vec!["/files/part1".to_string()])),
@@ -1000,9 +1015,9 @@ mod tests {
         let store = MemoryStateStore::new();
         let storage = MemoryStorage::new();
 
-        let mut part = UploadState::new("part1").as_partial();
+        let mut part = UploadState::new("part1").with_partial();
         part.set_offset(5);
-        store.set(&part, true).await.unwrap();
+        store.set(&part, WriteMode::CreateNew).await.unwrap();
 
         let headers = Headers {
             upload_concat: Some(UploadConcat::Final(vec!["/files/part1".to_string()])),
@@ -1881,7 +1896,7 @@ mod tests {
         use crate::config::ChecksumAlgorithm;
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
-        let config = Config::with_all_extensions();
+        let config = Config::all_extensions();
         let data = Bytes::from_static(b"hello");
         // Deliberately wrong expected checksum (3 zero bytes).
         let h = Headers {

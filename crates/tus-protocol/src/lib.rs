@@ -112,7 +112,7 @@ pub use protocol::{
 };
 pub use state::{
     MetadataValue, StateStore, UPLOAD_STATE_SCHEMA_VERSION, UploadInventory, UploadMetadata,
-    UploadState,
+    UploadState, WriteMode,
 };
 pub use storage::{
     AppendRequest, ByteStream, ChunkStream, ConcatRequest, Storage, StorageHandle, StorageReader,
@@ -133,7 +133,7 @@ pub mod prelude {
         BodyFrame, BodyStream, DownloadRequest, DownloadResponse, Headers, Protocol,
         ProtocolHandle, RequestBody, Response, UploadChecksum, UploadId,
     };
-    pub use crate::state::{StateStore, UploadInventory, UploadState};
+    pub use crate::state::{StateStore, UploadInventory, UploadState, WriteMode};
     pub use crate::storage::{AppendRequest, ConcatRequest, Storage, StorageHandle, StorageReader};
 }
 

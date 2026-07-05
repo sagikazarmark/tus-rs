@@ -73,7 +73,7 @@ mod tests {
     use chrono::{Duration as ChronoDuration, Utc};
     use tus_protocol::{
         AppendRequest, ConcatRequest, LockGuard, Locker, StateStore, Storage, StorageHandle,
-        UploadState,
+        UploadState, WriteMode,
     };
 
     use crate::expiration::ExpirationTarget;
@@ -169,7 +169,7 @@ mod tests {
             "test"
         }
 
-        async fn set(&self, state: &UploadState, _create: bool) -> tus_protocol::Result<()> {
+        async fn set(&self, state: &UploadState, _mode: WriteMode) -> tus_protocol::Result<()> {
             self.states
                 .lock()
                 .unwrap()

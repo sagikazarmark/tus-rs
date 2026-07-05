@@ -178,9 +178,14 @@ impl std::fmt::Debug for HttpHookConfig {
         // Never render header values or the signing secret: custom headers
         // routinely carry `Authorization` tokens and `signing_secret` is an
         // HMAC key. Both would otherwise leak into any log that debug-formats
-        // the config (directly or via `HttpHookExecutor`).
+        // the config (directly or via `HttpHookExecutor`). The URL is redacted
+        // too: it can carry `user:pass@` userinfo or a secret query parameter,
+        // exactly what `redacted_url` strips on the logging paths.
+        let redacted_url = Url::parse(&self.url)
+            .map(|url| HttpHookExecutor::redacted_url(&url))
+            .unwrap_or_else(|_| "[unparseable url]".to_string());
         f.debug_struct("HttpHookConfig")
-            .field("url", &self.url)
+            .field("url", &redacted_url)
             .field("timeout", &self.timeout)
             .field(
                 "headers",
@@ -945,6 +950,28 @@ mod tests {
                 "header name hidden: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn debug_redacts_url_userinfo_and_query() {
+        let config =
+            HttpHookConfig::new("https://user:pass@example.com/webhook?token=super-secret");
+
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("user:pass"),
+            "url userinfo leaked: {rendered}"
+        );
+        assert!(
+            !rendered.contains("super-secret"),
+            "url query secret leaked: {rendered}"
+        );
+        // The scheme/host/path are still shown so the config stays debuggable.
+        assert!(
+            rendered.contains("https://example.com/webhook"),
+            "redacted url missing safe parts: {rendered}"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::state::{StateStore, UploadState};
+use crate::state::{StateStore, UploadState, WriteMode};
 use crate::storage::Storage;
 
 pub(crate) async fn reconcile_state_offset<S, I>(
@@ -53,7 +53,7 @@ where
     );
 
     state.set_offset(actual_offset);
-    state_store.set(state, false).await?;
+    state_store.set(state, WriteMode::Update).await?;
     Ok(true)
 }
 
@@ -92,6 +92,6 @@ where
     );
 
     state.set_offset(actual_offset);
-    state_store.set(state, false).await?;
+    state_store.set(state, WriteMode::Update).await?;
     Ok(())
 }

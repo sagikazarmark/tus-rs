@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Duration, Utc};
 
-use super::{MetadataValue, StateStore, UploadInventory, UploadMetadata, UploadState};
+use super::{MetadataValue, StateStore, UploadInventory, UploadMetadata, UploadState, WriteMode};
 use crate::StorageHandle;
 use crate::error::{Error, Result};
 
@@ -63,14 +63,14 @@ where
     let state = UploadState::new(&id).with_length(100);
 
     store
-        .set(&state, true)
+        .set(&state, WriteMode::CreateNew)
         .await
         .expect("create=true should create a new upload state");
 
     let mut updated = state.clone();
     updated.set_offset(40);
     store
-        .set(&updated, false)
+        .set(&updated, WriteMode::Update)
         .await
         .expect("create=false should update an existing upload state");
 
@@ -96,11 +96,11 @@ where
     let replacement = UploadState::new(&id).with_length(20);
 
     store
-        .set(&original, true)
+        .set(&original, WriteMode::CreateNew)
         .await
         .expect("initial create should succeed");
 
-    let result = store.set(&replacement, true).await;
+    let result = store.set(&replacement, WriteMode::CreateNew).await;
     assert!(
         matches!(result, Err(Error::AlreadyExists(_))),
         "duplicate create should return Error::AlreadyExists, got {result:?}"
@@ -132,7 +132,7 @@ where
     state.set_storage_handle(StorageHandle::new(format!("objects/{id}")));
 
     store
-        .set(&state, true)
+        .set(&state, WriteMode::CreateNew)
         .await
         .expect("create should succeed");
 
@@ -183,7 +183,7 @@ where
 
     let state = UploadState::new(&id);
     store
-        .set(&state, true)
+        .set(&state, WriteMode::CreateNew)
         .await
         .expect("create before delete should succeed");
 
@@ -223,7 +223,7 @@ where
     store
         .set(
             &UploadState::new(&expired_id).with_expiration(cutoff - Duration::seconds(1)),
-            true,
+            WriteMode::CreateNew,
         )
         .await
         .expect("creating expired state should succeed");
@@ -232,51 +232,51 @@ where
         .with_expiration(cutoff - Duration::seconds(1));
     completed_expired.set_offset(5);
     store
-        .set(&completed_expired, true)
+        .set(&completed_expired, WriteMode::CreateNew)
         .await
         .expect("creating completed expired state should succeed");
     let mut completed_partial_expired = UploadState::new(&completed_partial_expired_id)
         .with_length(5)
         .with_expiration(cutoff - Duration::seconds(1))
-        .as_partial();
+        .with_partial();
     completed_partial_expired.set_offset(5);
     store
-        .set(&completed_partial_expired, true)
+        .set(&completed_partial_expired, WriteMode::CreateNew)
         .await
         .expect("creating completed expired partial state should succeed");
     let mut completed_final_expired = UploadState::new(&completed_final_expired_id)
         .with_length(5)
         .with_expiration(cutoff - Duration::seconds(1))
-        .as_final(vec![completed_partial_expired_id.clone()]);
+        .with_final(vec![completed_partial_expired_id.clone()]);
     completed_final_expired.set_offset(5);
     store
-        .set(&completed_final_expired, true)
+        .set(&completed_final_expired, WriteMode::CreateNew)
         .await
         .expect("creating completed expired final state should succeed");
     let mut unfinished_final_expired = UploadState::new(&unfinished_final_expired_id)
         .with_length(10)
         .with_expiration(cutoff - Duration::seconds(1))
-        .as_final(vec![completed_partial_expired_id.clone()]);
+        .with_final(vec![completed_partial_expired_id.clone()]);
     unfinished_final_expired.set_offset(5);
     store
-        .set(&unfinished_final_expired, true)
+        .set(&unfinished_final_expired, WriteMode::CreateNew)
         .await
         .expect("creating unfinished expired final state should succeed");
     store
         .set(
             &UploadState::new(&active_id).with_expiration(cutoff + Duration::seconds(1)),
-            true,
+            WriteMode::CreateNew,
         )
         .await
         .expect("creating active state should succeed");
     store
-        .set(&UploadState::new(&no_expiration_id), true)
+        .set(&UploadState::new(&no_expiration_id), WriteMode::CreateNew)
         .await
         .expect("creating state without expiration should succeed");
     store
         .set(
             &UploadState::new(&exact_cutoff_id).with_expiration(cutoff),
-            true,
+            WriteMode::CreateNew,
         )
         .await
         .expect("creating exact-cutoff state should succeed");
@@ -328,9 +328,13 @@ where
     S: StateStore + ?Sized,
 {
     for id in ["", "../escape", "nested/id", "nested\\id", "bad\nnewline"] {
-        assert_invalid_upload_id(store.set(&UploadState::new(id), true).await, "set", id);
         assert_invalid_upload_id(
-            store.set(&UploadState::new(id), false).await,
+            store.set(&UploadState::new(id), WriteMode::CreateNew).await,
+            "set",
+            id,
+        );
+        assert_invalid_upload_id(
+            store.set(&UploadState::new(id), WriteMode::Update).await,
             "set update",
             id,
         );
@@ -357,12 +361,12 @@ where
         .with_length(123)
         .with_expiration(expires_at)
         .with_metadata(metadata)
-        .as_partial();
+        .with_partial();
     partial.set_offset(45);
     partial.set_storage_handle(handle);
 
     store
-        .set(&partial, true)
+        .set(&partial, WriteMode::CreateNew)
         .await
         .expect("create should persist rich protocol state");
 
@@ -406,10 +410,10 @@ where
     let parts = vec![upload_id("part-a"), upload_id("part-b")];
     let final_state = UploadState::new(&final_id)
         .with_length(123)
-        .as_final(parts.clone());
+        .with_final(parts.clone());
 
     store
-        .set(&final_state, true)
+        .set(&final_state, WriteMode::CreateNew)
         .await
         .expect("create should persist final upload state");
 
@@ -436,18 +440,21 @@ where
     let partial_id = format!("{root}-m-partial");
 
     store
-        .set(&UploadState::new(&active_id), true)
+        .set(&UploadState::new(&active_id), WriteMode::CreateNew)
         .await
         .expect("creating active state should succeed");
     store
         .set(
             &UploadState::new(&expired_id).with_expiration(Utc::now() - Duration::seconds(1)),
-            true,
+            WriteMode::CreateNew,
         )
         .await
         .expect("creating expired state should succeed");
     store
-        .set(&UploadState::new(&partial_id).as_partial(), true)
+        .set(
+            &UploadState::new(&partial_id).with_partial(),
+            WriteMode::CreateNew,
+        )
         .await
         .expect("creating partial state should succeed");
 

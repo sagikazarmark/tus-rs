@@ -642,7 +642,7 @@ mod tests {
     #[tokio::test]
     async fn server_capabilities_returns_advertised_extensions() {
         let (endpoint, _handle) =
-            spawn_test_server_with_config(Config::with_all_extensions().with_max_size(1024 * 1024))
+            spawn_test_server_with_config(Config::all_extensions().with_max_size(1024 * 1024))
                 .await;
         let client = Client::new(endpoint_url(&endpoint));
         let info = client

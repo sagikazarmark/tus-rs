@@ -59,7 +59,7 @@ mod tests {
     use crate::error::Result;
     use crate::hooks::NoopHookExecutor;
     use crate::locking::NoopLocker;
-    use crate::state::{StateStore, UploadState};
+    use crate::state::{StateStore, UploadState, WriteMode};
     use crate::storage::{AppendRequest, ConcatRequest, Storage, StorageHandle};
     use chrono::{DateTime, Utc};
 
@@ -102,7 +102,7 @@ mod tests {
             "test"
         }
 
-        async fn set(&self, _state: &UploadState, _create: bool) -> Result<()> {
+        async fn set(&self, _state: &UploadState, _mode: WriteMode) -> Result<()> {
             unreachable!()
         }
 

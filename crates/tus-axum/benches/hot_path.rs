@@ -33,7 +33,7 @@ use tus_protocol::state::memory::MemoryStateStore;
 use tus_protocol::storage::memory::MemoryStorage;
 use tus_protocol::{
     ChunkStream, Config, Headers, NoopHookExecutor, Protocol, ProtocolHandle, RequestBody,
-    StateStore, Storage, TUS_RESUMABLE, UploadState,
+    StateStore, Storage, TUS_RESUMABLE, UploadState, WriteMode,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ fn runtime() -> Runtime {
 }
 
 fn config() -> Config {
-    Config::with_all_extensions().with_base_path("/files")
+    Config::all_extensions().with_base_path("/files")
 }
 
 fn patch_headers(offset: u64, size: u64) -> Headers {
@@ -79,7 +79,7 @@ async fn direct_setup() -> DirectState {
     let mut state = UploadState::new("bench-upload").with_length(u64::MAX);
     let handle = storage.create(state.id()).await.unwrap();
     state.set_storage_handle(handle);
-    state_store.set(&state, true).await.unwrap();
+    state_store.set(&state, WriteMode::CreateNew).await.unwrap();
 
     DirectState {
         config,

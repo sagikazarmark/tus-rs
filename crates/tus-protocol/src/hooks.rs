@@ -126,6 +126,12 @@ use crate::state::{UploadMetadata, UploadState};
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Hook: MaybeSendSync {
     /// Returns the hook name for logging/debugging.
+    ///
+    /// Unlike the `Storage`/`StateStore`/`Locker` backends — which return
+    /// `&'static str` because they are singletons with compile-time names —
+    /// this returns `&str` on purpose: hooks are frequently constructed with a
+    /// runtime name (for example [`FnHook::new`] takes `impl Into<String>`), so
+    /// the borrow is tied to `&self` rather than `'static`.
     fn name(&self) -> &str;
 
     /// Returns the events this hook subscribes to.
@@ -603,9 +609,9 @@ impl HookChain {
         self
     }
 
-    /// Adds a shared hook to the chain.
+    /// Adds a shared (`Arc`-wrapped) hook to the chain.
     #[must_use]
-    pub fn add_shared(mut self, hook: Arc<dyn Hook>) -> Self {
+    pub fn with_shared_hook(mut self, hook: Arc<dyn Hook>) -> Self {
         self.hooks.push(hook);
         self
     }
@@ -1012,7 +1018,7 @@ mod tests {
         let mut completed_partial = UploadState::new("completed-partial")
             .with_length(5)
             .with_expiration(expired_at)
-            .as_partial();
+            .with_partial();
         completed_partial.set_offset(5);
 
         assert!(!HookUpload::from_state(&completed).is_expired());

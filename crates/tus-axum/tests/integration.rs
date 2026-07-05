@@ -33,7 +33,7 @@ use tus_protocol::{
 // ---------------------------------------------------------------------------
 
 fn default_config() -> Config {
-    Config::with_all_extensions()
+    Config::all_extensions()
         .with_base_path("/files")
         .with_max_size(10 * 1024 * 1024)
 }
@@ -419,7 +419,7 @@ async fn patch_without_content_type_returns_415() {
 #[tokio::test]
 async fn post_exceeding_max_size_returns_413() {
     let router = build_router_with(
-        Config::with_all_extensions()
+        Config::all_extensions()
             .with_base_path("/files")
             .with_max_size(100),
     );
@@ -729,7 +729,7 @@ async fn upload_metadata_round_trips_through_head() {
 
 #[tokio::test]
 async fn delete_rejected_when_termination_extension_is_disabled() {
-    let config = Config::with_all_extensions()
+    let config = Config::all_extensions()
         .with_base_path("/files")
         .without_extension(Extension::Termination);
     let router = build_router_with(config);
@@ -905,7 +905,7 @@ async fn post_emits_upload_expires_header_when_configured() {
 
 #[tokio::test]
 async fn options_advertises_tus_checksum_algorithm() {
-    // default_config() uses with_all_extensions(), which enables Checksum
+    // default_config() uses all_extensions(), which enables Checksum
     // and populates sha1/sha256/md5.
     let router = build_router();
     let response = send(

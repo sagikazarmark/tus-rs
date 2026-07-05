@@ -25,7 +25,7 @@ use tus_protocol::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::with_all_extensions().with_base_path("/files");
+    let config = Config::all_extensions().with_base_path("/files");
 
     let state = TusState::new(ProtocolHandle::new(
         config,
