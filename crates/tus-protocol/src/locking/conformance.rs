@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use futures::join;
+use futures_util::join;
 use tokio::time::sleep;
 
 use super::Locker;

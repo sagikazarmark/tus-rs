@@ -7,15 +7,15 @@ use crate::error::Error;
 
 /// Axum path extractor for a validated TUS upload ID.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct UploadId(pub tus_protocol::UploadId);
+pub struct TusUploadId(pub tus_protocol::UploadId);
 
-impl UploadId {
+impl TusUploadId {
     pub(crate) fn from_string(upload_id: String) -> Result<Self, Error> {
         Ok(tus_protocol::UploadId::try_from(upload_id).map(Self)?)
     }
 }
 
-impl<S> FromRequestParts<S> for UploadId
+impl<S> FromRequestParts<S> for TusUploadId
 where
     S: Send + Sync,
 {
@@ -42,9 +42,9 @@ mod tests {
     use axum::routing::get;
     use tower::ServiceExt;
 
-    use super::UploadId;
+    use super::TusUploadId;
 
-    async fn echo(UploadId(upload_id): UploadId) -> impl IntoResponse {
+    async fn echo(TusUploadId(upload_id): TusUploadId) -> impl IntoResponse {
         upload_id.to_string()
     }
 

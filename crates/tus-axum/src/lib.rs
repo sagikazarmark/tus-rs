@@ -3,8 +3,8 @@
 //! This crate supports **axum 0.8.x**.
 //!
 //! This crate carries the axum-specific surface of a TUS server: error
-//! conversion ([`Error`]), request extractors ([`Headers`], [`TusBody`],
-//! [`UploadId`]), the route table ([`create_router`] and friends, configured
+//! conversion ([`Error`]), request extractors ([`TusHeaders`], [`TusBody`],
+//! [`TusUploadId`]), the route table ([`create_router`] and friends, configured
 //! through [`RouterOptions`]), and internal [`tus_protocol`]-backed handlers
 //! wired into axum signatures.
 //!
@@ -35,7 +35,7 @@
 //! ```
 //!
 //! ```compile_fail
-//! use tus_axum::extractors::Headers;
+//! use tus_axum::extractors::TusHeaders;
 //! ```
 //!
 //! ```compile_fail
@@ -100,7 +100,7 @@ mod state;
 pub use {axum, tus_protocol};
 
 pub use error::Error;
-pub use extractors::{Headers, TusBody, UploadId};
+pub use extractors::{TusBody, TusHeaders, TusUploadId};
 pub use response::TusResponse;
 pub use router::{RouterError, RouterOptions, create_router, create_router_with_download};
 pub use state::{TusProtocol, TusState};

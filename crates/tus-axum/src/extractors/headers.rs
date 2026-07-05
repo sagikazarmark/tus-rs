@@ -1,6 +1,6 @@
 //! Axum extractors that wrap the framework-neutral [`tus_protocol::Headers`] parsing.
 //!
-//! [`Headers`] is a newtype around [`tus_protocol::Headers`] so the
+//! [`TusHeaders`] is a newtype around [`tus_protocol::Headers`] so the
 //! [`FromRequestParts`] impl can live here without violating the orphan rule.
 
 use axum::{
@@ -13,27 +13,25 @@ use crate::error::Error;
 /// Axum extractor that parses TUS request headers and validates
 /// `Tus-Resumable: 1.0.0`.
 ///
-/// This type intentionally shares its name with [`tus_protocol::Headers`]:
-/// it is a thin newtype over that struct, existing only so the
-/// [`FromRequestParts`] impl can live in this crate (orphan rule). When both
-/// crates are in scope, import one of them under an alias (e.g.
-/// `use tus_axum::Headers as TusHeaders;`) or refer to the protocol type by
-/// its full path.
+/// A thin newtype over [`tus_protocol::Headers`], existing only so the
+/// [`FromRequestParts`] impl can live in this crate (orphan rule). The
+/// `Tus` prefix keeps it from colliding with the protocol type when both are
+/// in scope.
 ///
 /// Use for handlers (POST, PATCH, HEAD, DELETE) that require the version
 /// header. Destructure inside the handler signature to reach the inner
 /// [`tus_protocol::Headers`]:
 ///
 /// ```rust,no_run
-/// # use tus_axum::Headers;
-/// async fn handler(Headers(_headers): Headers) {
+/// # use tus_axum::TusHeaders;
+/// async fn handler(TusHeaders(_headers): TusHeaders) {
 ///     // handler body
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct Headers(pub tus_protocol::Headers);
+pub struct TusHeaders(pub tus_protocol::Headers);
 
-impl Headers {
+impl TusHeaders {
     pub(crate) fn from_header_map(headers: &HeaderMap) -> Result<Self, Error> {
         tus_protocol::Headers::from_headers(headers)
             .map(Self)
@@ -41,7 +39,7 @@ impl Headers {
     }
 }
 
-impl<S> FromRequestParts<S> for Headers
+impl<S> FromRequestParts<S> for TusHeaders
 where
     S: Send + Sync,
 {
@@ -71,14 +69,16 @@ mod tests {
         headers.insert("upload-offset", HeaderValue::from_static("100"));
 
         let mut parts = create_request_parts(headers);
-        let Headers(tus) = Headers::from_request_parts(&mut parts, &()).await.unwrap();
+        let TusHeaders(tus) = TusHeaders::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
         assert_eq!(tus.upload_offset, Some(100));
     }
 
     #[tokio::test]
     async fn extractor_rejects_missing_tus_resumable() {
         let mut parts = create_request_parts(AxumHeaderMap::new());
-        let result = Headers::from_request_parts(&mut parts, &()).await;
+        let result = TusHeaders::from_request_parts(&mut parts, &()).await;
         assert!(result.is_err());
     }
 }

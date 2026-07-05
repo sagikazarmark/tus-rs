@@ -143,6 +143,7 @@ pub enum TransportBody {
     /// A buffered body with a known length.
     Bytes(Vec<u8>),
     /// A buffered body whose checksum is sent as a trailer.
+    #[non_exhaustive]
     BytesWithTrailer {
         /// The request bytes.
         body: Vec<u8>,

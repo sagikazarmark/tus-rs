@@ -89,6 +89,7 @@ impl FileStateStore {
             match fs::hard_link(&temp_path, path).await {
                 Ok(()) => {
                     let _ = fs::remove_file(&temp_path).await;
+                    sync_parent_dir(path).await;
                     Ok(())
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -101,7 +102,45 @@ impl FileStateStore {
                 }
             }
         } else {
-            fs::rename(&temp_path, path).await.map_err(Error::Io)
+            fs::rename(&temp_path, path).await.map_err(Error::Io)?;
+            sync_parent_dir(path).await;
+            Ok(())
+        }
+    }
+}
+
+/// Best-effort fsync of the directory containing `path`.
+///
+/// The state file is the resumability source of truth, so its directory entry
+/// must survive a crash. Syncing the file's own contents is not enough: on
+/// common filesystems (ext4, XFS, ...) a `rename`/`hard_link`/create can be
+/// lost on power failure unless the containing directory is fsynced too.
+///
+/// This is best-effort. Some platforms (notably Windows) cannot open a
+/// directory as a file to sync it; there the file-content sync already
+/// performed is the strongest durability this backend offers, so a failure to
+/// sync the directory is logged and swallowed rather than failing an
+/// already-committed write.
+async fn sync_parent_dir(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    match fs::File::open(parent).await {
+        Ok(dir) => {
+            if let Err(error) = dir.sync_all().await {
+                tracing::warn!(
+                    dir = %parent.display(),
+                    error = %error,
+                    "failed to fsync state directory after write",
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                dir = %parent.display(),
+                error = %error,
+                "failed to open state directory for fsync after write",
+            );
         }
     }
 }
@@ -208,10 +247,15 @@ impl UploadInventory for FileStateStore {
         while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
             let path = entry.path();
 
+            // Only surface entries whose stem is a valid upload id. Upload ids
+            // are always UTF-8, so a non-UTF-8 name (skipped by `to_str`) or a
+            // stem that fails `UploadId` validation is a foreign `.json` file
+            // that shares the directory and must not leak into the inventory.
             if path.extension().is_some_and(|e| e == "json")
-                && let Some(stem) = path.file_stem()
+                && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+                && stem.parse::<crate::protocol::UploadId>().is_ok()
             {
-                ids.push(stem.to_string_lossy().to_string());
+                ids.push(stem.to_string());
             }
         }
 
@@ -266,8 +310,8 @@ mod tests {
         let (store, dir) = create_test_store().await;
 
         // A valid, already-expired candidate.
-        let expired = UploadState::new("expired-1")
-            .with_expiration(Utc::now() - Duration::hours(1));
+        let expired =
+            UploadState::new("expired-1").with_expiration(Utc::now() - Duration::hours(1));
         store.set(&expired, true).await.unwrap();
 
         // A malformed `.json` file that must not abort the scan.
@@ -277,6 +321,33 @@ mod tests {
 
         let ids = store.list_expired(Utc::now()).await.unwrap();
         assert_eq!(ids, vec!["expired-1".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_upload_ids_excludes_non_utf8_json_files() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let (store, dir) = create_test_store().await;
+
+        store
+            .set(&UploadState::new("real-upload"), true)
+            .await
+            .unwrap();
+
+        // A `.json` file with a non-UTF-8 name. Lossy conversion would surface
+        // a mangled id; the inventory must skip it instead.
+        let mut name = std::ffi::OsString::from_vec(vec![0xFF, 0xFE]);
+        name.push(std::ffi::OsStr::from_bytes(b".json"));
+        if std::fs::write(dir.path().join(&name), b"{}").is_err() {
+            // Some filesystems (e.g. macOS APFS) reject non-UTF-8 names
+            // outright, so there is nothing to exclude there.
+            return;
+        }
+
+        let ids = store.list_upload_ids(100, 0).await.unwrap();
+
+        assert_eq!(ids, vec!["real-upload".to_string()]);
     }
 
     #[tokio::test]

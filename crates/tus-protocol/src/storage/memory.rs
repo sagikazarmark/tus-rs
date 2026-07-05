@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -178,7 +178,9 @@ impl StorageReader for MemoryStorage {
             .clone()
             .freeze();
 
-        Ok(Box::pin(futures::stream::once(async move { Ok(data) })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(data) },
+        )))
     }
 
     async fn stream_range(
@@ -205,7 +207,9 @@ impl StorageReader for MemoryStorage {
             Bytes::new()
         };
 
-        Ok(Box::pin(futures::stream::once(async move { Ok(slice) })))
+        Ok(Box::pin(futures_util::stream::once(
+            async move { Ok(slice) },
+        )))
     }
 }
 

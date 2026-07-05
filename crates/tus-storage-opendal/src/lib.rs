@@ -76,7 +76,7 @@
 #![warn(missing_debug_implementations)]
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::io;
 
 /// Re-export of the [`opendal`] crate this backend is built against.

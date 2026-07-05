@@ -160,7 +160,7 @@ where
             )
         } else if size == 0 {
             insert_header(&mut headers, "content-length", "0")?;
-            let body: ByteStream = Box::pin(futures::stream::empty());
+            let body: ByteStream = Box::pin(futures_util::stream::empty());
             (StatusCode::OK, body)
         } else {
             let handle = state.require_storage_handle()?;
@@ -267,6 +267,11 @@ fn content_type(state: &UploadState) -> &str {
         .get("content-type")
         .or_else(|| state.metadata().get("mimetype"))
         .and_then(|value| value.as_str())
+        // The content type comes from client-supplied upload metadata. Reject
+        // values that are not a valid HTTP header value (e.g. embedded control
+        // characters) and fall back to a safe default instead of letting an
+        // odd metadata value turn a download into a 500.
+        .filter(|value| HeaderValue::from_str(value).is_ok())
         .unwrap_or("application/octet-stream")
 }
 
@@ -509,5 +514,29 @@ mod tests {
     fn parse_range_rejects_unsatisfiable_start() {
         let err = parse_range(Some("bytes=10-20"), 5).unwrap_err();
         assert!(matches!(err, Error::RangeNotSatisfiable { size: 5 }));
+    }
+
+    #[test]
+    fn content_type_uses_valid_client_metadata() {
+        let mut metadata = UploadMetadata::new();
+        metadata.insert("content-type", "image/png");
+        let mut state = UploadState::new("id");
+        state.set_metadata(metadata);
+
+        assert_eq!(content_type(&state), "image/png");
+    }
+
+    #[test]
+    fn content_type_falls_back_when_metadata_is_not_a_valid_header_value() {
+        // A control character in client-supplied metadata must not turn a
+        // download into a 500; it falls back to the safe default instead.
+        let mut metadata = UploadMetadata::new();
+        metadata.insert("content-type", "text/plain\r\ninjected: 1");
+        let mut state = UploadState::new("id");
+        state.set_metadata(metadata);
+
+        assert_eq!(content_type(&state), "application/octet-stream");
+        // And the header map builds without erroring.
+        assert!(download_headers(&state).is_ok());
     }
 }

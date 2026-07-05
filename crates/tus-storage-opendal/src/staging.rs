@@ -1,4 +1,4 @@
-use futures::StreamExt;
+use futures_util::StreamExt;
 use opendal::Operator;
 
 use tus_protocol::{ChunkStream, Error, Result, StorageHandle};

@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio_util::io::ReaderStream;
@@ -120,6 +120,7 @@ impl Storage for FileStorage {
             .await
             .map_err(Error::Io)?;
         file.sync_all().await.map_err(Error::Io)?;
+        sync_parent_dir(&path).await;
 
         Ok(StorageHandle::new(key))
     }
@@ -185,6 +186,7 @@ impl Storage for FileStorage {
         writer.sync_all().await.map_err(Error::Io)?;
         drop(writer);
         replace_file(&temp_path, &target_path).await?;
+        sync_parent_dir(&target_path).await;
 
         Ok(target)
     }
@@ -230,13 +232,47 @@ impl StorageReader for FileStorage {
         let end = end.unwrap_or(size).min(size);
 
         if start >= end {
-            return Ok(Box::pin(futures::stream::once(async { Ok(Bytes::new()) })));
+            return Ok(Box::pin(futures_util::stream::once(async {
+                Ok(Bytes::new())
+            })));
         }
 
         let mut file = File::open(path).await.map_err(Error::Io)?;
         file.seek(SeekFrom::Start(start)).await.map_err(Error::Io)?;
         let reader = file.take(end - start);
         Ok(Box::pin(ReaderStream::new(reader)))
+    }
+}
+
+/// Best-effort fsync of the directory containing `path` so a create or
+/// rename of an upload file survives a crash. Syncing the file's own contents
+/// does not persist its directory entry on common filesystems.
+///
+/// Best-effort: platforms that cannot open a directory to sync it (notably
+/// Windows) fall back to the file-content sync already performed. Storage-byte
+/// loss is additionally recoverable because protocol recovery reconciles the
+/// recorded offset against [`Storage::size`] on the next request.
+async fn sync_parent_dir(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    match File::open(parent).await {
+        Ok(dir) => {
+            if let Err(error) = dir.sync_all().await {
+                tracing::warn!(
+                    dir = %parent.display(),
+                    error = %error,
+                    "failed to fsync storage directory after write",
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                dir = %parent.display(),
+                error = %error,
+                "failed to open storage directory for fsync after write",
+            );
+        }
     }
 }
 

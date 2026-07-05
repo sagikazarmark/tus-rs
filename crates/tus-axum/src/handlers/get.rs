@@ -6,7 +6,7 @@ use http::{HeaderMap, HeaderValue, header};
 use tus_protocol::{DownloadRequest, HookExecutor, Locker, StateStore, Storage, StorageReader};
 
 use crate::error::Error;
-use crate::extractors::UploadId;
+use crate::extractors::TusUploadId;
 use crate::router::UPLOAD_ALLOW;
 use crate::state::TusProtocol;
 
@@ -17,7 +17,7 @@ use crate::state::TusProtocol;
 pub(crate) async fn handle_get<S, I, L, H>(
     State(protocol): State<TusProtocol<S, I, L, H>>,
     headers: HeaderMap,
-    UploadId(upload_id): UploadId,
+    TusUploadId(upload_id): TusUploadId,
 ) -> Result<Response, Error>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
