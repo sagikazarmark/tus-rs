@@ -105,7 +105,7 @@ struct FinishSideEffectHook;
 #[async_trait::async_trait]
 impl HookExecutor for FinishSideEffectHook {
     async fn execute_pre(&self, ctx: &HookContext) -> tus_protocol::Result<PreHookResult> {
-        if ctx.event != HookEvent::PreFinish {
+        if ctx.event() != HookEvent::PreFinish {
             return Ok(PreHookResult::proceed());
         }
 

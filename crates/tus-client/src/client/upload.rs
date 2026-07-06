@@ -20,6 +20,14 @@ use crate::transport::Transport;
 use tus_protocol::UploadMetadata;
 
 /// Offset-addressable upload content.
+///
+/// # Byte-buffer type
+///
+/// Chunks are plain `Vec<u8>` rather than `bytes::Bytes`. This is a deliberate,
+/// stable choice: it keeps the client's core dependency-light (no `bytes` in the
+/// wasm dependency graph) and there is no zero-copy path today that a shared
+/// buffer would serve. A future `Bytes`-based fast path, if it is ever added,
+/// would be a new method rather than a change to this signature.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait UploadSource: MaybeSend {

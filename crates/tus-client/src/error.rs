@@ -226,6 +226,8 @@ impl Error {
     }
 }
 
+// Takes `&bool` because thiserror's `.retryable` format shorthand expands to
+// `&self.retryable`.
 fn transport_failure_message(retryable: &bool) -> &'static str {
     if *retryable {
         "transport failed"

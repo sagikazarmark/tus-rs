@@ -293,12 +293,12 @@ mod tests {
         let pre = builder.context(HookEvent::PreCreate, upload.clone());
         let post = builder.context(HookEvent::PostCreate, upload);
 
-        assert_eq!(pre.event, HookEvent::PreCreate);
-        assert_eq!(post.event, HookEvent::PostCreate);
-        assert_eq!(pre.request.method, "POST");
-        assert_eq!(post.request.method, "POST");
-        assert_eq!(pre.request.path, "/uploads");
-        assert_eq!(post.request.path, "/uploads");
-        assert_eq!(pre.request.headers, post.request.headers);
+        assert_eq!(pre.event(), HookEvent::PreCreate);
+        assert_eq!(post.event(), HookEvent::PostCreate);
+        assert_eq!(pre.request().method, "POST");
+        assert_eq!(post.request().method, "POST");
+        assert_eq!(pre.request().path, "/uploads");
+        assert_eq!(post.request().path, "/uploads");
+        assert_eq!(pre.request().headers, post.request().headers);
     }
 }

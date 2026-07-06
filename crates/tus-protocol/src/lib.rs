@@ -42,6 +42,12 @@
 //! - [`Locker`]: Coordinates concurrent access to uploads
 //! - [`HookExecutor`]: Executes lifecycle hooks
 //!
+//! Implement these traits with the crate's re-exported `#[async_trait]` macro.
+//! tus-protocol deliberately keeps the `async_trait` shape as stable API rather
+//! than native `async fn` in traits, so each method's returned future can keep a
+//! `Send` bound on native targets and drop it on `wasm32` — a conditional bound
+//! that native async-fn-in-trait cannot yet express.
+//!
 //! [`Protocol`] bundles those traits with [`Config`] and exposes the
 //! framework-neutral protocol handlers adapters call from HTTP integrations.
 //! Expired upload reclamation is the root-level operational cleanup interface

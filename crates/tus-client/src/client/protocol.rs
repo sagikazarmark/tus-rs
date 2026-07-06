@@ -52,7 +52,12 @@ impl UploadInfo {
 }
 
 /// Parameters for creating a new upload resource.
+///
+/// Fields are private and the type is `#[non_exhaustive]`, so new upload
+/// parameters can be added without a breaking change; construct via
+/// [`NewUpload::new`], [`NewUpload::with_body`], or [`NewUpload::partial`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NewUpload {
     pub(crate) metadata: UploadMetadata,
     pub(crate) content: NewUploadContent,

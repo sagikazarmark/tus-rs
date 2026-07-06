@@ -52,6 +52,7 @@ where
     H: HookExecutor,
 {
     /// Creates a new TusState with the given protocol handle.
+    #[must_use]
     pub fn new(protocol: ProtocolHandle<S, I, L, H>) -> Self {
         Self {
             protocol: TusProtocol::new(protocol),
@@ -59,6 +60,7 @@ where
     }
 
     /// Returns the configuration.
+    #[must_use]
     pub fn config(&self) -> &Config {
         self.protocol.handle().config()
     }
@@ -114,6 +116,7 @@ where
     H: HookExecutor,
 {
     /// Creates a new protocol substate from a protocol handle.
+    #[must_use]
     pub fn new(handle: ProtocolHandle<S, I, L, H>) -> Self {
         Self { handle }
     }
@@ -123,6 +126,7 @@ where
     /// This is an explicit accessor rather than a `Deref` impl so that
     /// `TusProtocol` does not masquerade as a `ProtocolHandle`; call protocol
     /// operations as `protocol.handle().patch(...)`.
+    #[must_use]
     pub fn handle(&self) -> &ProtocolHandle<S, I, L, H> {
         &self.handle
     }

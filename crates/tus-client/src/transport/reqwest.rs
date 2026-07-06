@@ -27,16 +27,14 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     /// Creates a new transport using reqwest's default client.
+    ///
+    /// To wrap a configured client, use the [`From`] impls
+    /// (`ReqwestTransport::from(client)` or `client.into()`).
     #[must_use]
     pub fn new() -> Self {
         Self {
             client: default_reqwest_client(),
         }
-    }
-
-    /// Creates a new transport using a configured reqwest or middleware client.
-    pub fn with_client(client: impl Into<Self>) -> Self {
-        client.into()
     }
 }
 
@@ -411,7 +409,7 @@ mod tests {
                 calls: calls.clone(),
             })
             .build();
-        let transport = ReqwestTransport::with_client(middleware_client);
+        let transport = ReqwestTransport::from(middleware_client);
         let client = Client::with_transport(endpoint_url(&endpoint), transport);
 
         client.server_capabilities().await.unwrap();
@@ -423,7 +421,7 @@ mod tests {
     #[tokio::test]
     async fn reqwest_transport_accepts_configured_reqwest_client() {
         let (endpoint, handle) = spawn_test_server().await;
-        let transport = ReqwestTransport::with_client(reqwest::Client::new());
+        let transport = ReqwestTransport::from(reqwest::Client::new());
         let client = Client::with_transport(endpoint_url(&endpoint), transport);
 
         let info = client.server_capabilities().await.unwrap();

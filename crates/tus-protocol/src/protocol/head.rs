@@ -509,7 +509,7 @@ mod tests {
             let observed_offsets = Arc::clone(&observed_offsets);
             move |ctx| {
                 let observed_offsets = Arc::clone(&observed_offsets);
-                let offset = ctx.upload.offset();
+                let offset = ctx.upload().offset();
                 async move {
                     observed_offsets.lock().unwrap().push(offset);
                     Ok(())
