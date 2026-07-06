@@ -141,6 +141,7 @@ impl ParallelUpload {
     ///
     /// `part_size` is the number of bytes placed into each partial upload,
     /// clamped to at least 1.
+    #[must_use]
     pub fn new(part_size: usize) -> Self {
         Self {
             part_size: part_size.max(1),
@@ -673,17 +674,18 @@ where
 
     /// Consults the configured retry hook before the next attempt.
     ///
-    /// Returns `Err` with the *original* upload error both when the hook
-    /// vetoes the retry and when the hook itself fails — a broken hook must
-    /// not mask the error that triggered the retry, so its own error is
-    /// discarded.
+    /// Returns `Err` with the *original* upload error when the hook vetoes the
+    /// retry. The hook is a veto/observe seam and cannot substitute its own
+    /// error, so a broken hook can never mask the error that triggered the
+    /// retry.
     async fn consult_retry_hook(&self, attempt: usize, error: Error) -> Result<()> {
         let Some(hook) = &self.retry_hook else {
             return Ok(());
         };
-        match hook.before_retry(attempt, &error).await {
-            Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err(error),
+        if hook.before_retry(attempt, &error).await {
+            Ok(())
+        } else {
+            Err(error)
         }
     }
 
@@ -797,12 +799,15 @@ where
 
         match self.server_capabilities().await {
             Ok(capabilities) => Ok(Some(capabilities)),
-            Err(
-                error @ Error::UnexpectedResponse {
-                    status: 401 | 403 | 407,
-                    ..
-                },
-            ) => Err(error),
+            Err(error)
+                if matches!(
+                    &error,
+                    Error::UnexpectedResponse { status, .. }
+                        if matches!(status.as_u16(), 401 | 403 | 407)
+                ) =>
+            {
+                Err(error)
+            }
             Err(_) => Ok(None),
         }
     }
@@ -904,7 +909,7 @@ mod tests {
     use crate::client::Client;
     use crate::client::test_support::*;
     use crate::{Error, TransportBody};
-    use http::Method;
+    use http::{Method, StatusCode};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1509,7 +1514,7 @@ mod tests {
                 let calls = calls.clone();
                 move |_attempt: usize, _error: &Error| {
                     calls.fetch_add(1, Ordering::Relaxed);
-                    std::future::ready(Ok::<bool, Error>(true))
+                    std::future::ready(true)
                 }
             })
             .with_max_retries(1)
@@ -1739,7 +1744,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::UnexpectedResponse { status: 503, .. })
+            Err(Error::UnexpectedResponse { status, .. }) if status == StatusCode::SERVICE_UNAVAILABLE
         ));
     }
 
@@ -1971,7 +1976,7 @@ mod tests {
     /// A failing retry hook must not mask the upload error that triggered
     /// the retry.
     #[async_test]
-    async fn retry_hook_failure_returns_original_upload_error() {
+    async fn retry_hook_veto_returns_original_upload_error() {
         let transport = MockTransport::default();
         {
             let responses = &mut *transport.responses.lock().unwrap();
@@ -1984,9 +1989,7 @@ mod tests {
         }
 
         let client = Client::with_transport(endpoint_url(), transport)
-            .with_retry_hook(|_attempt: usize, _error: &Error| {
-                std::future::ready(Err::<bool, Error>(Error::Internal("hook broke".into())))
-            })
+            .with_retry_hook(|_attempt: usize, _error: &Error| std::future::ready(false))
             .with_max_retries(3)
             .with_retry_delay(Duration::from_millis(0));
 
@@ -1995,8 +1998,11 @@ mod tests {
             .await;
 
         assert!(
-            matches!(result, Err(Error::UnexpectedResponse { status: 503, .. })),
-            "hook failure must surface the original 503, got {result:?}"
+            matches!(
+                result,
+                Err(Error::UnexpectedResponse { status, .. }) if status == StatusCode::SERVICE_UNAVAILABLE
+            ),
+            "hook veto must surface the original 503, got {result:?}"
         );
     }
 
@@ -2084,7 +2090,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::UnexpectedResponse { status: 400, .. })
+            Err(Error::UnexpectedResponse { status, .. }) if status == StatusCode::BAD_REQUEST
         ));
         let requests = transport.requests.lock().unwrap();
         let delete = requests
@@ -2176,7 +2182,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::UnexpectedResponse { status: 401, .. })
+            Err(Error::UnexpectedResponse { status, .. }) if status == StatusCode::UNAUTHORIZED
         ));
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 1, "no POST may follow a 401 OPTIONS");

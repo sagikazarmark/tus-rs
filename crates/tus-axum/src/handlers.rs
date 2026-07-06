@@ -44,11 +44,7 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    Ok(protocol
-        .handle()
-        .post(headers, body.into_body())
-        .await?
-        .into())
+    Ok(protocol.handle().post(headers, body.0).await?.into())
 }
 
 /// Handles HEAD requests. The `TusHeaders` extractor validates the
@@ -80,10 +76,7 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    let response = protocol
-        .handle()
-        .patch(headers, &upload_id, body.into_body())
-        .await?;
+    let response = protocol.handle().patch(headers, &upload_id, body.0).await?;
 
     Ok(response.into())
 }

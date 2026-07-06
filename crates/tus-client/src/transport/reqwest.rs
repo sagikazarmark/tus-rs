@@ -203,7 +203,7 @@ mod tests {
         time::Duration,
     };
 
-    use http::{Method, header::CONTENT_TYPE};
+    use http::{Method, StatusCode, header::CONTENT_TYPE};
     #[cfg(feature = "checksum")]
     use tus_protocol::ChecksumAlgorithm;
     use tus_protocol::{
@@ -235,7 +235,7 @@ mod tests {
             NoopHookExecutor::new(),
         ));
         let app: axum::Router =
-            tus_axum::create_router(state, &tus_axum::RouterOptions::default()).unwrap();
+            tus_axum::create_router(state, tus_axum::RouterOptions::default()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
@@ -583,7 +583,9 @@ mod tests {
         handle.terminate().await.unwrap();
 
         let err = handle.info().await.unwrap_err();
-        assert!(matches!(err, Error::UnexpectedResponse { status: 404, .. }));
+        assert!(
+            matches!(err, Error::UnexpectedResponse { status, .. } if status == StatusCode::NOT_FOUND)
+        );
 
         server_handle.abort();
     }

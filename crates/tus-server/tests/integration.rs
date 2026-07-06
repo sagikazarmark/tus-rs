@@ -601,7 +601,7 @@ mod tcp_tests {
         let err = client.head(&upload.url).await.unwrap_err();
         assert!(matches!(
             err,
-            ClientError::UnexpectedResponse { status: 404, .. }
+            ClientError::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::NOT_FOUND
         ));
     }
 
@@ -959,7 +959,7 @@ mod tcp_tests {
             let upload_gone = !upload_path.exists() && !staged_part_path.exists();
             let status = match tus_client.head(&upload_url).await {
                 Ok(_) => 200,
-                Err(ClientError::UnexpectedResponse { status, .. }) => status,
+                Err(ClientError::UnexpectedResponse { status, .. }) => status.as_u16(),
                 Err(error) => panic!("unexpected HEAD failure: {error:?}"),
             };
 
@@ -1096,7 +1096,7 @@ mod tcp_tests {
             .unwrap_err();
         assert!(matches!(
             unauthorized,
-            ClientError::UnexpectedResponse { status: 401, .. }
+            ClientError::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::UNAUTHORIZED
         ));
 
         let client = TusClient::new(&endpoint)

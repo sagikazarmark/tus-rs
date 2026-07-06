@@ -99,7 +99,7 @@ async fn axum_setup() -> (Router, String) {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    let router = create_router(state, &RouterOptions::default()).unwrap();
+    let router = create_router(state, RouterOptions::default()).unwrap();
 
     let response = router
         .clone()
@@ -258,7 +258,7 @@ fn bench_lifecycle(c: &mut Criterion) {
                     NoopHookExecutor::new(),
                 ));
                 (
-                    create_router(state, &RouterOptions::default()).unwrap(),
+                    create_router(state, RouterOptions::default()).unwrap(),
                     payload_template.clone(),
                 )
             },

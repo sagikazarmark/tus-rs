@@ -115,7 +115,7 @@ fn build_router(addr: std::net::SocketAddr, append_delay: Duration) -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state, &RouterOptions::default()).unwrap()
+    create_router(state, RouterOptions::default()).unwrap()
 }
 
 async fn spawn_server(append_delay: Duration) -> std::net::SocketAddr {
