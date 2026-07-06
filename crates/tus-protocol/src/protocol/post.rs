@@ -1389,7 +1389,13 @@ mod tests {
                 Ok(PreHookResult::proceed_with_metadata(metadata))
             })
             .on_pre_receive(|ctx| async move {
-                if ctx.upload().metadata().get("stage").and_then(|v| v.as_str()) != Some("created") {
+                if ctx
+                    .upload()
+                    .metadata()
+                    .get("stage")
+                    .and_then(|v| v.as_str())
+                    != Some("created")
+                {
                     return Ok(PreHookResult::reject(409, "pre-create metadata missing"));
                 }
 
