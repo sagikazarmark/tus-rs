@@ -28,6 +28,11 @@ pub use reqwest::ReqwestTransport;
 /// default implementations, so existing implementations keep compiling.
 /// Only `send` will ever be required.
 ///
+/// Implement it with the crate's re-exported `#[async_trait]` macro (shown
+/// below). tus-client keeps the `async_trait` shape as stable API rather than
+/// native `async fn` in traits, so the returned future's `Send` bound can stay
+/// conditional on the target (required on native, dropped on `wasm32`).
+///
 /// The trait is not dyn-compatible (it requires `Clone`). Every custom
 /// transport must therefore be `Clone`; wrap any non-`Clone` resource in an
 /// [`Arc`] (the blanket `impl Transport for Arc<T>` below makes that a

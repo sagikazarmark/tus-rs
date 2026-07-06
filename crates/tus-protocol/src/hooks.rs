@@ -12,14 +12,14 @@
 //!
 //! let hooks = HookChain::new()
 //!     .on_pre_create(|ctx| async move {
-//!         if ctx.upload.metadata().get("filename").is_none() {
+//!         if ctx.upload().metadata().get("filename").is_none() {
 //!             Ok(PreHookResult::reject(400, "filename required"))
 //!         } else {
 //!             Ok(PreHookResult::proceed())
 //!         }
 //!     })
 //!     .on_post_finish(|ctx| async move {
-//!         tracing::info!(upload = %ctx.upload.id(), "upload complete");
+//!         tracing::info!(upload = %ctx.upload().id(), "upload complete");
 //!         Ok(())
 //!     });
 //! # let _ = hooks;
@@ -237,17 +237,20 @@ impl std::fmt::Display for HookEvent {
 }
 
 /// Context provided to hooks.
+///
+/// Fields are private with accessors so the representation can evolve without a
+/// breaking change; construct via [`HookContext::new`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct HookContext {
     /// The hook event type.
-    pub event: HookEvent,
+    event: HookEvent,
 
     /// Hook-visible upload facts at the time of the hook.
-    pub upload: HookUpload,
+    upload: HookUpload,
 
     /// HTTP request metadata.
-    pub request: HookRequestInfo,
+    request: HookRequestInfo,
 }
 
 impl HookContext {
@@ -258,6 +261,24 @@ impl HookContext {
             upload: upload.into(),
             request,
         }
+    }
+
+    /// Returns the hook event type.
+    #[must_use]
+    pub fn event(&self) -> HookEvent {
+        self.event
+    }
+
+    /// Returns the hook-visible upload facts at the time of the hook.
+    #[must_use]
+    pub fn upload(&self) -> &HookUpload {
+        &self.upload
+    }
+
+    /// Returns the HTTP request metadata.
+    #[must_use]
+    pub fn request(&self) -> &HookRequestInfo {
+        &self.request
     }
 }
 
@@ -488,7 +509,11 @@ impl PreHookResult {
         self
     }
 
-    /// Replaces user metadata if the current hook event allows metadata changes.
+    /// Records replacement user metadata on this result.
+    ///
+    /// The replacement is applied by the protocol only for hook events that
+    /// permit metadata changes (`PreCreate`, `PreReceive`); for other events
+    /// the recorded value is ignored.
     #[must_use]
     pub fn with_metadata(mut self, metadata: impl Into<UploadMetadata>) -> Self {
         self.metadata = Some(metadata.into());
@@ -830,10 +855,13 @@ impl HookExecutor for HookChain {
                 continue;
             }
 
-            // Create context with potentially modified upload
+            // Create context with potentially modified upload. Build the
+            // fields explicitly rather than `..ctx.clone()` so we don't clone
+            // `ctx.upload` only to discard it.
             let hook_ctx = HookContext {
+                event: ctx.event,
                 upload: current_upload.clone(),
-                ..ctx.clone()
+                request: ctx.request.clone(),
             };
 
             let hook_result = hook.pre_hook(&hook_ctx).await?;

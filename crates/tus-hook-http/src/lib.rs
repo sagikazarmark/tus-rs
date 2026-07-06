@@ -628,7 +628,7 @@ impl HttpHookExecutor {
             let is_last_attempt = attempt.saturating_add(1) >= max_attempts;
 
             let delay = match self
-                .send_webhook(ctx.event.as_str(), &delivery_id, timestamp, &payload)
+                .send_webhook(ctx.event().as_str(), &delivery_id, timestamp, &payload)
                 .await
             {
                 Ok(response) => {
@@ -749,8 +749,8 @@ impl HttpHookExecutor {
     /// fail-open policy is applied by the [`HookExecutor::execute_pre`] wrapper.
     async fn deliver_pre_hook(&self, ctx: &HookContext) -> Result<PreHookResult> {
         tracing::debug!(
-            event = ctx.event.as_str(),
-            upload_id = %ctx.upload.id(),
+            event = ctx.event().as_str(),
+            upload_id = %ctx.upload().id(),
             url = %Self::redacted_url(&self.url),
             "executing pre-hook webhook"
         );
@@ -762,8 +762,8 @@ impl HttpHookExecutor {
 
         if !status.is_success() {
             tracing::warn!(
-                event = ctx.event.as_str(),
-                upload_id = %ctx.upload.id(),
+                event = ctx.event().as_str(),
+                upload_id = %ctx.upload().id(),
                 status = %status,
                 "pre-hook webhook returned non-success status"
             );
@@ -777,8 +777,8 @@ impl HttpHookExecutor {
             .await
             .map_err(|error| {
                 tracing::warn!(
-                    event = ctx.event.as_str(),
-                    upload_id = %ctx.upload.id(),
+                    event = ctx.event().as_str(),
+                    upload_id = %ctx.upload().id(),
                     error = %error,
                     "failed to read pre-hook response body"
                 );
@@ -787,8 +787,8 @@ impl HttpHookExecutor {
 
         if truncated {
             tracing::warn!(
-                event = ctx.event.as_str(),
-                upload_id = %ctx.upload.id(),
+                event = ctx.event().as_str(),
+                upload_id = %ctx.upload().id(),
                 "pre-hook response body exceeded size limit"
             );
             return Err(Error::Hook(
@@ -798,8 +798,8 @@ impl HttpHookExecutor {
 
         let hook_response: PreHookResponse = serde_json::from_slice(&body).map_err(|error| {
             tracing::warn!(
-                event = ctx.event.as_str(),
-                upload_id = %ctx.upload.id(),
+                event = ctx.event().as_str(),
+                upload_id = %ctx.upload().id(),
                 error = %error,
                 "failed to parse pre-hook response"
             );
@@ -807,8 +807,8 @@ impl HttpHookExecutor {
         })?;
 
         tracing::debug!(
-            event = ctx.event.as_str(),
-            upload_id = %ctx.upload.id(),
+            event = ctx.event().as_str(),
+            upload_id = %ctx.upload().id(),
             proceed = hook_response.proceed,
             "pre-hook webhook completed"
         );
@@ -824,8 +824,8 @@ impl HookExecutor for HttpHookExecutor {
             Ok(result) => Ok(result),
             Err(error) if self.config.fail_open => {
                 tracing::warn!(
-                    event = ctx.event.as_str(),
-                    upload_id = %ctx.upload.id(),
+                    event = ctx.event().as_str(),
+                    upload_id = %ctx.upload().id(),
                     error = %error,
                     "pre-hook webhook did not return a decision; failing open (proceeding)"
                 );
@@ -837,8 +837,8 @@ impl HookExecutor for HttpHookExecutor {
 
     async fn execute_post(&self, ctx: &HookContext) {
         tracing::debug!(
-            event = ctx.event.as_str(),
-            upload_id = %ctx.upload.id(),
+            event = ctx.event().as_str(),
+            upload_id = %ctx.upload().id(),
             url = %Self::redacted_url(&self.url),
             "executing post-hook webhook"
         );
@@ -852,23 +852,23 @@ impl HookExecutor for HttpHookExecutor {
                 let status = response.status();
                 if !status.is_success() {
                     tracing::warn!(
-                        event = ctx.event.as_str(),
-                        upload_id = %ctx.upload.id(),
+                        event = ctx.event().as_str(),
+                        upload_id = %ctx.upload().id(),
                         status = %status,
                         "post-hook webhook returned non-success status"
                     );
                 } else {
                     tracing::debug!(
-                        event = ctx.event.as_str(),
-                        upload_id = %ctx.upload.id(),
+                        event = ctx.event().as_str(),
+                        upload_id = %ctx.upload().id(),
                         "post-hook webhook completed successfully"
                     );
                 }
             }
             Err(e) => {
                 tracing::warn!(
-                    event = ctx.event.as_str(),
-                    upload_id = %ctx.upload.id(),
+                    event = ctx.event().as_str(),
+                    upload_id = %ctx.upload().id(),
                     error = %e,
                     "post-hook webhook failed"
                 );

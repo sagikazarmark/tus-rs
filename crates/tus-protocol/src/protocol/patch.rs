@@ -672,9 +672,9 @@ mod tests {
                 let events = Arc::clone(&events);
                 move |ctx| {
                     let events = Arc::clone(&events);
-                    let method = ctx.request.method.clone();
-                    let path = ctx.request.path.clone();
-                    let offset = ctx.upload.offset();
+                    let method = ctx.request().method.clone();
+                    let path = ctx.request().path.clone();
+                    let offset = ctx.upload().offset();
                     async move {
                         events
                             .lock()
@@ -688,9 +688,9 @@ mod tests {
                 let events = Arc::clone(&events);
                 move |ctx| {
                     let events = Arc::clone(&events);
-                    let method = ctx.request.method.clone();
-                    let path = ctx.request.path.clone();
-                    let offset = ctx.upload.offset();
+                    let method = ctx.request().method.clone();
+                    let path = ctx.request().path.clone();
+                    let offset = ctx.upload().offset();
                     async move {
                         events
                             .lock()
@@ -755,7 +755,7 @@ mod tests {
             let events = Arc::clone(&events);
             move |ctx| {
                 let events = Arc::clone(&events);
-                let method = ctx.request.method.clone();
+                let method = ctx.request().method.clone();
                 async move {
                     events.lock().unwrap().push(method);
                     Ok(PreHookResult::reject(403, "finish blocked"))

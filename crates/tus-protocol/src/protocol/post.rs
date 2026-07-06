@@ -252,20 +252,20 @@ mod tests {
     #[async_trait::async_trait]
     impl HookExecutor for RecordingHookExecutor {
         async fn execute_pre(&self, ctx: &HookContext) -> crate::Result<PreHookResult> {
-            self.events.lock().unwrap().push(ctx.event);
+            self.events.lock().unwrap().push(ctx.event());
             self.offsets
                 .lock()
                 .unwrap()
-                .push((ctx.event, ctx.upload.offset()));
+                .push((ctx.event(), ctx.upload().offset()));
             Ok(PreHookResult::proceed())
         }
 
         async fn execute_post(&self, ctx: &HookContext) {
-            self.events.lock().unwrap().push(ctx.event);
+            self.events.lock().unwrap().push(ctx.event());
             self.offsets
                 .lock()
                 .unwrap()
-                .push((ctx.event, ctx.upload.offset()));
+                .push((ctx.event(), ctx.upload().offset()));
         }
     }
 
@@ -1389,7 +1389,13 @@ mod tests {
                 Ok(PreHookResult::proceed_with_metadata(metadata))
             })
             .on_pre_receive(|ctx| async move {
-                if ctx.upload.metadata().get("stage").and_then(|v| v.as_str()) != Some("created") {
+                if ctx
+                    .upload()
+                    .metadata()
+                    .get("stage")
+                    .and_then(|v| v.as_str())
+                    != Some("created")
+                {
                     return Ok(PreHookResult::reject(409, "pre-create metadata missing"));
                 }
 

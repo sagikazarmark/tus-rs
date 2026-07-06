@@ -7,6 +7,8 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![warn(unreachable_pub)]
 
 mod client;
 mod error;

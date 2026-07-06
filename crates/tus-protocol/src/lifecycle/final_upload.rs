@@ -1105,10 +1105,10 @@ mod materialization_tests {
             let observed = Arc::clone(&observed);
             move |ctx| {
                 let observed = Arc::clone(&observed);
-                let method = ctx.request.method.clone();
-                let path = ctx.request.path.clone();
-                let upload_id = ctx.upload.id().to_string();
-                let offset = ctx.upload.offset();
+                let method = ctx.request().method.clone();
+                let path = ctx.request().path.clone();
+                let upload_id = ctx.upload().id().to_string();
+                let offset = ctx.upload().offset();
                 async move {
                     *observed.lock().unwrap() = Some((method, path, upload_id, offset));
                     Ok(PreHookResult::reject(409, "finish blocked"))
