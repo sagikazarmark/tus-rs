@@ -3612,7 +3612,6 @@ dependencies = [
  "futures",
  "futures-util",
  "opendal",
- "serde_json",
  "tempfile",
  "tokio",
  "tracing",

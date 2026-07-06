@@ -104,6 +104,7 @@ pub struct BoxTransport {
 
 impl BoxTransport {
     /// Erases the concrete type of the given transport.
+    #[must_use]
     pub fn new<T>(transport: T) -> Self
     where
         T: Transport,

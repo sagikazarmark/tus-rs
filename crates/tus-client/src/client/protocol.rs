@@ -460,7 +460,7 @@ mod tests {
                 .await;
 
             match result {
-                Err(Error::InvalidDefaultHeader { name, value }) => {
+                Err(Error::InvalidRequestHeader { name, value }) => {
                     assert_eq!(name, "Upload-Metadata");
                     assert!(
                         value.contains(key),
@@ -468,7 +468,7 @@ mod tests {
                     );
                 }
                 other => {
-                    panic!("expected InvalidDefaultHeader for metadata key {key:?}, got {other:?}")
+                    panic!("expected InvalidRequestHeader for metadata key {key:?}, got {other:?}")
                 }
             }
             assert!(

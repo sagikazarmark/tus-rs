@@ -288,16 +288,17 @@ impl HttpHookConfig {
         self
     }
 
-    /// Fails open: an undeliverable pre-hook allows the operation to proceed.
+    /// Sets whether an undeliverable pre-hook fails open (allows the operation
+    /// to proceed) or fails closed (blocks it).
     ///
     /// By default the executor fails closed — a pre-hook webhook that is
     /// unreachable, times out, or does not return a successful, parseable
-    /// decision blocks the operation. Enable this for deployments that prefer
+    /// decision blocks the operation. Pass `true` for deployments that prefer
     /// to keep accepting uploads when the webhook endpoint is unavailable. A
     /// structured rejection (a `2xx` response with `"proceed": false`) is
     /// always honored regardless of this flag.
-    pub fn with_fail_open(mut self) -> Self {
-        self.fail_open = true;
+    pub fn with_fail_open(mut self, fail_open: bool) -> Self {
+        self.fail_open = fail_open;
         self
     }
 }
@@ -1289,7 +1290,8 @@ mod tests {
     #[tokio::test]
     async fn fail_open_proceeds_when_pre_hook_returns_error_status() {
         let (url, request) = serve_once(500, "boom").await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open()).unwrap();
+        let executor =
+            HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open(true)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let _request = request.await.unwrap();
@@ -1300,7 +1302,8 @@ mod tests {
     #[tokio::test]
     async fn fail_open_still_honors_structured_rejection() {
         let (url, request) = serve_once(200, r#"{"proceed":false,"reject_status":403}"#).await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open()).unwrap();
+        let executor =
+            HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open(true)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let _request = request.await.unwrap();

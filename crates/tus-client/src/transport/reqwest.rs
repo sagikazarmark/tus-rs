@@ -27,6 +27,7 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     /// Creates a new transport using reqwest's default client.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             client: default_reqwest_client(),

@@ -80,6 +80,21 @@ pub trait Storage: MaybeSendSync {
     /// advancement after this method succeeds. The returned handle replaces the
     /// persisted handle, so implementations must preserve every existing
     /// internal fact from `request.handle` that remains valid after the append.
+    ///
+    /// # Terminal stream errors
+    ///
+    /// When `request.data` is a [`ChunkStream::Stream`], the protocol may
+    /// surface a late validation failure (a checksum or exact-length mismatch on
+    /// the completing chunk) by yielding an `Err` item as the stream's final
+    /// element. A backend must treat a terminal stream error as a failed append:
+    /// return that error and either roll the write back to `expected_offset` or
+    /// leave enough actual size for [`size`](Storage::size) to let recovery
+    /// reconcile. In particular, a backend that finalizes incrementally as data
+    /// drains (for example, completing a multipart object) must **not** treat a
+    /// clean end-of-data as success when `request.completes_upload` is set: only
+    /// a stream that terminates without an `Err` may finalize the upload.
+    /// Otherwise a checksum or length mismatch on a completing chunk would leave
+    /// a corrupt upload marked complete.
     async fn append(&self, request: AppendRequest) -> Result<StorageHandle>;
 
     /// Concatenates multiple partial uploads into a final upload.

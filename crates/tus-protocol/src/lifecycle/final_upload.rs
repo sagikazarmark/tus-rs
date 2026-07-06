@@ -217,6 +217,7 @@ where
         status,
     } = plan;
 
+    enforce_final_upload_size(config, &status)?;
     apply_final_upload_plan(&mut state, part_ids, &status);
     cap_planned_final_upload_expiration(&mut state, &parts);
     let pre_create = PreHookGate::Create.run(hooks, request_info, state).await?;
@@ -563,6 +564,25 @@ pub(crate) fn summarize_final_parts(parts: &[UploadState]) -> Result<FinalUpload
         current_offset,
         all_complete: all_complete && length_known,
     })
+}
+
+/// Enforces the configured maximum upload size against a final upload's total.
+///
+/// Creation, PATCH, and Creation-With-Upload all reject bodies larger than
+/// `max_size`; a concatenated final upload's total is enforced here too so a
+/// client cannot assemble in-limit partials into an over-limit final. This runs
+/// only on the creation path, so lowering `max_size` never retroactively
+/// rejects an existing final upload on a read. Enforcement applies only when the
+/// total length is known (every referenced part has a declared length); a
+/// `concatenation-unfinished` final with deferred parts is bounded later, like
+/// any deferred-length upload.
+fn enforce_final_upload_size(config: &Config, status: &FinalUploadStatus) -> Result<()> {
+    if let (Some(total), Some(max)) = (status.total_length, config.max_size())
+        && total > max
+    {
+        return Err(Error::SizeExceeded { size: total, max });
+    }
+    Ok(())
 }
 
 fn apply_final_upload_plan(
@@ -1345,6 +1365,40 @@ mod materialization_tests {
                 HookEvent::PostFinish,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn create_final_upload_rejects_total_exceeding_max_size() {
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        // Two in-limit partials (4 + 2 = 6) whose concatenated total exceeds a
+        // max_size of 5. Enforcement must reject before any storage is created.
+        store_partial(&storage, &store, "part-1", b"ABCD").await;
+        store_partial(&storage, &store, "part-2", b"EF").await;
+
+        let hooks = HookChain::new();
+        let locker = NoopLocker::new();
+        let err = create_final_upload(
+            &storage,
+            &store,
+            &locker,
+            &hooks,
+            &Config::default()
+                .with_extension(Extension::Concatenation)
+                .with_max_size(5),
+            &HookRequestInfo::default(),
+            UploadState::new("final-1"),
+            vec!["/files/part-1".to_string(), "/files/part-2".to_string()],
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::SizeExceeded { size: 6, max: 5 }));
+        // The final upload must not have been persisted on the rejected path.
+        assert!(store.get("final-1").await.unwrap().is_none());
+        // Only the two partials' storage objects should exist; the size check
+        // must short-circuit before `storage.create` for the final upload.
+        assert_eq!(storage.len(), 2);
     }
 
     #[tokio::test]
