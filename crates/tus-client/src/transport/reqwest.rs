@@ -116,6 +116,15 @@ impl Transport for ReqwestTransport {
         let response = send_request(builder).await?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
+
+        // TUS responses carry no significant body (Location, headers, or a short
+        // error string), so bound the read. Without a cap, a misbehaving or
+        // malicious server — including one reached via a redirect — could return
+        // a multi-gigabyte body and exhaust client memory, since the transport
+        // buffers the whole response before the caller inspects it.
+        #[cfg(not(target_arch = "wasm32"))]
+        let body = read_body_capped(response).await?;
+        #[cfg(target_arch = "wasm32")]
         let body = response.bytes().await.map_err(reqwest_error)?.to_vec();
 
         let mut response = http::Response::builder()
@@ -125,6 +134,29 @@ impl Transport for ReqwestTransport {
         *response.headers_mut() = headers;
         Ok(response)
     }
+}
+
+/// Maximum response body the transport will buffer before failing. TUS
+/// responses are tiny; this only exists to bound memory against a server that
+/// returns an oversized body.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+
+/// Reads a reqwest response body into memory, failing if it exceeds
+/// [`MAX_RESPONSE_BODY_BYTES`]. Streams chunk-by-chunk so an oversized body is
+/// rejected without being fully buffered first.
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_body_capped(mut response: ::reqwest::Response) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(reqwest_error)? {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BODY_BYTES {
+            return Err(Error::transport_permanent(format!(
+                "response body exceeds {MAX_RESPONSE_BODY_BYTES} byte limit"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Maps a reqwest error into [`Error::Transport`], preserving the error as

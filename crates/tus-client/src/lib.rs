@@ -30,8 +30,11 @@ pub use client::{
 pub use error::{BoxError, Error, Result};
 pub use transport::{BoxTransport, Transport, TransportBody, TransportRequest, TransportResponse};
 #[cfg(feature = "checksum")]
-pub use tus_protocol::{ChecksumAlgorithm, Extension};
-pub use tus_protocol::{MetadataValue, UploadMetadata};
+pub use tus_protocol::ChecksumAlgorithm;
+// `Extension` is not checksum-specific: `ServerCapabilities::supports_extension`
+// takes it regardless of the `checksum` feature, so the re-export must not be
+// gated behind `checksum` or callers lose the type the method needs.
+pub use tus_protocol::{Extension, MetadataValue, UploadMetadata};
 
 // Re-exported dependency crates whose types appear in this crate's public
 // API (`http::HeaderMap` in `Client::with_headers`, `http::Request` behind

@@ -145,6 +145,24 @@ pub enum Error {
         retryable: bool,
     },
 
+    /// The server directed the client to an upload URL on a different origin
+    /// than the endpoint, and cross-origin upload locations are restricted.
+    ///
+    /// Only returned when [`Client::with_endpoint_origin_restriction`] is
+    /// enabled. It exists to stop a malicious or compromised server from
+    /// redirecting credentialed requests (an `Authorization` header, cookies)
+    /// to an attacker-controlled host.
+    ///
+    /// [`Client::with_endpoint_origin_restriction`]: crate::Client::with_endpoint_origin_restriction
+    #[error("server upload location `{location}` is not on the endpoint origin `{endpoint}`")]
+    #[non_exhaustive]
+    CrossOriginLocation {
+        /// The endpoint origin the client trusts.
+        endpoint: String,
+        /// The cross-origin upload location the server returned.
+        location: String,
+    },
+
     /// The server does not advertise a TUS extension required by the
     /// requested operation.
     #[error("server does not advertise the `{0}` tus extension")]

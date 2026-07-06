@@ -58,6 +58,10 @@ pub struct Client<
     checksum: Option<ChecksumMode>,
     header_provider: Option<Arc<dyn HeaderProvider>>,
     retry_hook: Option<Arc<dyn RetryHook>>,
+    /// When set, reject server-supplied upload `Location`s that resolve to a
+    /// different origin than the endpoint. Off by default to preserve
+    /// spec-compliant cross-origin redirects.
+    restrict_to_endpoint_origin: bool,
     /// Capabilities discovered via OPTIONS, shared across clones of this
     /// client. A `std::sync::Mutex` (never held across an await) keeps the
     /// cache usable on both native and wasm targets.
@@ -134,14 +138,45 @@ where
             checksum: None,
             header_provider: None,
             retry_hook: None,
+            restrict_to_endpoint_origin: false,
             capabilities: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Sets headers added to every request.
+    ///
+    /// # Security
+    ///
+    /// These headers — including any `Authorization` credential — are sent on
+    /// every subsequent request to the upload URL the server returns in its
+    /// creation `Location`. That URL may, per the tus spec, point at a
+    /// different origin than the endpoint, so a malicious or MITM'd server can
+    /// redirect the client into leaking these headers to an attacker host. If
+    /// the endpoint is not fully trusted, also enable
+    /// [`with_endpoint_origin_restriction`](Self::with_endpoint_origin_restriction).
     #[must_use]
     pub fn with_headers(mut self, headers: HeaderMap) -> Self {
         self.headers = headers;
+        self
+    }
+
+    /// Restricts uploads to the endpoint's origin.
+    ///
+    /// By default the client follows the upload `Location` a server returns
+    /// even when it points at a different origin (scheme, host, or port) than
+    /// the endpoint, as the tus spec permits. That is a credential-leak vector:
+    /// a compromised or MITM'd server can return a `Location` on an
+    /// attacker-controlled host, and the client would then send its configured
+    /// headers (see [`with_headers`](Self::with_headers)) — cookies,
+    /// `Authorization` — and upload bytes there.
+    ///
+    /// Enabling this makes the client reject a cross-origin upload location
+    /// with [`Error::CrossOriginLocation`](crate::Error::CrossOriginLocation)
+    /// instead of following it. Enable it whenever the endpoint is not fully
+    /// trusted or the client sends credentials.
+    #[must_use]
+    pub fn with_endpoint_origin_restriction(mut self) -> Self {
+        self.restrict_to_endpoint_origin = true;
         self
     }
 
@@ -250,11 +285,20 @@ where
 
     /// Returns the capabilities previously discovered via OPTIONS, if any.
     pub(crate) fn known_capabilities(&self) -> Option<ServerCapabilities> {
-        self.capabilities.lock().unwrap().clone()
+        // Recover from a poisoned lock rather than panicking: the guarded data
+        // is a plain cache and a prior panic (e.g. in a user callback elsewhere)
+        // must not wedge every later request.
+        self.capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub(crate) fn store_capabilities(&self, capabilities: &ServerCapabilities) {
-        *self.capabilities.lock().unwrap() = Some(capabilities.clone());
+        *self
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(capabilities.clone());
     }
 
     #[cfg(feature = "checksum")]

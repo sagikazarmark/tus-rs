@@ -322,7 +322,12 @@ where
 ///
 /// HTTP-adapter concerns (such as CORS) live here rather than in the
 /// framework-neutral [`tus_protocol::Config`].
+///
+/// Fields are private and set through the builder methods; the type is
+/// `#[non_exhaustive]` so new adapter options can be added without a breaking
+/// change.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct RouterOptions {
     cors_allowed_origins: Vec<String>,
     cors_allow_credentials: bool,

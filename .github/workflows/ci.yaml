@@ -66,6 +66,40 @@ jobs:
       - name: Run tests (wasm)
         run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test -p tus-client --target wasm32-unknown-unknown --lib
 
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Rust
+        uses: ./.github/actions/rust/
+
+      # Keep this in sync with `rust-version` in the workspace Cargo.toml. It
+      # verifies the declared MSRV actually builds instead of letting it drift.
+      - name: Install MSRV toolchain
+        run: rustup toolchain install 1.92 --profile minimal
+
+      - name: Check against MSRV
+        run: cargo +1.92 check --workspace --all-features
+
+  # cargo-semver-checks guards against accidental breaking changes to the public
+  # API. It compares against the last release published to crates.io, so enable
+  # it once a stable baseline (>= 1.0.0) has been published:
+  #
+  # semver:
+  #   name: Semver
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+  #     - name: Set up Rust
+  #       uses: ./.github/actions/rust/
+  #     - name: Check semver
+  #       uses: obiononsuru/action-semver-checks@... # pin by SHA when enabling
+
   docs:
     name: Docs
     runs-on: ubuntu-latest
