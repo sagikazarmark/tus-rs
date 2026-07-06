@@ -29,6 +29,7 @@ where
     T: Transport,
 {
     /// Returns the remote upload URL represented by this resource.
+    #[must_use]
     pub fn url(&self) -> &Url {
         &self.url
     }

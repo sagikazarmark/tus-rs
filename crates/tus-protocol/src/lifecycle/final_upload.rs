@@ -74,31 +74,31 @@ pub(crate) struct FinalUploadResponseFacts {
     pub(crate) length: Option<u64>,
 }
 
-pub(crate) struct FinalUploadMaterializer<'a, S, I, L, H>
+pub(crate) struct FinalUploadMaterializer<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     storage: &'a S,
-    state_store: &'a I,
+    state_store: &'a St,
     locker: &'a L,
     hooks: &'a H,
     config: &'a Config,
     request_info: &'a HookRequestInfo,
 }
 
-impl<'a, S, I, L, H> FinalUploadMaterializer<'a, S, I, L, H>
+impl<'a, S, St, L, H> FinalUploadMaterializer<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     pub(crate) fn new(
         storage: &'a S,
-        state_store: &'a I,
+        state_store: &'a St,
         locker: &'a L,
         hooks: &'a H,
         config: &'a Config,
@@ -182,9 +182,9 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn create_final_upload<S, I, L, H>(
+async fn create_final_upload<S, St, L, H>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     hooks: &H,
     config: &Config,
@@ -194,7 +194,7 @@ async fn create_final_upload<S, I, L, H>(
 ) -> Result<CreatedFinalUpload>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -258,9 +258,9 @@ where
     })
 }
 
-async fn repair_final_upload<S, I, L, H>(
+async fn repair_final_upload<S, St, L, H>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     hooks: &H,
     request_info: &HookRequestInfo,
@@ -268,7 +268,7 @@ async fn repair_final_upload<S, I, L, H>(
 ) -> Result<bool>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -323,14 +323,14 @@ where
     Ok(true)
 }
 
-async fn recover_materialized_final_upload<S, I>(
+async fn recover_materialized_final_upload<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<bool>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     let Some(length) = state.length() else {
         return Ok(false);
@@ -438,13 +438,13 @@ impl PlannedFinalUploadRefresh {
 }
 
 /// Loads and validates parts referenced by a final Upload-Concat header.
-pub(crate) async fn load_final_upload_plan<I>(
-    state_store: &I,
+pub(crate) async fn load_final_upload_plan<St>(
+    state_store: &St,
     config: &Config,
     part_urls: &[String],
 ) -> Result<FinalUploadPlan>
 where
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     let allow_unfinished = config.has_extension(Extension::ConcatenationUnfinished);
     let mut part_ids = Vec::with_capacity(part_urls.len());
@@ -496,12 +496,12 @@ where
 }
 
 /// Loads final-upload parts referenced by persisted final upload state.
-pub(crate) async fn load_final_upload_status<I>(
-    state_store: &I,
+pub(crate) async fn load_final_upload_status<St>(
+    state_store: &St,
     state: &UploadState,
 ) -> Result<Option<FinalUploadPlan>>
 where
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     let Some(part_ids) = state.parts().map(|parts| parts.to_vec()) else {
         return Ok(None);

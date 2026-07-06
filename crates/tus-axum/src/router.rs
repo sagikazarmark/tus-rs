@@ -105,13 +105,13 @@ fn method_not_allowed_response(allow: &'static str) -> Response {
 /// # Ok(())
 /// # }
 /// ```
-pub fn create_router<S, I, L, H>(
-    state: TusState<S, I, L, H>,
+pub fn create_router<S, St, L, H>(
+    state: TusState<S, St, L, H>,
     options: RouterOptions,
 ) -> Result<Router, RouterError>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -132,13 +132,13 @@ where
 /// Returns [`RouterError::InvalidCorsOrigin`] when a configured CORS origin is
 /// not a valid header value, and [`RouterError::InvalidBasePath`] when the
 /// configured base path is empty or does not start with `/`.
-pub fn create_router_with_download<S, I, L, H>(
-    state: TusState<S, I, L, H>,
+pub fn create_router_with_download<S, St, L, H>(
+    state: TusState<S, St, L, H>,
     options: RouterOptions,
 ) -> Result<Router, RouterError>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -196,23 +196,24 @@ pub struct WithDownload(());
 /// # Ok(())
 /// # }
 /// ```
-pub struct TusRouter<S, I, L, H, D = WithoutDownload>
+#[must_use = "TusRouter is a builder; call build() to produce the axum Router"]
+pub struct TusRouter<S, St, L, H, D = WithoutDownload>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
-    state: TusState<S, I, L, H>,
+    state: TusState<S, St, L, H>,
     options: RouterOptions,
     _download: PhantomData<fn() -> D>,
 }
 
 // Manual Debug: the backend type parameters need not be Debug.
-impl<S, I, L, H, D> std::fmt::Debug for TusRouter<S, I, L, H, D>
+impl<S, St, L, H, D> std::fmt::Debug for TusRouter<S, St, L, H, D>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -223,10 +224,10 @@ where
     }
 }
 
-impl<S, I, L, H> TusRouter<S, I, L, H, WithoutDownload>
+impl<S, St, L, H> TusRouter<S, St, L, H, WithoutDownload>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -234,8 +235,7 @@ where
     ///
     /// No CORS layer is applied unless configured through
     /// [`with_options`](Self::with_options).
-    #[must_use]
-    pub fn new(state: TusState<S, I, L, H>) -> Self {
+    pub fn new(state: TusState<S, St, L, H>) -> Self {
         Self {
             state,
             options: RouterOptions::default(),
@@ -248,8 +248,7 @@ where
     /// This transitions the builder to the download type-state, so
     /// [`build`](TusRouter::build) will require the storage backend to
     /// implement [`StorageReader`].
-    #[must_use]
-    pub fn with_download(self) -> TusRouter<S, I, L, H, WithDownload> {
+    pub fn with_download(self) -> TusRouter<S, St, L, H, WithDownload> {
         TusRouter {
             state: self.state,
             options: self.options,
@@ -258,10 +257,10 @@ where
     }
 }
 
-impl<S, I, L, H, D> TusRouter<S, I, L, H, D>
+impl<S, St, L, H, D> TusRouter<S, St, L, H, D>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -270,17 +269,16 @@ where
     /// Replaces the entire [`RouterOptions`] bag. This is the general
     /// router-options seam where new HTTP-adapter concerns are added, so it is
     /// deliberately not named after CORS alone.
-    #[must_use]
     pub fn with_options(mut self, options: RouterOptions) -> Self {
         self.options = options;
         self
     }
 }
 
-impl<S, I, L, H> TusRouter<S, I, L, H, WithoutDownload>
+impl<S, St, L, H> TusRouter<S, St, L, H, WithoutDownload>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -296,10 +294,10 @@ where
     }
 }
 
-impl<S, I, L, H> TusRouter<S, I, L, H, WithDownload>
+impl<S, St, L, H> TusRouter<S, St, L, H, WithDownload>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -313,7 +311,7 @@ where
     pub fn build(self) -> Result<Router, RouterError> {
         let paths = route_paths(self.state.config())?;
         let router = build_upload_router(self.state.config(), UPLOAD_ALLOW_WITH_DOWNLOAD)?
-            .route(&paths.upload, get(handlers::handle_get::<S, I, L, H>));
+            .route(&paths.upload, get(handlers::handle_get::<S, St, L, H>));
         finish_router(router, self.state, &self.options, true)
     }
 }
@@ -347,11 +345,13 @@ impl RouterOptions {
     }
 
     /// Allows the given CORS origins. Pass `"*"` to allow any origin.
+    ///
+    /// Replaces the previously configured origins; the last call wins.
     #[must_use]
-    pub fn with_cors_allowed_origins<I, S>(mut self, origins: I) -> Self
+    pub fn with_cors_allowed_origins<Iter, T>(mut self, origins: Iter) -> Self
     where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+        Iter: IntoIterator<Item = T>,
+        T: Into<String>,
     {
         self.cors_allowed_origins = origins.into_iter().map(Into::into).collect();
         self
@@ -380,20 +380,21 @@ impl RouterOptions {
         self
     }
 
-    /// Adds request header names to the CORS preflight allowlist, on top of the
-    /// TUS protocol headers the layer already allows.
+    /// Sets the deployment-specific request header names allowed in CORS
+    /// preflight, on top of the TUS protocol headers the layer always allows.
     ///
     /// Use this for deployment-specific request headers (for example a custom
     /// `X-Api-Key` or a non-`Authorization` auth header) that clients send on
-    /// cross-origin upload requests.
+    /// cross-origin upload requests. Like every other `RouterOptions` setter,
+    /// this *replaces* the previously configured value rather than appending to
+    /// it, so the last call wins.
     #[must_use]
-    pub fn with_cors_extra_allowed_headers<I, S>(mut self, headers: I) -> Self
+    pub fn with_cors_extra_allowed_headers<Iter, T>(mut self, headers: Iter) -> Self
     where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+        Iter: IntoIterator<Item = T>,
+        T: Into<String>,
     {
-        self.cors_extra_allowed_headers
-            .extend(headers.into_iter().map(Into::into));
+        self.cors_extra_allowed_headers = headers.into_iter().map(Into::into).collect();
         self
     }
 
@@ -503,13 +504,13 @@ fn route_paths(config: &Config) -> Result<RoutePaths, RouterError> {
     })
 }
 
-fn build_upload_router<S, I, L, H>(
+fn build_upload_router<S, St, L, H>(
     config: &Config,
     upload_allow: &'static str,
-) -> Result<Router<TusState<S, I, L, H>>, RouterError>
+) -> Result<Router<TusState<S, St, L, H>>, RouterError>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -525,8 +526,8 @@ where
         // Base path endpoints
         .route(
             &base_path,
-            options(handlers::handle_options::<S, I, L, H>)
-                .post(handlers::handle_post::<S, I, L, H>)
+            options(handlers::handle_options::<S, St, L, H>)
+                .post(handlers::handle_post::<S, St, L, H>)
                 .fallback(|| async { method_not_allowed_response(BASE_ALLOW) }),
         )
         // Upload-specific endpoints. POST is the X-HTTP-Method-Override
@@ -538,26 +539,26 @@ where
         // to a different method handler.)
         .route(
             &upload_path,
-            options(handlers::handle_options::<S, I, L, H>)
-                .head(handlers::handle_head::<S, I, L, H>)
-                .patch(handlers::handle_patch::<S, I, L, H>)
-                .delete(handlers::handle_delete::<S, I, L, H>)
-                .post(handlers::handle_post_with_override::<S, I, L, H>)
+            options(handlers::handle_options::<S, St, L, H>)
+                .head(handlers::handle_head::<S, St, L, H>)
+                .patch(handlers::handle_patch::<S, St, L, H>)
+                .delete(handlers::handle_delete::<S, St, L, H>)
+                .post(handlers::handle_post_with_override::<S, St, L, H>)
                 .fallback(move || async move { method_not_allowed_response(upload_allow) }),
         );
 
     Ok(router)
 }
 
-fn finish_router<S, I, L, H>(
-    router: Router<TusState<S, I, L, H>>,
-    state: TusState<S, I, L, H>,
+fn finish_router<S, St, L, H>(
+    router: Router<TusState<S, St, L, H>>,
+    state: TusState<S, St, L, H>,
     options: &RouterOptions,
     download: bool,
 ) -> Result<Router, RouterError>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {

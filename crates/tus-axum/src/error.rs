@@ -31,6 +31,7 @@ const BODY_LIMIT_EXCEEDED_BODY: &str = "request body exceeds the configured body
 
 impl TusRejection {
     /// Returns a reference to the wrapped protocol error.
+    #[must_use]
     pub fn inner(&self) -> &tus_protocol::Error {
         &self.inner
     }
@@ -41,6 +42,7 @@ impl TusRejection {
     /// [`tus_protocol::Error::SizeExceeded`] with zeroed sizes: the transport
     /// layer does not know the configured limit or the observed size, and the
     /// 413 status is the meaningful part.
+    #[must_use]
     pub fn into_inner(self) -> tus_protocol::Error {
         self.inner
     }

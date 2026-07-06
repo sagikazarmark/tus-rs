@@ -34,26 +34,26 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 /// # Ok(())
 /// # }
 /// ```
-pub struct TusState<S, I, L, H>
+pub struct TusState<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
-    protocol: TusProtocol<S, I, L, H>,
+    protocol: TusProtocol<S, St, L, H>,
 }
 
-impl<S, I, L, H> TusState<S, I, L, H>
+impl<S, St, L, H> TusState<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
     /// Creates a new TusState with the given protocol handle.
     #[must_use]
-    pub fn new(protocol: ProtocolHandle<S, I, L, H>) -> Self {
+    pub fn new(protocol: ProtocolHandle<S, St, L, H>) -> Self {
         Self {
             protocol: TusProtocol::new(protocol),
         }
@@ -67,10 +67,10 @@ where
 }
 
 // Manual Debug implementation - the backend type parameters need not be Debug.
-impl<S, I, L, H> std::fmt::Debug for TusState<S, I, L, H>
+impl<S, St, L, H> std::fmt::Debug for TusState<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -80,10 +80,10 @@ where
 }
 
 // Manual Clone implementation - Arc<T> is Clone regardless of whether T is Clone
-impl<S, I, L, H> Clone for TusState<S, I, L, H>
+impl<S, St, L, H> Clone for TusState<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -115,14 +115,14 @@ where
 /// # use axum::extract::State;
 /// # use tus_axum::{TusHeaders, TusBody, TusProtocol, TusResponse, TusRejection};
 /// # use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
-/// async fn custom_create<S, I, L, H>(
-///     State(protocol): State<TusProtocol<S, I, L, H>>,
+/// async fn custom_create<S, St, L, H>(
+///     State(protocol): State<TusProtocol<S, St, L, H>>,
 ///     TusHeaders(headers): TusHeaders,
 ///     TusBody(body): TusBody,
 /// ) -> Result<TusResponse, TusRejection>
 /// where
 ///     S: Storage,
-///     I: StateStore,
+///     St: StateStore,
 ///     L: Locker,
 ///     H: HookExecutor,
 /// {
@@ -130,26 +130,26 @@ where
 ///     Ok(TusResponse::from(response))
 /// }
 /// ```
-pub struct TusProtocol<S, I, L, H>
+pub struct TusProtocol<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
-    handle: ProtocolHandle<S, I, L, H>,
+    handle: ProtocolHandle<S, St, L, H>,
 }
 
-impl<S, I, L, H> TusProtocol<S, I, L, H>
+impl<S, St, L, H> TusProtocol<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
     /// Creates a new protocol substate from a protocol handle.
     #[must_use]
-    pub fn new(handle: ProtocolHandle<S, I, L, H>) -> Self {
+    pub fn new(handle: ProtocolHandle<S, St, L, H>) -> Self {
         Self { handle }
     }
 
@@ -159,16 +159,16 @@ where
     /// `TusProtocol` does not masquerade as a `ProtocolHandle`; call protocol
     /// operations as `protocol.handle().patch(...)`.
     #[must_use]
-    pub fn handle(&self) -> &ProtocolHandle<S, I, L, H> {
+    pub fn handle(&self) -> &ProtocolHandle<S, St, L, H> {
         &self.handle
     }
 }
 
 // Manual Debug implementation - the backend type parameters need not be Debug.
-impl<S, I, L, H> std::fmt::Debug for TusProtocol<S, I, L, H>
+impl<S, St, L, H> std::fmt::Debug for TusProtocol<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -177,10 +177,10 @@ where
     }
 }
 
-impl<S, I, L, H> Clone for TusProtocol<S, I, L, H>
+impl<S, St, L, H> Clone for TusProtocol<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
@@ -191,14 +191,14 @@ where
     }
 }
 
-impl<S, I, L, H> FromRef<TusState<S, I, L, H>> for TusProtocol<S, I, L, H>
+impl<S, St, L, H> FromRef<TusState<S, St, L, H>> for TusProtocol<S, St, L, H>
 where
     S: Storage,
-    I: StateStore,
+    St: StateStore,
     L: Locker,
     H: HookExecutor,
 {
-    fn from_ref(state: &TusState<S, I, L, H>) -> Self {
+    fn from_ref(state: &TusState<S, St, L, H>) -> Self {
         state.protocol.clone()
     }
 }

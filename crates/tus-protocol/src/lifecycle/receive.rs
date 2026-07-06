@@ -64,28 +64,28 @@ pub(crate) struct CreationWithUploadOutcome {
 }
 
 /// Internal Byte receive module for PATCH and Creation-With-Upload bytes.
-pub(crate) struct ByteReceiver<'a, S, I, H>
+pub(crate) struct ByteReceiver<'a, S, St, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     H: HookExecutor + ?Sized,
 {
     storage: &'a S,
-    state_store: &'a I,
+    state_store: &'a St,
     hooks: &'a H,
     config: &'a Config,
     request_info: &'a HookRequestInfo,
 }
 
-impl<'a, S, I, H> ByteReceiver<'a, S, I, H>
+impl<'a, S, St, H> ByteReceiver<'a, S, St, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     H: HookExecutor + ?Sized,
 {
     pub(crate) fn new(
         storage: &'a S,
-        state_store: &'a I,
+        state_store: &'a St,
         hooks: &'a H,
         config: &'a Config,
         request_info: &'a HookRequestInfo,
@@ -388,15 +388,15 @@ where
 }
 
 /// Commits accepted receive bytes to storage and persists the resulting upload state.
-async fn commit_receive_body<S, I>(
+async fn commit_receive_body<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
     prepared: PreparedReceiveBody,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     let deferred_error = prepared.deferred_error.clone();
     let handle = match storage

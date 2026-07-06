@@ -75,7 +75,7 @@ pub(crate) fn header_string(
 ) -> Result<String> {
     headers
         .get(name)
-        .ok_or(Error::MissingHeader(label))?
+        .ok_or(Error::MissingHeader { header: label })?
         .to_str()
         .map(|value| value.to_string())
         .map_err(|_| Error::InvalidHeader {
@@ -89,7 +89,7 @@ pub(crate) fn header_u64(
     name: &'static str,
     label: &'static str,
 ) -> Result<u64> {
-    optional_header_u64(headers, name, label)?.ok_or(Error::MissingHeader(label))
+    optional_header_u64(headers, name, label)?.ok_or(Error::MissingHeader { header: label })
 }
 
 pub(crate) fn optional_header_u64(
