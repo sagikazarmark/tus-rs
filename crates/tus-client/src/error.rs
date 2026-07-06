@@ -208,7 +208,10 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::UnexpectedResponse { status, .. } => {
-                matches!(status.as_u16(), 500 | 502 | 503 | 504 | 408 | 409 | 429 | 460)
+                matches!(
+                    status.as_u16(),
+                    500 | 502 | 503 | 504 | 408 | 409 | 429 | 460
+                )
             }
             Error::Transport { retryable, .. } => *retryable,
             _ => false,
