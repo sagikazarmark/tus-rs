@@ -41,7 +41,7 @@ pub enum Error {
     /// non-UTF-8 value, a non-numeric `Upload-Offset`/`Upload-Length`, or a
     /// malformed `Upload-Metadata`. Returned only while decoding a server
     /// response; client-built request headers surface as
-    /// [`InvalidDefaultHeader`](Error::InvalidDefaultHeader).
+    /// [`InvalidRequestHeader`](Error::InvalidRequestHeader).
     #[error("invalid `{header}` header value `{value}`")]
     #[non_exhaustive]
     InvalidHeader {
@@ -58,7 +58,7 @@ pub enum Error {
     /// that cannot form a valid header), never a response the server sent.
     #[error("invalid `{name}` header: {value}")]
     #[non_exhaustive]
-    InvalidDefaultHeader {
+    InvalidRequestHeader {
         /// Name of the header.
         name: String,
         /// The invalid value.

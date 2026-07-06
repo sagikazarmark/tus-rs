@@ -275,7 +275,7 @@ where
                 request.headers_mut().insert(
                     HeaderName::from_static("upload-checksum"),
                     HeaderValue::from_str(&format!("{} {}", algorithm.as_str(), checksum))
-                        .map_err(|_| Error::InvalidDefaultHeader {
+                        .map_err(|_| Error::InvalidRequestHeader {
                             name: "Upload-Checksum".to_string(),
                             value: checksum.clone(),
                         })?,
@@ -405,7 +405,7 @@ where
 ///
 /// Used for headers the client controls (`Upload-Offset`, `Upload-Length`,
 /// `Upload-Metadata`, `Upload-Concat`); a construction failure surfaces as
-/// [`Error::InvalidDefaultHeader`]. Dynamic caller headers arrive pre-validated
+/// [`Error::InvalidRequestHeader`]. Dynamic caller headers arrive pre-validated
 /// through [`HeaderProvider`] and do not pass through here.
 fn insert_request_header(
     request: &mut TransportRequest,
@@ -415,11 +415,11 @@ fn insert_request_header(
     let name = name.as_ref();
     let value = value.to_string();
     let header_name =
-        HeaderName::from_bytes(name.as_bytes()).map_err(|_| Error::InvalidDefaultHeader {
+        HeaderName::from_bytes(name.as_bytes()).map_err(|_| Error::InvalidRequestHeader {
             name: name.to_string(),
             value: value.clone(),
         })?;
-    let header_value = HeaderValue::from_str(&value).map_err(|_| Error::InvalidDefaultHeader {
+    let header_value = HeaderValue::from_str(&value).map_err(|_| Error::InvalidRequestHeader {
         name: header_name.as_str().to_string(),
         value: value.clone(),
     })?;

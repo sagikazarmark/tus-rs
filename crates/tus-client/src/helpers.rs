@@ -14,7 +14,7 @@ pub(crate) fn encode_metadata(metadata: &UploadMetadata) -> Result<String> {
     let mut pairs = Vec::with_capacity(metadata.len());
     for (key, value) in metadata {
         if !is_valid_metadata_key(key) {
-            return Err(Error::InvalidDefaultHeader {
+            return Err(Error::InvalidRequestHeader {
                 name: "Upload-Metadata".to_string(),
                 value: key.clone(),
             });

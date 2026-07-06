@@ -83,7 +83,7 @@ where
     /// origin, and relative paths resolve under the endpoint path.
     pub fn upload_at(&self, upload_url: impl AsRef<str>) -> Result<Upload<T>> {
         Ok(Upload {
-            client: (*self).clone(),
+            client: self.clone(),
             url: resolve_upload_url(&self.endpoint, upload_url.as_ref())?,
         })
     }
