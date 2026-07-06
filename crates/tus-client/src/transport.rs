@@ -135,7 +135,7 @@ pub type TransportRequest = http::Request<TransportBody>;
 pub type TransportResponse = http::Response<Vec<u8>>;
 
 /// A transport-level request body.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub enum TransportBody {
     /// No request body.
@@ -152,6 +152,30 @@ pub enum TransportBody {
         /// Trailer header value.
         trailer_value: String,
     },
+}
+
+// Manual `Debug` so request bodies — potentially multi-megabyte or sensitive,
+// and reachable through `TransportRequest = http::Request<TransportBody>` —
+// are never dumped into logs. Only the byte length is reported.
+impl std::fmt::Debug for TransportBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransportBody::Empty => f.write_str("Empty"),
+            TransportBody::Bytes(body) => {
+                f.debug_struct("Bytes").field("len", &body.len()).finish()
+            }
+            TransportBody::BytesWithTrailer {
+                body,
+                trailer_name,
+                trailer_value,
+            } => f
+                .debug_struct("BytesWithTrailer")
+                .field("len", &body.len())
+                .field("trailer_name", trailer_name)
+                .field("trailer_value", trailer_value)
+                .finish(),
+        }
+    }
 }
 
 /// Dyn-compatible mirror of [`Transport`] backing [`BoxTransport`].

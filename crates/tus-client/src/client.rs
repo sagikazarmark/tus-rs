@@ -94,6 +94,7 @@ impl From<tus_protocol::ChecksumAlgorithm> for ChecksumMode {
 #[cfg(feature = "transport-reqwest")]
 impl Client<ReqwestTransport> {
     /// Creates a new client targeting the given collection endpoint.
+    #[must_use]
     pub fn new(endpoint: Url) -> Self {
         Self::with_transport(endpoint, ReqwestTransport::new())
     }
@@ -119,6 +120,7 @@ where
     T: Transport,
 {
     /// Creates a new client using the supplied transport.
+    #[must_use]
     pub fn with_transport(endpoint: Url, transport: T) -> Self {
         Self {
             endpoint,
@@ -375,8 +377,16 @@ where
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait RetryHook: MaybeSendSync {
-    /// Returns true if the client should retry the failed operation.
-    async fn before_retry(&self, attempt: usize, error: &Error) -> Result<bool>;
+    /// Decides whether the client should retry the failed operation.
+    ///
+    /// Return `true` to retry (after the client's backoff) or `false` to stop,
+    /// in which case the upload fails with the original error that triggered
+    /// the retry. The hook cannot substitute its own error: a hook is a
+    /// veto/observe seam, and a broken hook must never mask the failure that
+    /// prompted it. This is why the return type is a plain `bool` rather than a
+    /// `Result` — there is no hook outcome the client could act on beyond
+    /// "retry or not".
+    async fn before_retry(&self, attempt: usize, error: &Error) -> bool;
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -384,9 +394,9 @@ pub trait RetryHook: MaybeSendSync {
 impl<F, Fut> RetryHook for F
 where
     F: Fn(usize, &Error) -> Fut + MaybeSendSync,
-    Fut: std::future::Future<Output = Result<bool>> + MaybeSend,
+    Fut: std::future::Future<Output = bool> + MaybeSend,
 {
-    async fn before_retry(&self, attempt: usize, error: &Error) -> Result<bool> {
+    async fn before_retry(&self, attempt: usize, error: &Error) -> bool {
         self(attempt, error).await
     }
 }

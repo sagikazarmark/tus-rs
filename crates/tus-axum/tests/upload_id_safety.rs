@@ -51,7 +51,7 @@ async fn build_router(root: &std::path::Path) -> axum::Router {
         locker,
         NoopHookExecutor::new(),
     ));
-    create_router(state, &RouterOptions::default()).unwrap()
+    create_router(state, RouterOptions::default()).unwrap()
 }
 
 async fn build_sandbox() -> Sandbox {

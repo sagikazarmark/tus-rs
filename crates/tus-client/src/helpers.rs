@@ -350,7 +350,7 @@ pub(crate) async fn unexpected_response(
     operation: &'static str,
     response: TransportResponse,
 ) -> Error {
-    let status = response.status().as_u16();
+    let status = response.status();
     // Capture any `Retry-After` before consuming the body so a retryable
     // response can honor the server's own backoff instead of the client's.
     let retry_after = response
@@ -512,9 +512,9 @@ mod tests {
         let error = unexpected_response("patch upload", response).await;
 
         match error {
-            Error::UnexpectedResponse {
-                status: 502, body, ..
-            } => {
+            Error::UnexpectedResponse { status, body, .. }
+                if status == http::StatusCode::BAD_GATEWAY =>
+            {
                 assert!(body.ends_with(TRUNCATED_ERROR_BODY_MARKER), "{body:?}");
                 assert_eq!(
                     body.len(),

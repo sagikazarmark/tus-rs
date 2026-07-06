@@ -30,7 +30,7 @@ use tus_protocol::{Config, HookExecutor, Locker, ProtocolHandle, StateStore, Sto
 ///     NoopHookExecutor::new(),
 /// );
 /// let state = TusState::new(protocol);
-/// let router = create_router(state, &RouterOptions::default())?;
+/// let router = create_router(state, RouterOptions::default())?;
 /// # Ok(())
 /// # }
 /// ```

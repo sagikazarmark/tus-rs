@@ -98,7 +98,7 @@ fn method_not_allowed_response(allow: &'static str) -> Response {
 ///     NoopHookExecutor::new(),
 /// );
 /// let state = TusState::new(protocol);
-/// let router = create_router(state, &RouterOptions::default())?;
+/// let router = create_router(state, RouterOptions::default())?;
 /// let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
 /// axum::serve(listener, router).await?;
 /// # Ok(())
@@ -106,7 +106,7 @@ fn method_not_allowed_response(allow: &'static str) -> Response {
 /// ```
 pub fn create_router<S, I, L, H>(
     state: TusState<S, I, L, H>,
-    options: &RouterOptions,
+    options: RouterOptions,
 ) -> Result<Router, RouterError>
 where
     S: Storage + Send + Sync + 'static,
@@ -114,7 +114,7 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    TusRouter::new(state).cors(options.clone()).build()
+    TusRouter::new(state).with_options(options).build()
 }
 
 /// Creates an axum Router for TUS endpoints plus non-standard GET downloads.
@@ -133,7 +133,7 @@ where
 /// configured base path is empty or does not start with `/`.
 pub fn create_router_with_download<S, I, L, H>(
     state: TusState<S, I, L, H>,
-    options: &RouterOptions,
+    options: RouterOptions,
 ) -> Result<Router, RouterError>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
@@ -143,7 +143,7 @@ where
 {
     TusRouter::new(state)
         .with_download()
-        .cors(options.clone())
+        .with_options(options)
         .build()
 }
 
@@ -189,7 +189,7 @@ pub struct WithDownload(());
 ///     NoopHookExecutor::new(),
 /// );
 /// let router = TusRouter::new(TusState::new(protocol))
-///     .cors(RouterOptions::new().with_cors_any_origin())
+///     .with_options(RouterOptions::new().with_cors_any_origin())
 ///     .build()?;
 /// # let _ = router;
 /// # Ok(())
@@ -231,7 +231,8 @@ where
 {
     /// Starts a router builder over the given application state.
     ///
-    /// No CORS layer is applied unless configured through [`cors`](Self::cors).
+    /// No CORS layer is applied unless configured through
+    /// [`with_options`](Self::with_options).
     #[must_use]
     pub fn new(state: TusState<S, I, L, H>) -> Self {
         Self {
@@ -263,9 +264,13 @@ where
     L: Locker,
     H: HookExecutor,
 {
-    /// Sets the router-level options (CORS configuration).
+    /// Sets the router-level options (currently CORS configuration).
+    ///
+    /// Replaces the entire [`RouterOptions`] bag. This is the general
+    /// router-options seam where new HTTP-adapter concerns are added, so it is
+    /// deliberately not named after CORS alone.
     #[must_use]
-    pub fn cors(mut self, options: RouterOptions) -> Self {
+    pub fn with_options(mut self, options: RouterOptions) -> Self {
         self.options = options;
         self
     }
@@ -685,7 +690,7 @@ mod tests {
             NoopHookExecutor::new(),
         );
 
-        create_router(TusState::new(protocol), &RouterOptions::default()).unwrap()
+        create_router(TusState::new(protocol), RouterOptions::default()).unwrap()
     }
 
     fn router_with_parts(
@@ -701,7 +706,7 @@ mod tests {
             Arc::new(NoopHookExecutor::new()),
         );
 
-        create_router(TusState::new(protocol), &RouterOptions::default()).unwrap()
+        create_router(TusState::new(protocol), RouterOptions::default()).unwrap()
     }
 
     fn download_router_with_parts(
@@ -717,7 +722,7 @@ mod tests {
             Arc::new(NoopHookExecutor::new()),
         );
 
-        create_router_with_download(TusState::new(protocol), &RouterOptions::default()).unwrap()
+        create_router_with_download(TusState::new(protocol), RouterOptions::default()).unwrap()
     }
 
     async fn seed_upload(
@@ -795,7 +800,7 @@ mod tests {
             NoopHookExecutor::new(),
         );
 
-        let err = create_router(TusState::new(protocol), &RouterOptions::default()).unwrap_err();
+        let err = create_router(TusState::new(protocol), RouterOptions::default()).unwrap_err();
         assert!(matches!(err, RouterError::InvalidBasePath(ref path) if path == "files"));
     }
 
@@ -809,7 +814,7 @@ mod tests {
             NoopHookExecutor::new(),
         );
 
-        let err = create_router(TusState::new(protocol), &RouterOptions::default()).unwrap_err();
+        let err = create_router(TusState::new(protocol), RouterOptions::default()).unwrap_err();
         assert!(matches!(err, RouterError::InvalidBasePath(_)));
     }
 
@@ -823,7 +828,7 @@ mod tests {
             NoopHookExecutor::new(),
         );
 
-        let err = create_router(TusState::new(protocol), &RouterOptions::default()).unwrap_err();
+        let err = create_router(TusState::new(protocol), RouterOptions::default()).unwrap_err();
         assert!(matches!(err, RouterError::InvalidBasePath(_)));
     }
 
@@ -837,7 +842,7 @@ mod tests {
             NoopHookExecutor::new(),
         );
 
-        let err = create_router(TusState::new(protocol), &RouterOptions::default()).unwrap_err();
+        let err = create_router(TusState::new(protocol), RouterOptions::default()).unwrap_err();
         assert!(matches!(err, RouterError::InvalidBasePath(ref path) if path.is_empty()));
     }
 
@@ -1734,7 +1739,7 @@ mod tests {
         );
         let router = create_router(
             TusState::new(protocol),
-            &RouterOptions::new().with_cors_any_origin(),
+            RouterOptions::new().with_cors_any_origin(),
         )
         .unwrap();
 

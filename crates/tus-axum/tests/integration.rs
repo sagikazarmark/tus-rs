@@ -46,7 +46,7 @@ fn build_router_with(config: Config) -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state, &RouterOptions::default()).unwrap()
+    create_router(state, RouterOptions::default()).unwrap()
 }
 
 fn build_router() -> Router {
@@ -1136,7 +1136,7 @@ fn build_router_with_rejecting_hooks(status: u16, message: &str) -> Router {
             message: message.to_string(),
         },
     ));
-    create_router(state, &RouterOptions::default()).unwrap()
+    create_router(state, RouterOptions::default()).unwrap()
 }
 
 #[tokio::test]

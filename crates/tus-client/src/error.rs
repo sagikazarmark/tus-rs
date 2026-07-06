@@ -109,13 +109,13 @@ pub enum Error {
     },
 
     /// The server returned an unexpected HTTP response.
-    #[error("unexpected {operation} response: status {status}, body `{body}`")]
+    #[error("unexpected {operation} response: status {}, body `{body}`", .status.as_u16())]
     #[non_exhaustive]
     UnexpectedResponse {
         /// The client operation that received the response.
         operation: &'static str,
         /// HTTP status code of the response.
-        status: u16,
+        status: http::StatusCode,
         /// Response body, for diagnostics. Bodies are truncated to a few
         /// KiB; a truncated body ends with `...[truncated]`.
         body: String,
@@ -202,7 +202,8 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::UnexpectedResponse { status, .. } => {
-                *status >= 500 || matches!(*status, 408 | 409 | 429 | 460)
+                let status = status.as_u16();
+                status >= 500 || matches!(status, 408 | 409 | 429 | 460)
             }
             Error::Transport { retryable, .. } => *retryable,
             _ => false,
@@ -236,6 +237,7 @@ fn transport_failure_message(retryable: &bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http::StatusCode;
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -274,31 +276,31 @@ mod tests {
             Error::transport("connection reset"),
             Error::UnexpectedResponse {
                 operation: "patch upload",
-                status: 503,
+                status: StatusCode::SERVICE_UNAVAILABLE,
                 body: String::new(),
                 retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
-                status: 429,
+                status: StatusCode::TOO_MANY_REQUESTS,
                 body: String::new(),
                 retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
-                status: 408,
+                status: StatusCode::REQUEST_TIMEOUT,
                 body: String::new(),
                 retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
-                status: 409,
+                status: StatusCode::CONFLICT,
                 body: String::new(),
                 retry_after: None,
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
-                status: 460,
+                status: StatusCode::from_u16(460).unwrap(),
                 body: String::new(),
                 retry_after: None,
             },
@@ -322,7 +324,7 @@ mod tests {
             },
             Error::UnexpectedResponse {
                 operation: "patch upload",
-                status: 400,
+                status: StatusCode::BAD_REQUEST,
                 body: String::new(),
                 retry_after: None,
             },
@@ -339,7 +341,7 @@ mod tests {
     fn retry_after_is_carried_only_by_unexpected_response() {
         let with_hint = Error::UnexpectedResponse {
             operation: "patch upload",
-            status: 503,
+            status: StatusCode::SERVICE_UNAVAILABLE,
             body: String::new(),
             retry_after: Some(Duration::from_secs(7)),
         };
@@ -347,7 +349,7 @@ mod tests {
 
         let without_hint = Error::UnexpectedResponse {
             operation: "patch upload",
-            status: 503,
+            status: StatusCode::SERVICE_UNAVAILABLE,
             body: String::new(),
             retry_after: None,
         };

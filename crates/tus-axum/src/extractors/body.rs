@@ -19,21 +19,24 @@ use tus_protocol::{BodyFrame, RequestBody};
 use crate::error::TusRejection;
 
 /// Extracted TUS body mapped to protocol body frames.
-#[non_exhaustive]
-pub struct TusBody {
-    body: RequestBody,
-}
+///
+/// A newtype over [`tus_protocol::RequestBody`], mirroring the public-field
+/// idiom of [`TusHeaders`](crate::TusHeaders) and
+/// [`TusUploadId`](crate::TusUploadId). Destructure it in the handler
+/// signature to reach the inner body:
+///
+/// ```rust,no_run
+/// # use tus_axum::TusBody;
+/// async fn handler(TusBody(_body): TusBody) {
+///     // handler body
+/// }
+/// ```
+pub struct TusBody(pub RequestBody);
 
 impl TusBody {
     /// Creates a new TusBody for requests where no body was supplied.
-    ///
-    /// Crate-internal: only the `FromRequest` extractor and tests construct
-    /// bodies; downstream users obtain a `TusBody` through extraction and
-    /// consume it with [`TusBody::into_body`].
     pub(crate) fn absent() -> Self {
-        Self {
-            body: RequestBody::absent(),
-        }
+        Self(RequestBody::absent())
     }
 
     /// Creates a new TusBody with buffered data and optional trailers.
@@ -50,12 +53,7 @@ impl TusBody {
             None => RequestBody::from_bytes(bytes),
         };
 
-        Self { body }
-    }
-
-    /// Returns the protocol request body.
-    pub fn into_body(self) -> RequestBody {
-        self.body
+        Self(body)
     }
 }
 
@@ -102,9 +100,7 @@ where
             })
         });
 
-        Ok(TusBody {
-            body: RequestBody::from_stream(Box::pin(stream)),
-        })
+        Ok(TusBody(RequestBody::from_stream(Box::pin(stream))))
     }
 }
 
@@ -155,7 +151,7 @@ mod tests {
 
     #[test]
     fn buffered_empty_body_is_supplied() {
-        let body = TusBody::buffered(Bytes::new(), None).into_body();
+        let body = TusBody::buffered(Bytes::new(), None).0;
 
         assert!(body.is_supplied());
         assert!(matches!(body, RequestBody::Bytes(bytes) if bytes.is_empty()));
@@ -169,7 +165,7 @@ mod tests {
             HeaderValue::from_static("sha1 qvTGHdzF6KLavt4PO0gs2a6pQ00="),
         );
 
-        let body = TusBody::buffered(Bytes::from_static(b"hello"), Some(trailers)).into_body();
+        let body = TusBody::buffered(Bytes::from_static(b"hello"), Some(trailers)).0;
         let RequestBody::Stream(mut stream) = body else {
             panic!("buffered body with trailers should be streamed as protocol frames");
         };
@@ -188,10 +184,7 @@ mod tests {
     async fn empty_axum_body_without_body_headers_is_absent() {
         let request = Request::builder().body(Body::empty()).unwrap();
 
-        let body = TusBody::from_request(request, &())
-            .await
-            .unwrap()
-            .into_body();
+        let body = TusBody::from_request(request, &()).await.unwrap().0;
 
         assert!(matches!(body, RequestBody::Absent));
     }
@@ -204,10 +197,7 @@ mod tests {
             .body(Body::from_stream(empty_stream))
             .unwrap();
 
-        let body = TusBody::from_request(request, &())
-            .await
-            .unwrap()
-            .into_body();
+        let body = TusBody::from_request(request, &()).await.unwrap().0;
 
         assert!(matches!(body, RequestBody::Absent));
     }
@@ -219,10 +209,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let body = TusBody::from_request(request, &())
-            .await
-            .unwrap()
-            .into_body();
+        let body = TusBody::from_request(request, &()).await.unwrap().0;
 
         assert!(body.is_supplied());
         let RequestBody::Stream(mut stream) = body else {
@@ -243,10 +230,7 @@ mod tests {
             .map_err(|never| match never {});
         let request = Request::builder().body(Body::new(body)).unwrap();
 
-        let body = TusBody::from_request(request, &())
-            .await
-            .unwrap()
-            .into_body();
+        let body = TusBody::from_request(request, &()).await.unwrap().0;
         let RequestBody::Stream(mut stream) = body else {
             panic!("extracted axum body should be streamed as protocol frames");
         };

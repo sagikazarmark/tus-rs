@@ -61,6 +61,7 @@ pub struct NewUpload {
 
 impl NewUpload {
     /// Creates an empty upload resource with a known length.
+    #[must_use]
     pub fn new(length: u64, metadata: impl Into<UploadMetadata>) -> Self {
         Self {
             metadata: metadata.into(),
@@ -70,6 +71,7 @@ impl NewUpload {
     }
 
     /// Creates an upload resource and sends the initial body in the POST.
+    #[must_use]
     pub fn with_body(body: Vec<u8>, metadata: impl Into<UploadMetadata>) -> Self {
         Self {
             metadata: metadata.into(),
@@ -86,10 +88,24 @@ impl NewUpload {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) enum NewUploadContent {
     Length(u64),
     Body(Vec<u8>),
+}
+
+// Manual `Debug` so a `NewUpload` (which derives `Debug`) never dumps the
+// initial POST body bytes — potentially multi-megabyte or sensitive — into
+// logs. Only the byte length is reported.
+impl std::fmt::Debug for NewUploadContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NewUploadContent::Length(length) => f.debug_tuple("Length").field(length).finish(),
+            NewUploadContent::Body(body) => {
+                f.debug_struct("Body").field("len", &body.len()).finish()
+            }
+        }
+    }
 }
 
 /// Server capabilities discovered via the TUS `OPTIONS` request.

@@ -40,7 +40,7 @@ fn build_router() -> Router {
         MemoryLocker::new(),
         NoopHookExecutor::new(),
     ));
-    create_router(state, &RouterOptions::default()).unwrap()
+    create_router(state, RouterOptions::default()).unwrap()
 }
 
 async fn create_upload(router: &Router, length: usize) -> String {
