@@ -190,10 +190,16 @@ impl Error {
     /// Reports whether retrying the failed operation could plausibly
     /// succeed.
     ///
-    /// Transient failures (5xx/408/409/429/460 responses and retryable
-    /// [`Error::Transport`] failures) are retryable. Deterministic
-    /// failures — source misbehavior, offset desync, request construction
-    /// errors, and permanent transport failures — are not.
+    /// Transient failures (the transient `5xx` responses `500`/`502`/`503`/`504`,
+    /// plus `408`/`409`/`429`/`460`, and retryable [`Error::Transport`]
+    /// failures) are retryable. Deterministic failures — source misbehavior,
+    /// offset desync, request construction errors, and permanent transport
+    /// failures — are not.
+    ///
+    /// Only the transient `5xx` codes are retried. Deterministic server-side
+    /// codes such as `501 Not Implemented` and `505 HTTP Version Not Supported`
+    /// will not succeed on retry, so they are treated as permanent even though
+    /// they are `5xx`.
     ///
     /// A 460 (Checksum Mismatch, TUS checksum extension) is retryable
     /// because in-transit corruption of a chunk is exactly the transient
@@ -202,8 +208,10 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::UnexpectedResponse { status, .. } => {
-                let status = status.as_u16();
-                status >= 500 || matches!(status, 408 | 409 | 429 | 460)
+                matches!(
+                    status.as_u16(),
+                    500 | 502 | 503 | 504 | 408 | 409 | 429 | 460
+                )
             }
             Error::Transport { retryable, .. } => *retryable,
             _ => false,
@@ -306,6 +314,24 @@ mod tests {
                 body: String::new(),
                 retry_after: None,
             },
+            Error::UnexpectedResponse {
+                operation: "patch upload",
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: String::new(),
+                retry_after: None,
+            },
+            Error::UnexpectedResponse {
+                operation: "patch upload",
+                status: StatusCode::BAD_GATEWAY,
+                body: String::new(),
+                retry_after: None,
+            },
+            Error::UnexpectedResponse {
+                operation: "patch upload",
+                status: StatusCode::GATEWAY_TIMEOUT,
+                body: String::new(),
+                retry_after: None,
+            },
         ];
         for error in retryable {
             assert!(error.is_retryable(), "expected retryable: {error}");
@@ -327,6 +353,21 @@ mod tests {
             Error::UnexpectedResponse {
                 operation: "patch upload",
                 status: StatusCode::BAD_REQUEST,
+                body: String::new(),
+                retry_after: None,
+            },
+            // Deterministic 5xx codes are permanent even though they are 5xx:
+            // retrying `501 Not Implemented` or `505 HTTP Version Not Supported`
+            // cannot succeed.
+            Error::UnexpectedResponse {
+                operation: "patch upload",
+                status: StatusCode::NOT_IMPLEMENTED,
+                body: String::new(),
+                retry_after: None,
+            },
+            Error::UnexpectedResponse {
+                operation: "patch upload",
+                status: StatusCode::HTTP_VERSION_NOT_SUPPORTED,
                 body: String::new(),
                 retry_after: None,
             },

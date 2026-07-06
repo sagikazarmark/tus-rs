@@ -90,6 +90,7 @@
 //! exactly once by default; opt in to post-hook retries with
 //! [`HttpHookConfig::with_post_hook_retry`].
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 

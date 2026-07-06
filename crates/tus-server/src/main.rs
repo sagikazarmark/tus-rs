@@ -2,6 +2,8 @@
 //!
 //! A standalone server implementing the TUS protocol for resumable file uploads.
 
+#![forbid(unsafe_code)]
+
 mod app;
 mod command;
 mod config;

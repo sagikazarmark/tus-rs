@@ -247,7 +247,19 @@ impl Config {
         self
     }
 
-    /// Enables respect for forwarded headers.
+    /// Trusts the `X-Forwarded-Host` and `X-Forwarded-Proto` request headers
+    /// when building absolute `Location` URLs.
+    ///
+    /// Disabled by default, and it should stay disabled unless a trusted
+    /// reverse proxy sits in front of the server. These headers are
+    /// client-supplied: if untrusted requests reach the server directly, an
+    /// attacker can set `X-Forwarded-Host` to an arbitrary value and poison the
+    /// `Location` URL returned from Creation (a classic host-header injection /
+    /// URL-poisoning vector). Only enable this when a proxy you control
+    /// **overwrites** (not appends to) `X-Forwarded-Host` / `X-Forwarded-Proto`
+    /// on every inbound request, so clients cannot forge them. Setting
+    /// [`with_base_url`](Self::with_base_url) instead pins the origin explicitly
+    /// and takes precedence over forwarded headers.
     #[must_use]
     pub fn with_respect_forwarded_headers(mut self) -> Self {
         self.respect_forwarded_headers = true;

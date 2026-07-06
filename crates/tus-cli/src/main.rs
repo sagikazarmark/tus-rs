@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum, ValueHint};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};

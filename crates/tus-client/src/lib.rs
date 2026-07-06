@@ -6,6 +6,7 @@
 //! integration-test partner for `tus-server`.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![warn(unreachable_pub)]
@@ -29,7 +30,7 @@ pub use client::{
 pub use error::{BoxError, Error, Result};
 pub use transport::{BoxTransport, Transport, TransportBody, TransportRequest, TransportResponse};
 #[cfg(feature = "checksum")]
-pub use tus_protocol::ChecksumAlgorithm;
+pub use tus_protocol::{ChecksumAlgorithm, Extension};
 pub use tus_protocol::{MetadataValue, UploadMetadata};
 
 // Re-exported dependency crates whose types appear in this crate's public
