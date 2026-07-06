@@ -1,5 +1,5 @@
 use http::{Method, header::CONTENT_TYPE};
-use tus_protocol::UploadMetadata;
+use tus_protocol::{Extension, UploadMetadata};
 use url::Url;
 
 use super::{Client, insert_request_header};
@@ -163,8 +163,22 @@ impl ServerCapabilities {
     ///
     /// Names are case-insensitive and match the TUS spec — e.g. `creation`,
     /// `creation-with-upload`, `termination`, `concatenation`, `expiration`.
+    ///
+    /// For the known [`Extension`] variants, prefer the typed
+    /// [`supports_extension`](Self::supports_extension); this string form stays
+    /// available for extensions the enum does not model.
     pub fn has_extension(&self, name: &str) -> bool {
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(name))
+    }
+
+    /// Reports whether the server advertises the given typed TUS [`Extension`].
+    ///
+    /// The typed counterpart to [`has_extension`](Self::has_extension): use it
+    /// when the extension is one of the known [`Extension`] variants (e.g.
+    /// `caps.supports_extension(Extension::Concatenation)`), and fall back to
+    /// the string form for extensions the enum does not model.
+    pub fn supports_extension(&self, extension: Extension) -> bool {
+        self.has_extension(extension.as_str())
     }
 
     /// Reports whether the server advertises the named protocol version.
@@ -912,6 +926,11 @@ mod tests {
         assert!(info.has_extension("Creation"));
         assert!(info.has_extension("creation-with-upload"));
         assert!(!info.has_extension("checksum"));
+
+        // Typed counterpart resolves against the same case-insensitive set.
+        assert!(info.supports_extension(Extension::Creation));
+        assert!(info.supports_extension(Extension::CreationWithUpload));
+        assert!(!info.supports_extension(Extension::Checksum));
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]

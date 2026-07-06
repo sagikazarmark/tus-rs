@@ -67,6 +67,7 @@
 //! - Distributed state+locking via first-party integration crates
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![warn(unreachable_pub)]

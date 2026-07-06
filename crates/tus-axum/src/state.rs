@@ -96,8 +96,40 @@ where
 
 /// Axum-extractable TUS protocol substate.
 ///
-/// This wrapper lets handlers request only the protocol handle from a larger
-/// [`TusState`] via axum's `State` extractor.
+/// This wrapper lets a handler request only the protocol handle from a larger
+/// [`TusState`] via axum's `State` extractor. A [`FromRef<TusState>`] impl makes
+/// it extractable from any application state that holds a `TusState`.
+///
+/// # Writing your own handlers
+///
+/// This is a deliberate public seam: [`create_router`](crate::create_router)
+/// and [`TusRouter`](crate::TusRouter) cover the standard route table, but if
+/// you need a custom route — a different URL layout, an extra auth layer, or a
+/// bespoke `GET` — you can write your own axum handler against the public
+/// extractors ([`TusHeaders`](crate::TusHeaders),
+/// [`TusBody`](crate::TusBody), [`TusUploadId`](crate::TusUploadId)) and reach
+/// the protocol through `State<TusProtocol<..>>`, calling
+/// [`handle()`](Self::handle) to get the [`ProtocolHandle`]:
+///
+/// ```rust,no_run
+/// # use axum::extract::State;
+/// # use tus_axum::{TusHeaders, TusBody, TusProtocol, TusResponse, TusRejection};
+/// # use tus_protocol::{HookExecutor, Locker, StateStore, Storage};
+/// async fn custom_create<S, I, L, H>(
+///     State(protocol): State<TusProtocol<S, I, L, H>>,
+///     TusHeaders(headers): TusHeaders,
+///     TusBody(body): TusBody,
+/// ) -> Result<TusResponse, TusRejection>
+/// where
+///     S: Storage,
+///     I: StateStore,
+///     L: Locker,
+///     H: HookExecutor,
+/// {
+///     let response = protocol.handle().post(headers, body).await?;
+///     Ok(TusResponse::from(response))
+/// }
+/// ```
 pub struct TusProtocol<S, I, L, H>
 where
     S: Storage,

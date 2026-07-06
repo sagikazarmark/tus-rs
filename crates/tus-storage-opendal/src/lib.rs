@@ -72,6 +72,7 @@
 //! through an external cross-process locker; the in-process locker shipped
 //! with `tus-protocol` is not sufficient.
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 

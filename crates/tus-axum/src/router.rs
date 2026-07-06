@@ -7,6 +7,7 @@
 //! part of [`tus_protocol::Config`].
 
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use axum::{
     Router,
@@ -326,7 +327,12 @@ pub struct RouterOptions {
     cors_allowed_origins: Vec<String>,
     cors_allow_credentials: bool,
     cors_extra_allowed_headers: Vec<String>,
+    cors_max_age: Option<Duration>,
 }
+
+/// Default `Access-Control-Max-Age` (24 hours) applied when the caller does not
+/// set one through [`RouterOptions::with_cors_max_age`].
+const DEFAULT_CORS_MAX_AGE: Duration = Duration::from_secs(86_400);
 
 impl RouterOptions {
     /// Creates empty options: no CORS layer is applied.
@@ -383,6 +389,18 @@ impl RouterOptions {
     {
         self.cors_extra_allowed_headers
             .extend(headers.into_iter().map(Into::into));
+        self
+    }
+
+    /// Sets how long browsers may cache the CORS preflight response
+    /// (`Access-Control-Max-Age`).
+    ///
+    /// Defaults to 24 hours when unset. Browsers additionally cap the effective
+    /// value (Chromium at 2 hours, Firefox at 24 hours), so a larger duration is
+    /// clamped on the client side.
+    #[must_use]
+    pub fn with_cors_max_age(mut self, max_age: Duration) -> Self {
+        self.cors_max_age = Some(max_age);
         self
     }
 
@@ -595,7 +613,7 @@ fn build_cors_layer(options: &RouterOptions, download: bool) -> Result<CorsLayer
         ])
         .allow_headers(allowed_request_headers(options)?)
         .expose_headers(exposed_headers(download))
-        .max_age(std::time::Duration::from_secs(86400));
+        .max_age(options.cors_max_age.unwrap_or(DEFAULT_CORS_MAX_AGE));
 
     if options.cors_allow_credentials {
         cors = cors.allow_credentials(true);
@@ -1481,6 +1499,80 @@ mod tests {
             .unwrap()
             .to_ascii_lowercase();
         assert!(allow_headers.contains("x-api-key"));
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_uses_configured_max_age() {
+        use axum::body::Body;
+        use axum::http::{Request, Response, StatusCode};
+        use tower::{ServiceBuilder, ServiceExt, service_fn};
+
+        let options = RouterOptions::new()
+            .with_cors_any_origin()
+            .with_cors_max_age(Duration::from_secs(120));
+        let service = ServiceBuilder::new()
+            .layer(build_cors_layer(&options, false).unwrap())
+            .service(service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "PATCH")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-max-age")
+                .and_then(|v| v.to_str().ok()),
+            Some("120"),
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_defaults_max_age_to_one_day() {
+        use axum::body::Body;
+        use axum::http::{Request, Response, StatusCode};
+        use tower::{ServiceBuilder, ServiceExt, service_fn};
+
+        let options = RouterOptions::new().with_cors_any_origin();
+        let service = ServiceBuilder::new()
+            .layer(build_cors_layer(&options, false).unwrap())
+            .service(service_fn(|_req: Request<Body>| async {
+                Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+            }));
+
+        let response = service
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "PATCH")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-max-age")
+                .and_then(|v| v.to_str().ok()),
+            Some("86400"),
+        );
     }
 
     #[test]
