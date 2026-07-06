@@ -234,24 +234,28 @@ impl HttpHookConfig {
     }
 
     /// Sets the request timeout.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Adds a custom header to webhook requests.
+    #[must_use]
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.insert(name.into(), value.into());
         self
     }
 
     /// Enables retry on failure.
+    #[must_use]
     pub fn with_retry(mut self, enabled: bool) -> Self {
         self.retry_enabled = enabled;
         self
     }
 
     /// Sets the maximum number of retry attempts.
+    #[must_use]
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
         self
@@ -267,6 +271,7 @@ impl HttpHookConfig {
     /// your receiver enforces on the signature timestamp: the timestamp is
     /// fixed per delivery, so a retry sent near a large deadline can be rejected
     /// as stale (see the crate-level signature docs).
+    #[must_use]
     pub fn with_retry_deadline(mut self, deadline: Duration) -> Self {
         self.retry_deadline = deadline;
         self
@@ -278,12 +283,14 @@ impl HttpHookConfig {
     /// delays hook dispatch; they are sent exactly once unless this is
     /// enabled. Only takes effect when retries are enabled via
     /// [`with_retry`](Self::with_retry).
+    #[must_use]
     pub fn with_post_hook_retry(mut self, enabled: bool) -> Self {
         self.retry_post_hooks = enabled;
         self
     }
 
     /// Enables HMAC-SHA256 signing of webhook bodies.
+    #[must_use]
     pub fn with_signing_secret(mut self, secret: impl Into<String>) -> Self {
         self.signing_secret = Some(secret.into());
         self
@@ -298,6 +305,7 @@ impl HttpHookConfig {
     /// to keep accepting uploads when the webhook endpoint is unavailable. A
     /// structured rejection (a `2xx` response with `"proceed": false`) is
     /// always honored regardless of this flag.
+    #[must_use]
     pub fn with_fail_open(mut self, fail_open: bool) -> Self {
         self.fail_open = fail_open;
         self
@@ -342,30 +350,35 @@ impl PreHookResponse {
     }
 
     /// Sets whether to proceed with the operation.
+    #[must_use]
     pub fn with_proceed(mut self, proceed: bool) -> Self {
         self.proceed = proceed;
         self
     }
 
     /// Sets replacement user metadata.
+    #[must_use]
     pub fn with_metadata(mut self, metadata: UploadMetadata) -> Self {
         self.metadata = Some(metadata);
         self
     }
 
     /// Sets the HTTP status code used when rejecting the operation.
+    #[must_use]
     pub fn with_reject_status(mut self, status: u16) -> Self {
         self.reject_status = Some(status);
         self
     }
 
     /// Sets the rejection message returned to the client.
+    #[must_use]
     pub fn with_reject_message(mut self, message: impl Into<String>) -> Self {
         self.reject_message = Some(message.into());
         self
     }
 
     /// Adds a response header to include in the upstream response.
+    #[must_use]
     pub fn with_response_header(
         mut self,
         name: impl Into<String>,

@@ -14,14 +14,14 @@ use crate::state::TusProtocol;
 ///
 /// This is a native-server convenience endpoint, not part of the core tus
 /// upload protocol. It is available unless disabled in [`tus_protocol::Config`].
-pub(crate) async fn handle_get<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_get<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
     headers: HeaderMap,
     TusUploadId(upload_id): TusUploadId,
 ) -> Result<Response, TusRejection>
 where
     S: Storage + StorageReader + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {

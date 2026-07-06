@@ -35,8 +35,8 @@ use crate::state::TusProtocol;
 /// The override value is matched case-insensitively (`patch` and `PATCH` are
 /// equivalent), as HTTP method names from constrained clients are not
 /// reliably uppercased.
-pub(crate) async fn handle_post_with_override<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_post_with_override<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
     // Validate the upload id through the shared `TusUploadId` extractor rather
     // than a raw `Path<String>`. A malformed id (e.g. an un-decodable
     // percent-escape like `%FF`) then yields the same tus-compliant 400 +
@@ -47,7 +47,7 @@ pub(crate) async fn handle_post_with_override<S, I, L, H>(
 ) -> Result<Response, TusRejection>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {

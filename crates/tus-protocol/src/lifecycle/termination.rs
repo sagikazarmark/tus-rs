@@ -9,27 +9,27 @@ use crate::storage::Storage;
 
 use super::PreHookGate;
 
-pub(crate) struct UploadTerminator<'a, S, I, H>
+pub(crate) struct UploadTerminator<'a, S, St, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     H: HookExecutor + ?Sized,
 {
     storage: &'a S,
-    state_store: &'a I,
+    state_store: &'a St,
     hooks: &'a H,
     request_info: &'a HookRequestInfo,
 }
 
-impl<'a, S, I, H> UploadTerminator<'a, S, I, H>
+impl<'a, S, St, H> UploadTerminator<'a, S, St, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     H: HookExecutor + ?Sized,
 {
     pub(crate) fn new(
         storage: &'a S,
-        state_store: &'a I,
+        state_store: &'a St,
         hooks: &'a H,
         request_info: &'a HookRequestInfo,
     ) -> Self {

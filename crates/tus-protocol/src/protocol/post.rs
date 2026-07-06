@@ -21,10 +21,10 @@ use super::{Headers, Protocol, Response};
 ///
 /// Covers the Creation, Creation-With-Upload, Creation-Defer-Length, and
 /// Concatenation extensions depending on which are enabled in `config`.
-impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
+impl<'a, S, St, L, H> Protocol<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -162,10 +162,10 @@ where
 }
 
 /// Handles final-upload creation and response mapping.
-impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
+impl<'a, S, St, L, H> Protocol<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {

@@ -31,21 +31,25 @@ pub struct UploadInfo {
 
 impl UploadInfo {
     /// Returns the absolute upload URL.
+    #[must_use]
     pub fn url(&self) -> &Url {
         &self.url
     }
 
     /// Returns the current server-side offset in bytes.
+    #[must_use]
     pub fn offset(&self) -> u64 {
         self.offset
     }
 
     /// Returns the declared upload length, if known.
+    #[must_use]
     pub fn length(&self) -> Option<u64> {
         self.length
     }
 
     /// Returns the decoded `Upload-Metadata` values.
+    #[must_use]
     pub fn metadata(&self) -> &UploadMetadata {
         &self.metadata
     }
@@ -138,23 +142,27 @@ pub struct ServerCapabilities {
 impl ServerCapabilities {
     /// Returns the protocol versions the server supports (`Tus-Version`), most
     /// preferred first.
+    #[must_use]
     pub fn versions(&self) -> &[String] {
         &self.versions
     }
 
     /// Returns the maximum upload size in bytes, if the server publishes one
     /// (`Tus-Max-Size`). `None` means unlimited or not advertised.
+    #[must_use]
     pub fn max_size(&self) -> Option<u64> {
         self.max_size
     }
 
     /// Returns the extensions the server supports (`Tus-Extension`).
+    #[must_use]
     pub fn extensions(&self) -> &[String] {
         &self.extensions
     }
 
     /// Returns the checksum algorithms the server accepts
     /// (`Tus-Checksum-Algorithm`).
+    #[must_use]
     pub fn checksum_algorithms(&self) -> &[String] {
         &self.checksum_algorithms
     }
@@ -167,6 +175,7 @@ impl ServerCapabilities {
     /// For the known [`Extension`] variants, prefer the typed
     /// [`supports_extension`](Self::supports_extension); this string form stays
     /// available for extensions the enum does not model.
+    #[must_use]
     pub fn has_extension(&self, name: &str) -> bool {
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(name))
     }
@@ -177,11 +186,13 @@ impl ServerCapabilities {
     /// when the extension is one of the known [`Extension`] variants (e.g.
     /// `caps.supports_extension(Extension::Concatenation)`), and fall back to
     /// the string form for extensions the enum does not model.
+    #[must_use]
     pub fn supports_extension(&self, extension: Extension) -> bool {
         self.has_extension(extension.as_str())
     }
 
     /// Reports whether the server advertises the named protocol version.
+    #[must_use]
     pub fn supports_version(&self, version: &str) -> bool {
         self.versions
             .iter()
@@ -246,7 +257,9 @@ where
         // callers would silently fall back to plain create + PATCH and
         // then fail with a confusing UnexpectedResponse on POST.
         if versions.is_empty() {
-            return Err(Error::MissingHeader("Tus-Version"));
+            return Err(Error::MissingHeader {
+                header: "Tus-Version",
+            });
         }
         let extensions = response
             .headers()
@@ -731,7 +744,12 @@ mod tests {
             ))
             .await;
 
-        assert!(matches!(result, Err(Error::MissingHeader("Upload-Offset"))));
+        assert!(matches!(
+            result,
+            Err(Error::MissingHeader {
+                header: "Upload-Offset"
+            })
+        ));
     }
 
     #[async_test]
@@ -1104,8 +1122,8 @@ mod tests {
         let client = Client::with_transport(endpoint_url(), transport.clone());
         let result = client.server_capabilities().await;
         match result {
-            Err(Error::MissingHeader(h)) => {
-                assert_eq!(h, "Tus-Version");
+            Err(Error::MissingHeader { header }) => {
+                assert_eq!(header, "Tus-Version");
             }
             other => panic!("expected MissingHeader(Tus-Version), got {other:?}"),
         }

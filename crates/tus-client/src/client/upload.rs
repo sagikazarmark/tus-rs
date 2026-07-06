@@ -210,11 +210,13 @@ impl ParallelUpload {
     }
 
     /// Returns the number of bytes placed into each partial upload.
+    #[must_use]
     pub fn part_size(&self) -> usize {
         self.part_size
     }
 
     /// Returns the maximum number of partial uploads run at once.
+    #[must_use]
     pub fn max_concurrency(&self) -> usize {
         self.max_concurrency
     }
@@ -423,7 +425,9 @@ where
         let metadata = metadata.into();
         let capabilities = self.server_capabilities().await?;
         if !capabilities.has_extension("concatenation") {
-            return Err(Error::UnsupportedExtension("concatenation"));
+            return Err(Error::UnsupportedExtension {
+                extension: "concatenation",
+            });
         }
         let capabilities = Some(capabilities);
         let part_count = source_length.div_ceil(options.part_size as u64) as usize;
@@ -481,9 +485,9 @@ where
             match join_set.join_next().await {
                 None => break,
                 Some(Err(join_error)) => {
-                    failure = Some(Error::Internal(format!(
-                        "parallel upload task failed: {join_error}"
-                    )));
+                    failure = Some(Error::Internal {
+                        message: format!("parallel upload task failed: {join_error}"),
+                    });
                 }
                 Some(Ok(outcome)) => {
                     if let Some(url) = &outcome.created_url {
@@ -534,10 +538,8 @@ where
         let part_urls: Vec<String> = part_urls
             .into_iter()
             .map(|url| {
-                url.ok_or_else(|| {
-                    Error::Internal(
-                        "parallel part completed without recording its upload URL".to_string(),
-                    )
+                url.ok_or_else(|| Error::Internal {
+                    message: "parallel part completed without recording its upload URL".to_string(),
                 })
             })
             .collect::<Result<_>>()?;
@@ -2050,7 +2052,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::UnsupportedExtension("concatenation"))
+            Err(Error::UnsupportedExtension {
+                extension: "concatenation",
+            })
         ));
         let requests = transport.requests.lock().unwrap();
         assert_eq!(

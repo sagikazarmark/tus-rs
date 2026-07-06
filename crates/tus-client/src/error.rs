@@ -34,8 +34,12 @@ pub enum Error {
     Url(#[from] url::ParseError),
 
     /// The server did not send a required response header.
-    #[error("missing required `{0}` header")]
-    MissingHeader(&'static str),
+    #[error("missing required `{header}` header")]
+    #[non_exhaustive]
+    MissingHeader {
+        /// Name of the missing response header.
+        header: &'static str,
+    },
 
     /// The server sent a response header the client could not parse — a
     /// non-UTF-8 value, a non-numeric `Upload-Offset`/`Upload-Length`, or a
@@ -165,12 +169,20 @@ pub enum Error {
 
     /// The server does not advertise a TUS extension required by the
     /// requested operation.
-    #[error("server does not advertise the `{0}` tus extension")]
-    UnsupportedExtension(&'static str),
+    #[error("server does not advertise the `{extension}` tus extension")]
+    #[non_exhaustive]
+    UnsupportedExtension {
+        /// Name of the required-but-unadvertised extension.
+        extension: &'static str,
+    },
 
     /// An internal client error, such as a panicked upload task.
-    #[error("internal client error: {0}")]
-    Internal(String),
+    #[error("internal client error: {message}")]
+    #[non_exhaustive]
+    Internal {
+        /// Description of the internal failure.
+        message: String,
+    },
 }
 
 impl Error {
@@ -223,6 +235,7 @@ impl Error {
     /// because in-transit corruption of a chunk is exactly the transient
     /// failure the extension exists to detect: the server discarded the
     /// chunk, so resending it is safe and likely to succeed.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::UnexpectedResponse { status, .. } => {
@@ -244,6 +257,7 @@ impl Error {
     ///
     /// Exposed so a custom [`RetryHook`](crate::RetryHook) can honor the same
     /// server-driven backoff the built-in retry loop uses.
+    #[must_use]
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             Error::UnexpectedResponse { retry_after, .. } => *retry_after,
@@ -389,8 +403,12 @@ mod tests {
                 body: String::new(),
                 retry_after: None,
             },
-            Error::UnsupportedExtension("concatenation"),
-            Error::Internal("task panicked".into()),
+            Error::UnsupportedExtension {
+                extension: "concatenation",
+            },
+            Error::Internal {
+                message: "task panicked".into(),
+            },
         ];
         for error in permanent {
             assert!(!error.is_retryable(), "expected permanent: {error}");

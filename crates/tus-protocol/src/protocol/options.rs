@@ -17,10 +17,10 @@ use super::{Protocol, Response};
 /// Builds the OPTIONS response advertising server capabilities.
 ///
 /// Per the TUS spec, this request does not require `Tus-Resumable`.
-impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
+impl<'a, S, St, L, H> Protocol<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {

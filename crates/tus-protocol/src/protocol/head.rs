@@ -21,10 +21,10 @@ use super::{Protocol, Response, UploadId};
 /// Errors:
 /// - [`Error::NotFound`] if the upload doesn't exist.
 /// - [`Error::Expired`] if the upload is protocol-expired.
-impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
+impl<'a, S, St, L, H> Protocol<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {

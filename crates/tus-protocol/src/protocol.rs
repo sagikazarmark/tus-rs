@@ -80,24 +80,24 @@ use crate::storage::{Storage, StorageReader};
 ///
 /// This type bundles the long-lived protocol dependencies so each handler
 /// method only takes request-specific inputs.
-pub struct Protocol<'a, S, I, L, H>
+pub struct Protocol<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     config: &'a Config,
     storage: &'a S,
-    state_store: &'a I,
+    state_store: &'a St,
     locker: &'a L,
     hooks: &'a H,
 }
 
-impl<'a, S, I, L, H> Protocol<'a, S, I, L, H>
+impl<'a, S, St, L, H> Protocol<'a, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -105,7 +105,7 @@ where
     pub fn new(
         config: &'a Config,
         storage: &'a S,
-        state_store: &'a I,
+        state_store: &'a St,
         locker: &'a L,
         hooks: &'a H,
     ) -> Self {
@@ -119,10 +119,10 @@ where
     }
 }
 
-impl<S, I, L, H> std::fmt::Debug for Protocol<'_, S, I, L, H>
+impl<S, St, L, H> std::fmt::Debug for Protocol<'_, S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -140,24 +140,24 @@ where
 /// [`Protocol`] is a lightweight borrowed facade. Frameworks usually need an
 /// owned, cheap-to-clone state value; this type owns shared handles to the
 /// protocol dependencies and exposes the same protocol methods directly.
-pub struct ProtocolHandle<S, I, L, H>
+pub struct ProtocolHandle<S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
     config: Arc<Config>,
     storage: Arc<S>,
-    state_store: Arc<I>,
+    state_store: Arc<St>,
     locker: Arc<L>,
     hooks: Arc<H>,
 }
 
-impl<S, I, L, H> std::fmt::Debug for ProtocolHandle<S, I, L, H>
+impl<S, St, L, H> std::fmt::Debug for ProtocolHandle<S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -170,10 +170,10 @@ where
     }
 }
 
-impl<S, I, L, H> ProtocolHandle<S, I, L, H>
+impl<S, St, L, H> ProtocolHandle<S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -182,10 +182,10 @@ where
     /// Takes the backends by value, so they must be `Sized`. To build a handle
     /// over type-erased `Arc<dyn Storage>` (etc.) backends, use
     /// [`ProtocolHandle::from_arcs`], which accepts `?Sized` backends.
-    pub fn new(config: Config, storage: S, state_store: I, locker: L, hooks: H) -> Self
+    pub fn new(config: Config, storage: S, state_store: St, locker: L, hooks: H) -> Self
     where
         S: Sized,
-        I: Sized,
+        St: Sized,
         L: Sized,
         H: Sized,
     {
@@ -202,7 +202,7 @@ where
     pub fn from_arcs(
         config: Arc<Config>,
         storage: Arc<S>,
-        state_store: Arc<I>,
+        state_store: Arc<St>,
         locker: Arc<L>,
         hooks: Arc<H>,
     ) -> Self {
@@ -231,7 +231,7 @@ where
     }
 
     /// Returns the shared state-store handle.
-    pub fn state_store_arc(&self) -> Arc<I> {
+    pub fn state_store_arc(&self) -> Arc<St> {
         self.state_store.clone()
     }
 
@@ -246,7 +246,7 @@ where
     }
 
     /// Returns a borrowed protocol facade over the stored components.
-    pub fn protocol(&self) -> Protocol<'_, S, I, L, H> {
+    pub fn protocol(&self) -> Protocol<'_, S, St, L, H> {
         Protocol::new(
             self.config.as_ref(),
             self.storage.as_ref(),
@@ -309,10 +309,10 @@ where
     }
 }
 
-impl<S, I, L, H> Clone for ProtocolHandle<S, I, L, H>
+impl<S, St, L, H> Clone for ProtocolHandle<S, St, L, H>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {

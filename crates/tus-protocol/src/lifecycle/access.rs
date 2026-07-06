@@ -39,14 +39,14 @@ impl UploadAccessFacts {
     }
 }
 
-pub(crate) async fn prepare_upload_mutation_access<S, I>(
+pub(crate) async fn prepare_upload_mutation_access<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     if state.is_final() {
         ensure_active(state)?;
@@ -60,9 +60,9 @@ where
     Ok(())
 }
 
-pub(crate) async fn prepare_upload_observation_access<S, I, L, H>(
+pub(crate) async fn prepare_upload_observation_access<S, St, L, H>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     hooks: &H,
     config: &Config,
@@ -71,7 +71,7 @@ pub(crate) async fn prepare_upload_observation_access<S, I, L, H>(
 ) -> Result<PreparedUploadAccess>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -87,9 +87,9 @@ where
     .await
 }
 
-pub(crate) async fn prepare_upload_download_access<S, I, L, H>(
+pub(crate) async fn prepare_upload_download_access<S, St, L, H>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     hooks: &H,
     config: &Config,
@@ -98,7 +98,7 @@ pub(crate) async fn prepare_upload_download_access<S, I, L, H>(
 ) -> Result<PreparedUploadAccess>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -120,23 +120,23 @@ where
     Ok(prepared)
 }
 
-pub(crate) async fn prepare_upload_reclamation_access<S, I>(
+pub(crate) async fn prepare_upload_reclamation_access<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<bool>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     reconcile_stored_completion(storage, state_store, state).await?;
 
     Ok(state.is_expired())
 }
 
-async fn prepare_upload_read_access<S, I, L, H>(
+async fn prepare_upload_read_access<S, St, L, H>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     hooks: &H,
     config: &Config,
@@ -145,7 +145,7 @@ async fn prepare_upload_read_access<S, I, L, H>(
 ) -> Result<PreparedUploadAccess>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
     H: HookExecutor + ?Sized,
 {
@@ -171,14 +171,14 @@ where
     })
 }
 
-async fn prepare_regular_upload_access<S, I>(
+async fn prepare_regular_upload_access<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     reconcile_stored_completion(storage, state_store, state).await?;
     ensure_active(state)?;

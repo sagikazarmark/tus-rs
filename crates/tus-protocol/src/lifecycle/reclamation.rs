@@ -138,15 +138,15 @@ impl ExpiredUploadReclamationOutcome {
 /// uploads. A final upload that is itself expired is reclaimed as its own
 /// candidate; otherwise protocol reads treat expired or missing referenced parts
 /// as making the planned final upload expired until it has been materialized.
-pub async fn reclaim_expired_uploads<S, I, L>(
+pub async fn reclaim_expired_uploads<S, St, L>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     before: DateTime<Utc>,
 ) -> Result<ExpiredUploadReclamationReport>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
 {
     let mut report = ExpiredUploadReclamationReport::default();
@@ -159,15 +159,15 @@ where
     Ok(report)
 }
 
-async fn reclaim_expired_upload<S, I, L>(
+async fn reclaim_expired_upload<S, St, L>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     locker: &L,
     upload_id: String,
 ) -> ExpiredUploadReclamationOutcome
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
     L: Locker + ?Sized,
 {
     let _guard = match locker.try_lock(&upload_id).await {

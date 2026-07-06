@@ -20,12 +20,12 @@ pub(crate) use get::handle_get;
 pub(crate) use method_override::handle_post_with_override;
 
 /// Handles OPTIONS requests.
-pub(crate) async fn handle_options<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_options<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
 ) -> TusResponse
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -33,14 +33,14 @@ where
 }
 
 /// Handles POST requests to create new uploads.
-pub(crate) async fn handle_post<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_post<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
     TusHeaders(headers): TusHeaders,
     body: TusBody,
 ) -> Result<TusResponse, TusRejection>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -49,14 +49,14 @@ where
 
 /// Handles HEAD requests. The `TusHeaders` extractor validates the
 /// `Tus-Resumable` header; its value is otherwise unused here.
-pub(crate) async fn handle_head<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_head<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
     TusHeaders(_): TusHeaders,
     TusUploadId(upload_id): TusUploadId,
 ) -> Result<TusResponse, TusRejection>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -64,15 +64,15 @@ where
 }
 
 /// Handles PATCH requests to upload data.
-pub(crate) async fn handle_patch<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_patch<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
     TusHeaders(headers): TusHeaders,
     TusUploadId(upload_id): TusUploadId,
     body: TusBody,
 ) -> Result<TusResponse, TusRejection>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
@@ -82,14 +82,14 @@ where
 }
 
 /// Handles DELETE requests to terminate uploads.
-pub(crate) async fn handle_delete<S, I, L, H>(
-    State(protocol): State<TusProtocol<S, I, L, H>>,
+pub(crate) async fn handle_delete<S, St, L, H>(
+    State(protocol): State<TusProtocol<S, St, L, H>>,
     TusHeaders(headers): TusHeaders,
     TusUploadId(upload_id): TusUploadId,
 ) -> Result<TusResponse, TusRejection>
 where
     S: Storage + Send + Sync + 'static,
-    I: StateStore + Send + Sync + 'static,
+    St: StateStore + Send + Sync + 'static,
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {

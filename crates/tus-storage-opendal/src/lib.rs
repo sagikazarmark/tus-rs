@@ -134,9 +134,13 @@ impl OpendalStorage {
     }
 
     /// Returns the storage with upload keys nested under the given prefix.
+    ///
+    /// Trailing slashes are normalized away once here, so per-upload key
+    /// construction does not have to re-trim on every call.
     #[must_use]
     pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.prefix = prefix.into();
+        let prefix = prefix.into();
+        self.prefix = prefix.trim_end_matches('/').to_string();
         self
     }
 
@@ -145,7 +149,7 @@ impl OpendalStorage {
         if self.prefix.is_empty() {
             id.to_string()
         } else {
-            format!("{}/{}", self.prefix.trim_end_matches('/'), id)
+            format!("{}/{}", self.prefix, id)
         }
     }
 

@@ -2,26 +2,26 @@ use crate::error::{Error, Result};
 use crate::state::{StateStore, UploadState, WriteMode};
 use crate::storage::Storage;
 
-pub(crate) async fn reconcile_state_offset<S, I>(
+pub(crate) async fn reconcile_state_offset<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     reconcile_storage_offset(storage, state_store, state).await
 }
 
-pub(crate) async fn reconcile_stored_completion<S, I>(
+pub(crate) async fn reconcile_stored_completion<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<bool>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     if state.is_complete() || state.is_partial() {
         return Ok(false);
@@ -57,14 +57,14 @@ where
     Ok(true)
 }
 
-async fn reconcile_storage_offset<S, I>(
+async fn reconcile_storage_offset<S, St>(
     storage: &S,
-    state_store: &I,
+    state_store: &St,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
-    I: StateStore + ?Sized,
+    St: StateStore + ?Sized,
 {
     let actual_offset = match state.storage_handle() {
         Some(handle) => storage.size(&handle).await?.unwrap_or(0),
