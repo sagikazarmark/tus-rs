@@ -1396,6 +1396,9 @@ mod materialization_tests {
         assert!(matches!(err, Error::SizeExceeded { size: 6, max: 5 }));
         // The final upload must not have been persisted on the rejected path.
         assert!(store.get("final-1").await.unwrap().is_none());
+        // Only the two partials' storage objects should exist; the size check
+        // must short-circuit before `storage.create` for the final upload.
+        assert_eq!(storage.len(), 2);
     }
 
     #[tokio::test]
