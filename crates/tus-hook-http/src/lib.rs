@@ -1290,7 +1290,8 @@ mod tests {
     #[tokio::test]
     async fn fail_open_proceeds_when_pre_hook_returns_error_status() {
         let (url, request) = serve_once(500, "boom").await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open(true)).unwrap();
+        let executor =
+            HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open(true)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let _request = request.await.unwrap();
@@ -1301,7 +1302,8 @@ mod tests {
     #[tokio::test]
     async fn fail_open_still_honors_structured_rejection() {
         let (url, request) = serve_once(200, r#"{"proceed":false,"reject_status":403}"#).await;
-        let executor = HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open(true)).unwrap();
+        let executor =
+            HttpHookExecutor::new(HttpHookConfig::new(url).with_fail_open(true)).unwrap();
 
         let result = executor.execute_pre(&hook_context()).await.unwrap();
         let _request = request.await.unwrap();
