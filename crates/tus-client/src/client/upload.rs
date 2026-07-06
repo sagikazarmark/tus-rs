@@ -199,7 +199,12 @@ impl ParallelUpload {
         // `P: Send`). The parallel aggregator serializes calls regardless.
         let progress = std::sync::Mutex::new(progress);
         self.progress = Some(std::sync::Arc::new(move |uploaded, total| {
-            progress.lock().unwrap().on_progress(uploaded, total);
+            // Recover from a poisoned lock: a panic in a prior `on_progress`
+            // call must not turn every later progress tick into a panic.
+            progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .on_progress(uploaded, total);
         }));
         self
     }
@@ -279,7 +284,10 @@ impl ParallelProgressState {
             .uploaded
             .fetch_add(delta, std::sync::atomic::Ordering::Relaxed)
             + delta;
-        let mut reported = self.reported.lock().unwrap();
+        let mut reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if uploaded > *reported {
             *reported = uploaded;
             (self.callback)(uploaded, self.total);

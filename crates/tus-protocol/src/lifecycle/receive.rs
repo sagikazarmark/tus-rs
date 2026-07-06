@@ -159,9 +159,12 @@ where
         let handle = self.storage.create(state.id()).await?;
         state.set_storage_handle(handle);
         if let Err(err) = self.state_store.set(&state, WriteMode::CreateNew).await {
-            // Best-effort rollback: the storage object created above must not
-            // leak when the state record cannot be persisted.
-            self.rollback_creation(&state).await;
+            // Best-effort rollback of the storage object only: the `CreateNew`
+            // set never wrote our state record, so we must not delete the state
+            // for this ID. If the failure was `AlreadyExists`, that record
+            // belongs to a pre-existing upload and deleting it would corrupt a
+            // different upload. Mirrors the non-CwU creation path in `post.rs`.
+            self.rollback_storage(&state).await;
             return Err(err);
         }
 
@@ -191,7 +194,13 @@ where
         })
     }
 
-    async fn rollback_creation(&self, state: &UploadState) {
+    /// Rolls back only the storage object created for a new upload.
+    ///
+    /// Used when the `CreateNew` state write itself failed: we own the storage
+    /// object we just created, but no state record of ours was persisted, so
+    /// the state record for this ID (if any) belongs to a different upload and
+    /// must be left untouched.
+    async fn rollback_storage(&self, state: &UploadState) {
         if let Some(handle) = state.storage_handle()
             && let Err(error) = self.storage.delete(&handle).await
         {
@@ -201,6 +210,14 @@ where
                 "failed to roll back storage object while undoing upload creation"
             );
         }
+    }
+
+    /// Rolls back both the storage object and the state record for a new upload.
+    ///
+    /// Used after the `CreateNew` state write has succeeded, so this upload owns
+    /// its state record and may delete it.
+    async fn rollback_creation(&self, state: &UploadState) {
+        self.rollback_storage(state).await;
         if let Err(error) = self.state_store.delete(state.id()).await {
             tracing::warn!(
                 upload_id = %state.id(),
@@ -563,5 +580,57 @@ mod tests {
         let err = validate_receive_body(&Config::default(), &state, 6).unwrap_err();
 
         assert!(matches!(err, Error::SizeExceeded { size: 6, max: 5 }));
+    }
+
+    #[cfg(all(feature = "storage-memory", feature = "state-memory"))]
+    #[tokio::test]
+    async fn creation_with_upload_id_collision_preserves_existing_state() {
+        use crate::hooks::NoopHookExecutor;
+        use crate::protocol::RequestBody;
+        use crate::state::memory::MemoryStateStore;
+        use crate::storage::memory::MemoryStorage;
+
+        // A pre-existing upload already owns this ID.
+        let store = MemoryStateStore::new();
+        let existing = UploadState::new("dup").with_length(999);
+        store.set(&existing, WriteMode::CreateNew).await.unwrap();
+
+        // A Creation-With-Upload request tries to create a new upload with the
+        // same ID. The `CreateNew` write fails with `AlreadyExists`, and the
+        // rollback must not touch the pre-existing upload's state record.
+        let storage = MemoryStorage::new();
+        let hooks = NoopHookExecutor::new();
+        let config = Config::default();
+        let request_info = HookRequestInfo::default();
+        let receiver = ByteReceiver::new(&storage, &store, &hooks, &config, &request_info);
+
+        let headers = Headers {
+            upload_length: Some(5),
+            content_type: Some("application/offset+octet-stream".to_string()),
+            content_length: Some(5),
+            ..Default::default()
+        };
+        let err = receiver
+            .receive_creation_with_upload(
+                &headers,
+                UploadState::new("dup").with_length(5),
+                RequestBody::from_chunk_stream(ChunkStream::from_bytes(bytes::Bytes::from_static(
+                    b"Hello",
+                ))),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::AlreadyExists(_)));
+        let survivor = store
+            .get("dup")
+            .await
+            .unwrap()
+            .expect("pre-existing upload state must survive a colliding creation");
+        assert_eq!(
+            survivor.length(),
+            Some(999),
+            "the surviving record must be the original upload, not the rejected one"
+        );
     }
 }

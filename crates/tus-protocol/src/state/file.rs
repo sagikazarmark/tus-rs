@@ -2,6 +2,13 @@
 //!
 //! This state store persists upload metadata as JSON files on disk.
 //! Each upload gets its own `.json` file in the configured directory.
+//!
+//! # Portability
+//!
+//! [`WriteMode::CreateNew`] is made atomic
+//! with a same-directory `hard_link`, which a few filesystems (FAT, some network
+//! mounts) do not support; on those, creation always errors. The common
+//! server filesystems (ext4, XFS, APFS, NTFS) all support it.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

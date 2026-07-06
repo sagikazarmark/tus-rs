@@ -43,9 +43,10 @@ impl<'a> UploadObjects<'a> {
         // Same ordering rationale as `delete_all`; the main object is removed
         // too so a reused key cannot report the previous upload's size.
         self.delete_object(&self.completion_marker_key()).await?;
-        self.delete_object(self.key).await?;
+        self.delete_object(&self.main_key()).await?;
         self.delete_staged_parts().await?;
-        self.delete_temp_objects().await
+        self.delete_temp_objects().await?;
+        self.delete_object(&self.container_prefix()).await
     }
 
     /// Cheaply detects leftover state at the key that would corrupt a fresh
@@ -72,7 +73,7 @@ impl<'a> UploadObjects<'a> {
         if self.object_exists(&self.completion_marker_key()).await? {
             return Ok(true);
         }
-        if self.object_exists(self.key).await? {
+        if self.object_exists(&self.main_key()).await? {
             return Ok(true);
         }
         Ok(!self.list_parts().await?.is_empty())
@@ -115,13 +116,16 @@ impl<'a> UploadObjects<'a> {
     ) -> Result<()> {
         let position = self.append_position(handle).await?;
         if position.offset != expected_offset {
-            // Divergence between persisted upload state and stored bytes
-            // (e.g. after a failed completing append) is an offset conflict
-            // the client can recover from via HEAD, not an internal error.
-            return Err(Error::OffsetMismatch {
-                expected: position.offset,
-                actual: expected_offset,
-            });
+            // The lifecycle already reconciled the recorded offset against
+            // `size()` (which reports the staged bytes) and validated the
+            // client's offset before calling append, so a divergence here is a
+            // server-side storage/state inconsistency, not a recoverable client
+            // offset conflict. Match FileStorage/MemoryStorage and surface it as
+            // an internal error (500) rather than a 409.
+            return Err(Error::Internal(format!(
+                "opendal storage staged size {} does not match expected offset {expected_offset} for key {}",
+                position.offset, self.key
+            )));
         }
 
         let part_key = self.part_key(position.part_number);
@@ -169,7 +173,7 @@ impl<'a> UploadObjects<'a> {
         // safe for recovery from old direct-to-main finalize failures (partial
         // main object plus complete staged parts) and from crashes after temp
         // promotion but before all staged parts were cleaned up.
-        match self.operator.stat(self.key).await {
+        match self.operator.stat(&self.main_key()).await {
             Ok(stat) => Ok(Some(match staged_size {
                 Some(staged_size) => staged_size.max(stat.content_length()),
                 None => stat.content_length(),
@@ -238,7 +242,7 @@ impl<'a> UploadObjects<'a> {
     /// main object, the freshly promoted object is accepted. Staging garbage
     /// left behind by a repaired upload is removed on delete/termination.
     pub(crate) async fn ensure_materialized(&self) -> Result<bool> {
-        match self.operator.stat(self.key).await {
+        match self.operator.stat(&self.main_key()).await {
             Ok(_) => return Ok(true),
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => {}
             Err(e) => return Err(Error::storage(e)),
@@ -275,7 +279,7 @@ impl<'a> UploadObjects<'a> {
         );
         match self.materialize("repair", &part_keys).await {
             Ok(()) => Ok(true),
-            Err(error) => match self.operator.stat(self.key).await {
+            Err(error) => match self.operator.stat(&self.main_key()).await {
                 // A concurrent repair or finalize won the promotion race with
                 // byte-identical content; serve the promoted object.
                 Ok(_) => Ok(true),
@@ -284,8 +288,14 @@ impl<'a> UploadObjects<'a> {
         }
     }
 
-    pub(crate) async fn concat(&self, source_keys: &[String]) -> Result<()> {
-        self.materialize("concat", source_keys).await
+    pub(crate) async fn concat(&self, part_keys: &[String]) -> Result<()> {
+        // Each source is another upload's deliverable, which lives at that
+        // upload's own `{key}/data`, not at the bare part key.
+        let source_keys: Vec<String> = part_keys
+            .iter()
+            .map(|part_key| main_key(part_key))
+            .collect();
+        self.materialize("concat", &source_keys).await
     }
 
     /// Deletes the main object and all staging/temporary objects.
@@ -301,9 +311,10 @@ impl<'a> UploadObjects<'a> {
         // remaining parts and temp objects are inert garbage that a retried
         // DELETE removes.
         self.delete_object(&self.completion_marker_key()).await?;
-        self.delete_object(self.key).await?;
+        self.delete_object(&self.main_key()).await?;
         self.delete_staged_parts().await?;
-        self.delete_temp_objects().await
+        self.delete_temp_objects().await?;
+        self.delete_object(&self.container_prefix()).await
     }
 
     /// Determines the append position with one stat in the common case.
@@ -349,7 +360,7 @@ impl<'a> UploadObjects<'a> {
 
         // A partial main object (from an old direct-to-main finalize failure)
         // must not shrink the reported offset below the staged bytes.
-        let offset = match self.operator.stat(self.key).await {
+        let offset = match self.operator.stat(&self.main_key()).await {
             Ok(stat) => staged_size.max(stat.content_length()),
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => staged_size,
             Err(e) => return Err(Error::storage(e)),
@@ -618,7 +629,7 @@ impl<'a> UploadObjects<'a> {
     }
 
     async fn promote_temp(&self, temp_key: &str) -> Result<()> {
-        self.promote_object(temp_key, self.key).await
+        self.promote_object(temp_key, &self.main_key()).await
     }
 
     /// Atomically moves a temporary object onto a target key.
@@ -656,16 +667,28 @@ impl<'a> UploadObjects<'a> {
         ))
     }
 
+    /// Key of the deliverable (main) object holding the finalized upload.
+    ///
+    /// The deliverable and every staging sibling live strictly under the
+    /// upload's own `{key}/` prefix. Upload ids can never contain `/`, so two
+    /// distinct uploads own disjoint `{key}/` keyspaces and cannot collide even
+    /// when one id is a dotted extension of another (for example `report` and
+    /// `report.complete`, which aliased each other under the previous
+    /// dot-suffixed layout).
+    pub(crate) fn main_key(&self) -> String {
+        main_key(self.key)
+    }
+
     fn parts_prefix(&self) -> String {
-        format!("{}.parts/", self.key)
+        format!("{}/parts/", self.key)
     }
 
     fn part_key(&self, part_number: u64) -> String {
-        format!("{}.parts/{:010}", self.key, part_number)
+        format!("{}/parts/{:010}", self.key, part_number)
     }
 
     fn temp_prefix(&self) -> String {
-        format!("{}.tmp/", self.key)
+        format!("{}/tmp/", self.key)
     }
 
     fn temp_key(&self, purpose: &str) -> String {
@@ -678,7 +701,15 @@ impl<'a> UploadObjects<'a> {
     }
 
     fn completion_marker_key(&self) -> String {
-        format!("{}.complete", self.key)
+        format!("{}/complete", self.key)
+    }
+
+    /// Prefix that contains every object for this upload (deliverable, marker,
+    /// staged parts, and temporaries). Removed last on cleanup so hierarchical
+    /// backends (for example `fs`) are not left with an empty container
+    /// directory.
+    fn container_prefix(&self) -> String {
+        format!("{}/", self.key)
     }
 }
 
@@ -714,6 +745,14 @@ fn staged_size_fact(handle: &StorageHandle) -> Option<u64> {
 
 fn part_number(part_key: &str) -> Option<u64> {
     part_key.rsplit('/').next()?.parse::<u64>().ok()
+}
+
+/// Deliverable (main) object key for an upload keyed by `base_key`.
+///
+/// The single place the `{key}/data` layout is defined, so the deliverable and
+/// every staging sibling stay under the collision-proof `{key}/` prefix.
+fn main_key(base_key: &str) -> String {
+    format!("{base_key}/data")
 }
 
 #[cfg(test)]
@@ -804,7 +843,7 @@ mod tests {
         test_operator
             .operator
             .write(
-                "finalize-orphan-cleanup.tmp/finalize-deadbeef",
+                "finalize-orphan-cleanup/tmp/finalize-deadbeef",
                 Bytes::from_static(b"orphan"),
             )
             .await
@@ -875,7 +914,11 @@ mod tests {
 
         assert!(upload.ensure_materialized().await.unwrap());
 
-        let body = test_operator.operator.read("repairable").await.unwrap();
+        let body = test_operator
+            .operator
+            .read("repairable/data")
+            .await
+            .unwrap();
         assert_eq!(body.to_bytes().as_ref(), b"hello world");
     }
 
@@ -898,7 +941,7 @@ mod tests {
 
         assert!(!upload.ensure_materialized().await.unwrap());
         assert!(matches!(
-            test_operator.operator.stat("incomplete").await,
+            test_operator.operator.stat("incomplete/data").await,
             Err(e) if e.kind() == opendal::ErrorKind::NotFound
         ));
         // The staged bytes are untouched.
@@ -941,7 +984,7 @@ mod tests {
 
         assert!(!upload.ensure_materialized().await.unwrap());
         assert!(matches!(
-            test_operator.operator.stat("torn-delete").await,
+            test_operator.operator.stat("torn-delete/data").await,
             Err(e) if e.kind() == opendal::ErrorKind::NotFound
         ));
     }
@@ -971,7 +1014,11 @@ mod tests {
         assert!(a.unwrap());
         assert!(b.unwrap());
 
-        let body = test_operator.operator.read("double-repair").await.unwrap();
+        let body = test_operator
+            .operator
+            .read("double-repair/data")
+            .await
+            .unwrap();
         assert_eq!(body.to_bytes().as_ref(), b"same bytes");
     }
 }

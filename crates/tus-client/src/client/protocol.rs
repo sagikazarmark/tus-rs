@@ -300,8 +300,25 @@ where
         }
 
         let location = header_string(response.headers(), http::header::LOCATION, "Location")?;
-        let final_url = resolve_upload_location(&self.endpoint, &location)?;
+        let final_url = self.resolve_server_location(&location)?;
         self.upload_info_at(&final_url).await
+    }
+
+    /// Resolves a server-supplied upload `Location` against the endpoint,
+    /// enforcing the optional same-origin restriction.
+    ///
+    /// A server can return a cross-origin `Location`; without the restriction
+    /// the client would follow it and send its configured credentials there.
+    /// See [`Client::with_endpoint_origin_restriction`](crate::Client::with_endpoint_origin_restriction).
+    fn resolve_server_location(&self, location: &str) -> Result<url::Url> {
+        let url = resolve_upload_location(&self.endpoint, location)?;
+        if self.restrict_to_endpoint_origin && url.origin() != self.endpoint.origin() {
+            return Err(Error::CrossOriginLocation {
+                endpoint: self.endpoint.origin().ascii_serialization(),
+                location: url.to_string(),
+            });
+        }
+        Ok(url)
     }
 
     /// Creates a new upload resource and returns its protocol state.
@@ -359,7 +376,7 @@ where
         }
 
         let location = header_string(response.headers(), http::header::LOCATION, "Location")?;
-        let url = resolve_upload_location(&self.endpoint, &location)?;
+        let url = self.resolve_server_location(&location)?;
         let offset = if has_body {
             let offset = header_u64(response.headers(), "upload-offset", "Upload-Offset")?;
             validate_offset_not_beyond_source(offset, length)?;
@@ -604,6 +621,54 @@ mod tests {
         let url: &url::Url = &upload.url;
 
         assert_eq!(url.as_str(), "http://example.test/files/upload-1");
+    }
+
+    #[async_test]
+    async fn cross_origin_location_is_rejected_when_restricted() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                201,
+                header_map(&[("Location", "https://evil.test/files/upload-1")]),
+                Vec::new(),
+            )));
+
+        let client =
+            Client::with_transport(endpoint_url(), transport).with_endpoint_origin_restriction();
+        let err = client
+            .create_upload_info(NewUpload::new(5, UploadMetadata::new()))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::CrossOriginLocation { .. }));
+    }
+
+    #[async_test]
+    async fn cross_origin_location_is_followed_by_default() {
+        let transport = MockTransport::default();
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(transport_response(
+                201,
+                header_map(&[("Location", "https://cdn.example.test/files/upload-1")]),
+                Vec::new(),
+            )));
+
+        let client = Client::with_transport(endpoint_url(), transport);
+        let upload = client
+            .create_upload_info(NewUpload::new(5, UploadMetadata::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            upload.url.as_str(),
+            "https://cdn.example.test/files/upload-1"
+        );
     }
 
     #[async_test]

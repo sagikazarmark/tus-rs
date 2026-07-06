@@ -20,27 +20,36 @@
 //! Many OpenDAL backends do not support native append for object writes. Rather
 //! than the previous read-modify-write fallback (which is O(n²) in the
 //! number of PATCH chunks), this implementation writes each PATCH into its
-//! own staging object:
+//! own staging object. Every object for an upload lives strictly under the
+//! upload's own `{id}/` prefix:
 //!
 //! ```text
-//! uploads/<id>                      // final/main object (only populated on finalize)
-//! uploads/<id>.parts/0000000001     // chunk from PATCH 1
-//! uploads/<id>.parts/0000000002     // chunk from PATCH 2
+//! uploads/<id>/data                 // final/main object (only populated on finalize)
+//! uploads/<id>/parts/0000000001     // chunk from PATCH 1
+//! uploads/<id>/parts/0000000002     // chunk from PATCH 2
+//! uploads/<id>/tmp/...              // temporary objects promoted into place
+//! uploads/<id>/complete             // completion marker (final part number)
 //! ...
 //! ```
+//!
+//! The `/`-nested layout is collision-proof: upload ids may contain dots (so
+//! `report`, `report.complete`, and `report.parts` are all valid ids) but can
+//! never contain `/`, so each upload owns a disjoint `{id}/` keyspace. A
+//! dot-suffixed sibling layout (`<id>.parts`, `<id>.complete`) would instead
+//! alias one upload's staging objects onto another upload's main object.
 //!
 //! Each PATCH is O(1) in terms of storage cost (one PUT). On finalize,
 //! the append that either completes the declared `Upload-Length` or is
 //! triggered by `concat()`, all staging objects are streamed into the
-//! main key in part-number order via a temporary object that is promoted only
-//! after the complete object is written, then the staging prefix is removed.
-//! Completion requires an OpenDAL service that supports `rename` or `copy` so
-//! partially materialized target objects are not exposed.
+//! deliverable object in part-number order via a temporary object that is
+//! promoted only after the complete object is written, then the staging prefix
+//! is removed. Completion requires an OpenDAL service that supports `rename` or
+//! `copy` so partially materialized target objects are not exposed.
 //!
 //! # Interrupted finalize and lazy repair
 //!
 //! The completing PATCH first writes a durable completion marker
-//! (`uploads/<id>.complete`, recording the final part number), then stages the
+//! (`uploads/<id>/complete`, recording the final part number), then stages the
 //! final part, then finalizes. Finalize is retried a bounded number of times
 //! inline; if it still fails (or the process crashes before it runs), the
 //! upload is fully staged but the main object does not exist yet. The read
@@ -146,14 +155,16 @@ impl OpendalStorage {
         // A completed upload whose finalize was interrupted has no main
         // object yet; re-drive materialization before reading. Genuinely
         // incomplete uploads only have staging bytes and are not readable.
-        if !staging::UploadObjects::new(&self.operator, key)
-            .ensure_materialized()
-            .await?
-        {
+        let upload = staging::UploadObjects::new(&self.operator, key);
+        if !upload.ensure_materialized().await? {
             return Err(Error::NotFound(key.to_string()));
         }
 
-        let reader = self.operator.reader(key).await.map_err(Error::storage)?;
+        let reader = self
+            .operator
+            .reader(&upload.main_key())
+            .await
+            .map_err(Error::storage)?;
         let stream = match end {
             Some(end) => reader.into_bytes_stream(start..end).await,
             None => reader.into_bytes_stream(start..).await,
@@ -453,7 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_expected_offset_returns_offset_mismatch() {
+    async fn stale_expected_offset_returns_internal_error() {
         let storage = create_test_storage();
 
         let handle = storage.create("offset-mismatch-upload").await.unwrap();
@@ -467,9 +478,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Storage holds 5 bytes; a client (or stale state after a failed
-        // completing append) supplying another offset gets the
-        // protocol-correct 409 conflict, not an internal error.
+        // Storage holds 5 bytes. The lifecycle reconciles the recorded offset
+        // against size() and validates the client's offset before append runs,
+        // so a divergence at append time is a server-side storage/state
+        // inconsistency (500), matching FileStorage/MemoryStorage, not a
+        // client-recoverable 409 conflict.
         let error = storage
             .append(AppendRequest::new(
                 handle.clone(),
@@ -480,13 +493,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(
-            error,
-            Error::OffsetMismatch {
-                expected: 5,
-                actual: 3
-            }
-        ));
+        assert!(matches!(error, Error::Internal(_)));
         assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
     }
 
@@ -523,7 +530,7 @@ mod tests {
         // The failed PATCH must leave no partial staged part behind: the
         // offset is unchanged and the next part object does not exist.
         assert_eq!(storage.size(&handle).await.unwrap(), Some(5));
-        let part2 = format!("{}.parts/{:010}", handle.key(), 2);
+        let part2 = format!("{}/parts/{:010}", handle.key(), 2);
         assert!(matches!(
             storage.operator.stat(&part2).await,
             Err(e) if e.kind() == opendal::ErrorKind::NotFound
@@ -566,7 +573,7 @@ mod tests {
 
         storage
             .operator
-            .write(handle.key(), Bytes::from("he"))
+            .write(&format!("{}/data", handle.key()), Bytes::from("he"))
             .await
             .unwrap();
 
@@ -705,13 +712,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Block promotion: a directory at the main key makes the fs
+        // Block promotion: a directory at the deliverable key makes the fs
         // service's rename fail, so the completing append stages its part
         // durably but every finalize attempt (including the inline retries)
         // fails.
         storage
             .operator
-            .create_dir("stranded-upload/")
+            .create_dir("stranded-upload/data/")
             .await
             .unwrap();
 
@@ -728,7 +735,11 @@ mod tests {
 
         // Promotion becomes possible again; the read path must repair the
         // stranded upload instead of returning NotFound forever.
-        storage.operator.delete("stranded-upload/").await.unwrap();
+        storage
+            .operator
+            .delete("stranded-upload/data/")
+            .await
+            .unwrap();
 
         // HEAD reconciliation reads size(), sees all bytes accounted for, and
         // marks the upload complete even though no main object exists yet.
@@ -751,7 +762,11 @@ mod tests {
         // Strand a partial upload: its completing append stages everything
         // but finalize cannot promote the main object.
         let stranded = storage.create("stranded-part").await.unwrap();
-        storage.operator.create_dir("stranded-part/").await.unwrap();
+        storage
+            .operator
+            .create_dir("stranded-part/data/")
+            .await
+            .unwrap();
         let error = storage
             .append(AppendRequest::new(
                 stranded.clone(),
@@ -762,7 +777,11 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Storage(_)));
-        storage.operator.delete("stranded-part/").await.unwrap();
+        storage
+            .operator
+            .delete("stranded-part/data/")
+            .await
+            .unwrap();
 
         let healthy = storage.create("healthy-part").await.unwrap();
         let healthy = storage
@@ -939,7 +958,7 @@ mod tests {
         // Make the staged part undeletable; DELETE must surface the failure
         // (so the client can retry) instead of reporting success while the
         // bytes remain orphaned.
-        let parts_dir = storage.tempdir.path().join("undeletable-upload.parts");
+        let parts_dir = storage.tempdir.path().join("undeletable-upload/parts");
         std::fs::set_permissions(&parts_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let error = storage.delete(&handle).await.unwrap_err();
@@ -960,17 +979,17 @@ mod tests {
         // temporary object, and a completion marker.
         storage
             .operator
-            .write("reused.parts/0000000001", Bytes::from("stale"))
+            .write("reused/parts/0000000001", Bytes::from("stale"))
             .await
             .unwrap();
         storage
             .operator
-            .write("reused.tmp/finalize-deadbeef", Bytes::from("stale-tmp"))
+            .write("reused/tmp/finalize-deadbeef", Bytes::from("stale-tmp"))
             .await
             .unwrap();
         storage
             .operator
-            .write("reused.complete", Bytes::from("1"))
+            .write("reused/complete", Bytes::from("1"))
             .await
             .unwrap();
 
@@ -1004,7 +1023,7 @@ mod tests {
         let storage = create_test_storage();
         storage
             .operator
-            .write("fresh-key.tmp/orphan-abcdef", Bytes::from("inert"))
+            .write("fresh-key/tmp/orphan-abcdef", Bytes::from("inert"))
             .await
             .unwrap();
 
@@ -1014,7 +1033,7 @@ mod tests {
         assert!(
             storage
                 .operator
-                .stat("fresh-key.tmp/orphan-abcdef")
+                .stat("fresh-key/tmp/orphan-abcdef")
                 .await
                 .is_ok()
         );
@@ -1037,14 +1056,70 @@ mod tests {
         // fresh leftover temp object to exercise delete's cleanup directly.
         storage
             .operator
-            .write("fresh-key.tmp/orphan-ghijkl", Bytes::from("inert"))
+            .write("fresh-key/tmp/orphan-ghijkl", Bytes::from("inert"))
             .await
             .unwrap();
         storage.delete(&handle).await.unwrap();
         assert!(matches!(
-            storage.operator.stat("fresh-key.tmp/orphan-ghijkl").await,
+            storage.operator.stat("fresh-key/tmp/orphan-ghijkl").await,
             Err(e) if e.kind() == opendal::ErrorKind::NotFound
         ));
+    }
+
+    #[tokio::test]
+    async fn dot_suffixed_sibling_ids_do_not_corrupt_each_other() {
+        // Upload ids may contain dots, so `report` and `report.complete` are
+        // both valid, distinct ids. Under the previous dot-suffixed staging
+        // layout `report`'s completion marker lived at `report.complete` — the
+        // exact key holding upload `report.complete`'s main object — so
+        // finalizing `report` (which writes then deletes that marker) would
+        // clobber the sibling upload's data. The `/`-nested layout gives each
+        // upload a disjoint `{id}/` keyspace (ids can never contain `/`), so
+        // they cannot alias.
+        let storage = create_test_storage();
+
+        // Complete the sibling first so its main object is already in place
+        // when the colliding upload runs its completing append.
+        let sibling = storage.create("report.complete").await.unwrap();
+        let sibling = storage
+            .append(AppendRequest::new(
+                sibling,
+                0,
+                ChunkStream::from_bytes(Bytes::from("sibling body")),
+                true,
+            ))
+            .await
+            .unwrap();
+
+        let report = storage.create("report").await.unwrap();
+        let report = storage
+            .append(AppendRequest::new(
+                report,
+                0,
+                ChunkStream::from_bytes(Bytes::from("REPORT BODY")),
+                true,
+            ))
+            .await
+            .unwrap();
+
+        // Both uploads keep their own bytes; neither clobbered the other.
+        assert_eq!(
+            read_all(storage.stream(&report).await.unwrap()).await,
+            b"REPORT BODY"
+        );
+        assert_eq!(
+            read_all(storage.stream(&sibling).await.unwrap()).await,
+            b"sibling body"
+        );
+
+        // Deleting one upload must not touch the other's keyspace.
+        storage.delete(&report).await.unwrap();
+        assert_eq!(storage.size(&report).await.unwrap(), None);
+        assert_eq!(
+            read_all(storage.stream(&sibling).await.unwrap()).await,
+            b"sibling body"
+        );
+        assert_eq!(storage.size(&sibling).await.unwrap(), Some(12));
     }
 
     #[tokio::test]

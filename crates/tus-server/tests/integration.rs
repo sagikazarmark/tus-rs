@@ -357,10 +357,23 @@ mod tcp_tests {
             "reserved port should not be reusable before server spawn"
         );
         port.release_listener();
-        assert!(
-            StdTcpListener::bind(&addr).is_ok(),
-            "reserved port should be reusable after release"
-        );
+        // Another parallel test binding an ephemeral `127.0.0.1:0` port can be
+        // handed this just-freed port by the OS before its own reservation loop
+        // rejects it (the port is still in RESERVED_PORTS) and releases it.
+        // Retry so that transient contention does not flake the assertion; the
+        // port is guaranteed to become rebindable because no other reservation
+        // can keep it while this test's token is alive.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let rebound = loop {
+            if StdTcpListener::bind(&addr).is_ok() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(rebound, "reserved port should be reusable after release");
     }
 
     #[cfg(unix)]
@@ -592,9 +605,14 @@ mod tcp_tests {
             Some("upload.bin")
         );
 
-        let stored = tokio::fs::read(server.storage_root.join(upload_id(&upload.url)))
-            .await
-            .unwrap();
+        let stored = tokio::fs::read(
+            server
+                .storage_root
+                .join(upload_id(&upload.url))
+                .join("data"),
+        )
+        .await
+        .unwrap();
         assert_eq!(stored, b"hello world");
 
         client.delete_upload(&upload.url).await.unwrap();
@@ -641,9 +659,14 @@ mod tcp_tests {
         assert_eq!(resumed.offset, 10);
         assert_eq!(resumed.length, Some(10));
 
-        let stored = tokio::fs::read(server.storage_root.join(upload_id(&upload.url)))
-            .await
-            .unwrap();
+        let stored = tokio::fs::read(
+            server
+                .storage_root
+                .join(upload_id(&upload.url))
+                .join("data"),
+        )
+        .await
+        .unwrap();
         assert_eq!(stored, b"abcdefghij");
     }
 
@@ -715,7 +738,7 @@ mod tcp_tests {
         assert_eq!(resumed.offset, 10);
         assert_eq!(resumed.length, Some(10));
 
-        let stored = tokio::fs::read(restarted.storage_root.join(upload_id))
+        let stored = tokio::fs::read(restarted.storage_root.join(upload_id).join("data"))
             .await
             .unwrap();
         assert_eq!(stored, b"abcdefghij");
@@ -744,9 +767,14 @@ mod tcp_tests {
         assert_eq!(head.offset, 16);
         assert_eq!(head.length, Some(16));
 
-        let stored = tokio::fs::read(server.storage_root.join(upload_id(&upload.url)))
-            .await
-            .unwrap();
+        let stored = tokio::fs::read(
+            server
+                .storage_root
+                .join(upload_id(&upload.url))
+                .join("data"),
+        )
+        .await
+        .unwrap();
         assert_eq!(stored, b"abcdefghijklmnop");
     }
 
@@ -771,9 +799,14 @@ mod tcp_tests {
         assert_eq!(head.offset, 12);
         assert_eq!(head.length, Some(12));
 
-        let stored = tokio::fs::read(server.storage_root.join(upload_id(&upload.url)))
-            .await
-            .unwrap();
+        let stored = tokio::fs::read(
+            server
+                .storage_root
+                .join(upload_id(&upload.url))
+                .join("data"),
+        )
+        .await
+        .unwrap();
         assert_eq!(stored, b"header-check");
     }
 
@@ -798,9 +831,14 @@ mod tcp_tests {
         assert_eq!(head.offset, 13);
         assert_eq!(head.length, Some(13));
 
-        let stored = tokio::fs::read(server.storage_root.join(upload_id(&upload.url)))
-            .await
-            .unwrap();
+        let stored = tokio::fs::read(
+            server
+                .storage_root
+                .join(upload_id(&upload.url))
+                .join("data"),
+        )
+        .await
+        .unwrap();
         assert_eq!(stored, b"trailer-check");
     }
 
@@ -940,7 +978,7 @@ mod tcp_tests {
         let upload_path = server.storage_root.join(&upload_id);
         let staged_part_path = server
             .storage_root
-            .join(format!("{upload_id}.parts/0000000001"));
+            .join(format!("{upload_id}/parts/0000000001"));
         let state_path = server.state_dir.join(format!("{upload_id}.json"));
         let tus_client = TusClient::new(files_endpoint(&server)).unwrap();
 
@@ -1016,7 +1054,7 @@ mod tcp_tests {
         let upload_path = server.storage_root.join(&upload_id);
         let staged_part_path = server
             .storage_root
-            .join(format!("{upload_id}.parts/0000000001"));
+            .join(format!("{upload_id}/parts/0000000001"));
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -1111,9 +1149,14 @@ mod tcp_tests {
         assert_eq!(head.offset, 10);
         assert_eq!(head.length, Some(10));
 
-        let stored = tokio::fs::read(server.storage_root.join(upload_id(&upload.url)))
-            .await
-            .unwrap();
+        let stored = tokio::fs::read(
+            server
+                .storage_root
+                .join(upload_id(&upload.url))
+                .join("data"),
+        )
+        .await
+        .unwrap();
         assert_eq!(stored, b"authorized");
     }
 

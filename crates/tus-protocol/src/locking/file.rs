@@ -26,6 +26,14 @@ use crate::error::{Error, Result};
 /// multiple processes. The lock file is only a rendezvous point; advisory lock
 /// ownership is held by an open file descriptor captured by [`LockGuard`].
 /// Lock files are unlinked on release while the advisory lock is still held.
+///
+/// # Fairness
+///
+/// Acquisition polls at [`with_retry_interval`](Self::with_retry_interval)
+/// (50 ms by default) rather than blocking, so it is not FIFO-fair and can
+/// thundering-herd under heavy contention for one upload ID. The [`Locker`]
+/// contract only prefers FIFO ordering, so this is compliant; tune the retry
+/// interval for latency-versus-CPU under contention.
 pub struct FileLocker {
     directory: Arc<PathBuf>,
     /// How long to wait between lock attempts.

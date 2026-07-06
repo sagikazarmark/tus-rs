@@ -288,7 +288,12 @@ impl HookContext {
 /// storage key and backend-internal storage metadata. Hooks can inspect protocol
 /// state and user metadata, but storage adapters remain the only code that sees
 /// or mutates storage-local bookkeeping.
+///
+/// Fields are private with accessors and the type is `#[non_exhaustive]`, so new
+/// hook-visible facts can be added without a breaking change (matching
+/// [`HookContext`] and [`HookRequestInfo`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HookUpload {
     /// Unique upload identifier.
     id: String,
