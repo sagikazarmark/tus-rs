@@ -1,8 +1,8 @@
 type Tests {
   let tus: Tus!
 
-  new(ws: Workspace!) {
-    self.tus = Dagger.tus(ws)
+  new {
+    self.tus = Dagger.tus
 
     self
   }
@@ -11,24 +11,13 @@ type Tests {
   The tus CLI tests.
   """
   cli(tusdVersion: String! = "latest", rustusVersion: String! = "latest"): CliTests! {
-    CliTests(self, tusdVersion, rustusVersion)
+    CliTests(tusdVersion, rustusVersion)
   }
 }
 
 type CliTests {
-  let parent: Tests!
   let tusdVersion: String!
   let rustusVersion: String!
-
-  let cli: Container! {
-    Dagger
-      .container
-      .from("debian:trixie")
-      .withEnvVariable("DEBIAN_FRONTEND", "noninteractive")
-      .withExec(["apt-get", "update"])
-      .withExec(["apt-get", "install", "-y", "--no-install-recommends", "ca-certificates"])
-      .withMountedFile("/usr/local/bin/tus", self.parent.tus.cli)
-  }
 
   """
   Run the CLI test suite against the tusd server.
@@ -45,7 +34,7 @@ type CliTests {
         "-upload-dir=/srv/tusd/data",
       ])
 
-    CliTestSuite(server, self.cli)
+    CliTestSuite(server)
   }
 
   """
@@ -68,31 +57,37 @@ type CliTests {
       .withExec(["mkdir", "-p", "/data"])
       .withExposedPort(1080)
 
-    CliTestSuite(server, self.cli)
+    CliTestSuite(server)
   }
 }
 
 type CliTestSuite {
   let server: Container!
-  let client: Container!
 
-  new(
-    server: Container!,
-    client: Container!,
-  ) {
+  new(server: Container!) {
     self.server = server
-    self.client = client
 
     self
+  }
+
+  let client: Container! {
+    Dagger
+      .container
+      .from("debian:trixie")
+      .withEnvVariable("DEBIAN_FRONTEND", "noninteractive")
+      .withExec(["apt-get", "update"])
+      .withExec(["apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl"])
+      .withMountedFile("/usr/local/bin/tus", Dagger.tus.cli)
   }
 
   basic: Void @check {
     let input = "hello from tus-rs dagger e2e\n"
     let service = self.server.asService(useEntrypoint: true)
-    let uploadUrl = self
+    let client = self
       .client
       .withServiceBinding("server", service)
       .withNewFile("/tmp/input.txt", contents: input)
+    let uploadUrl = client
       .withExec([
         "/usr/local/bin/tus",
         "--endpoint",
@@ -105,16 +100,11 @@ type CliTestSuite {
       ])
       .stdout
       .trimSuffix("\n")
-    let contentUrl = uploadUrl.replace(
-      "http://server:1080",
-      service.endpoint(port: 1080, scheme: "http"),
-      1,
-    )
-    let content = Dagger.http(contentUrl).contents
+    let content = client
+      .withExec(["curl", "-fsS", uploadUrl])
+      .stdout
 
     assert { content == input }
-
-    null
   }
 
   createUpload: Void @check {
@@ -147,17 +137,12 @@ type CliTestSuite {
       ])
       .stdout
       .trimSuffix("\n")
-    let contentUrl = uploadUrl.replace(
-      "http://server:1080",
-      service.endpoint(port: 1080, scheme: "http"),
-      1,
-    )
-    let content = Dagger.http(contentUrl).contents
+    let content = client
+      .withExec(["curl", "-fsS", uploadUrl])
+      .stdout
 
     assert { uploadedUrl == uploadUrl }
     assert { content == input }
-
-    null
   }
 
   createInfo: Void @check {
@@ -190,8 +175,6 @@ type CliTestSuite {
     )
 
     assert { info == expected }
-
-    null
   }
 
   createTerminate: Void @check {
@@ -223,7 +206,5 @@ type CliTestSuite {
       .stdout
 
     assert { verify == "" }
-
-    null
   }
 }

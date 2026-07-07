@@ -965,6 +965,21 @@ mod tests {
         let parts_dir = storage.tempdir.path().join("undeletable-upload/parts");
         std::fs::set_permissions(&parts_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
+        // Root (as in CI containers) and some filesystems ignore permission
+        // bits, so the read-only directory would not actually block deletion.
+        // When the injection can't take effect, the failure path is untestable
+        // here — restore the mode and skip rather than assert a failure that
+        // can't happen.
+        if std::fs::File::create(parts_dir.join(".probe")).is_ok() {
+            let _ = std::fs::remove_file(parts_dir.join(".probe"));
+            std::fs::set_permissions(&parts_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            eprintln!(
+                "skipping delete_propagates_staging_cleanup_failures: \
+                 permission bits are not enforced (running as root?)"
+            );
+            return;
+        }
+
         let error = storage.delete(&handle).await.unwrap_err();
         assert!(matches!(error, Error::Storage(_)));
 
