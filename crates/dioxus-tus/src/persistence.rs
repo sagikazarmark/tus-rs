@@ -14,7 +14,7 @@
 //!
 //! ## TTL + eviction
 //!
-//! Entries older than [`STORAGE_TTL_MS`] are filtered out by [`scan`]. They
+//! Entries older than the storage TTL are filtered out by [`scan`]. They
 //! aren't proactively garbage-collected on every read — operationally the
 //! storage namespace is `dioxus-tus:v1:*`, distinct enough that stale
 //! entries don't leak into other consumers.
@@ -41,8 +41,7 @@ pub(crate) const STORAGE_TTL_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
 #[non_exhaustive]
 pub struct ResumableEntry {
     /// Stable derived key used for both the localStorage entry name and
-    /// matching a re-picked file against the entry. Computed by
-    /// [`match_key`].
+    /// matching a re-picked file against the entry.
     pub match_key: String,
     /// Endpoint this URL was created against. Used for origin validation.
     pub endpoint: String,
