@@ -139,6 +139,17 @@ fn default_schema_version() -> u32 {
 /// This is the core data structure that tracks upload progress and metadata.
 /// It's stored by the `StateStore` and updated during upload operations.
 ///
+/// # Serialization
+///
+/// This is the type a [`StateStore`] serializes, and it must be persisted with
+/// a *self-describing* format such as JSON (which the built-in file-backed
+/// store uses). Binary metadata is carried by [`MetadataValue`], whose
+/// `#[serde(untagged)]` representation cannot round-trip through
+/// non-self-describing formats (bincode, postcard) — see
+/// [`MetadataValue`'s serialization notes](MetadataValue#serialization). A
+/// custom `StateStore` using such a format will fail or corrupt binary metadata
+/// at runtime with no compile-time signal.
+///
 /// # Examples
 ///
 /// ```rust

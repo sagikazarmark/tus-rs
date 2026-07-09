@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
@@ -27,12 +27,20 @@ pub(super) struct DeferredBodyError {
 }
 
 impl DeferredBodyError {
+    // The guarded value is a plain `Option<Error>`, always safe to touch, so a
+    // poisoned mutex (a panic while another holder — e.g. a storage backend
+    // polling the body stream — held the guard) is recovered rather than
+    // re-panicked. This keeps a recoverable request failure from escalating
+    // into a panic on the request path.
     pub(super) fn take(&self) -> Option<Error> {
-        self.error.lock().unwrap().take()
+        self.error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     fn set(&self, error: Error) {
-        *self.error.lock().unwrap() = Some(error);
+        *self.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
     }
 }
 

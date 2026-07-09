@@ -44,14 +44,20 @@ pub const DEFAULT_MAX_INTAKE_BUFFER: u64 = 8 * 1024 * 1024;
 /// use std::time::Duration;
 /// use tus_protocol::{Config, Extension};
 ///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// // `try_with_extension` returns an error instead of panicking when the
+/// // current build cannot service the extension (see [`Config::with_extension`]
+/// // for the panicking counterpart and when each is appropriate).
 /// let config = Config::new()
 ///     .with_base_path("/uploads")
 ///     .with_max_size(100 * 1024 * 1024)
 ///     .with_expiration(Duration::from_secs(24 * 60 * 60))
-///     .with_extension(Extension::Concatenation);
+///     .try_with_extension(Extension::Concatenation)?;
 ///
 /// assert_eq!(config.base_path(), "/uploads");
 /// assert!(config.has_extension(Extension::Concatenation));
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
