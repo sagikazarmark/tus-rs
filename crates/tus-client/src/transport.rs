@@ -14,6 +14,9 @@ mod reqwest;
 #[cfg(feature = "transport-reqwest")]
 pub use reqwest::ReqwestTransport;
 
+#[cfg(feature = "transport-reqwest-middleware")]
+pub use reqwest::ReqwestMiddlewareTransport;
+
 /// Pluggable HTTP transport used by the client core.
 ///
 /// Implementations turn a [`TransportRequest`] into a buffered

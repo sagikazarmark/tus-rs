@@ -12,7 +12,11 @@ mod wasm {
         }
 
         async fn read_chunk(&mut self, offset: u64, max_len: usize) -> tus_client::Result<Vec<u8>> {
-            let offset = offset as usize;
+            // A custom source signals its own misbehavior with the public
+            // `Error::source` constructor, so the failure is reported as the
+            // semantically-correct permanent variant rather than mislabeled.
+            let offset = usize::try_from(offset)
+                .map_err(|_| tus_client::Error::source("offset exceeds addressable range"))?;
             let Some(bytes) = self.0.get(offset..) else {
                 return Ok(Vec::new());
             };

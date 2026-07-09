@@ -107,13 +107,11 @@ impl UploadSource for FileSource {
 
         let current_len = self.file.metadata().await?.len();
         if current_len != self.len {
-            return Err(Error::Source {
-                message: format!(
-                    "file {} changed length from {} to {current_len} after open",
-                    self.path.display(),
-                    self.len,
-                ),
-            });
+            return Err(Error::source(format!(
+                "file {} changed length from {} to {current_len} after open",
+                self.path.display(),
+                self.len,
+            )));
         }
 
         self.file.seek(std::io::SeekFrom::Start(offset)).await?;
@@ -846,8 +844,8 @@ where
     where
         S: UploadSource,
     {
-        let capacity = usize::try_from(length).map_err(|_| Error::Source {
-            message: format!("source range length {length} does not fit in memory"),
+        let capacity = usize::try_from(length).map_err(|_| {
+            Error::source(format!("source range length {length} does not fit in memory"))
         })?;
         let mut body = Vec::with_capacity(capacity);
 
@@ -862,12 +860,10 @@ where
                 });
             }
             if chunk.len() > remaining {
-                return Err(Error::Source {
-                    message: format!(
-                        "source returned {} bytes for a {remaining}-byte read",
-                        chunk.len()
-                    ),
-                });
+                return Err(Error::source(format!(
+                    "source returned {} bytes for a {remaining}-byte read",
+                    chunk.len()
+                )));
             }
             body.extend(chunk);
         }
@@ -900,12 +896,10 @@ where
                 });
             }
             if chunk.len() > chunk_len {
-                return Err(Error::Source {
-                    message: format!(
-                        "source returned {} bytes for a {chunk_len}-byte read",
-                        chunk.len()
-                    ),
-                });
+                return Err(Error::source(format!(
+                    "source returned {} bytes for a {chunk_len}-byte read",
+                    chunk.len()
+                )));
             }
             let chunk_len_sent = chunk.len() as u64;
             let new_offset = self
@@ -1906,8 +1900,12 @@ mod tests {
             .await;
 
         match result {
-            Err(Error::Source { message }) => {
-                assert!(message.contains("source returned 5 bytes for a 4-byte read"));
+            Err(error @ Error::Source { .. }) => {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("source returned 5 bytes for a 4-byte read")
+                );
             }
             other => panic!("expected oversized source chunk error, got {other:?}"),
         }

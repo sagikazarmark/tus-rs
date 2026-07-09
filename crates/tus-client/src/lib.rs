@@ -48,6 +48,15 @@ pub use {async_trait, http, tus_protocol, url};
 #[cfg(feature = "transport-reqwest")]
 pub use transport::ReqwestTransport;
 
+#[cfg(feature = "transport-reqwest-middleware")]
+pub use transport::ReqwestMiddlewareTransport;
+
 /// Re-export of the `reqwest` crate backing the default transport.
 #[cfg(feature = "transport-reqwest")]
 pub use reqwest;
+
+/// Re-export of the `reqwest-middleware` crate, so consumers can build a
+/// [`ClientWithMiddleware`](reqwest_middleware::ClientWithMiddleware) against
+/// the exact version [`ReqwestMiddlewareTransport`] wraps — never a skewed one.
+#[cfg(feature = "transport-reqwest-middleware")]
+pub use reqwest_middleware;

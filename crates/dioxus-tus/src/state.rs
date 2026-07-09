@@ -97,8 +97,8 @@ impl From<tus_client::Error> for TusError {
             } => TusError::Transport(format!(
                 "server acknowledged offset {actual}, expected {expected}"
             )),
-            Error::Source { message, .. } => {
-                TusError::Transport(format!("upload source failed: {message}"))
+            Error::Source { source, .. } => {
+                TusError::Transport(format!("upload source failed: {source}"))
             }
             Error::UnexpectedResponse { status, body, .. } => TusError::Server {
                 status: status.as_u16(),

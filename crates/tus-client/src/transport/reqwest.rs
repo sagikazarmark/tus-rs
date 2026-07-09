@@ -1,6 +1,7 @@
-//! Reqwest-backed TUS client transport.
+//! Reqwest-backed TUS client transports.
 
 use async_trait::async_trait;
+use http::{HeaderName, HeaderValue};
 
 use crate::error::{Error, Result};
 use crate::transport::{Transport, TransportBody, TransportRequest, TransportResponse};
@@ -9,46 +10,36 @@ use crate::transport::{Transport, TransportBody, TransportRequest, TransportResp
 use {
     ::reqwest::Body,
     bytes::Bytes,
-    http::header::{CONTENT_LENGTH, HeaderValue},
+    http::header::CONTENT_LENGTH,
     http_body_util::{BodyExt, Full},
 };
 
-#[cfg(feature = "transport-reqwest-middleware")]
-type ReqwestClient = reqwest_middleware::ClientWithMiddleware;
-
-#[cfg(not(feature = "transport-reqwest-middleware"))]
-type ReqwestClient = ::reqwest::Client;
-
 /// Default `reqwest`-backed transport.
+///
+/// Always backed by a plain `reqwest::Client`. The middleware variant is a
+/// separate type (`ReqwestMiddlewareTransport`, under the
+/// `transport-reqwest-middleware` feature) so enabling that feature anywhere in
+/// the dependency graph can never reshape this transport.
 #[derive(Clone, Debug)]
 pub struct ReqwestTransport {
-    client: ReqwestClient,
+    client: ::reqwest::Client,
 }
 
 impl ReqwestTransport {
     /// Creates a new transport using reqwest's default client.
     ///
-    /// To wrap a configured client, use the [`From`] impls
+    /// To wrap a configured client, use the [`From`] impl
     /// (`ReqwestTransport::from(client)` or `client.into()`).
     #[must_use]
     pub fn new() -> Self {
         Self {
-            client: default_reqwest_client(),
+            client: ::reqwest::Client::new(),
         }
     }
 }
 
 impl From<::reqwest::Client> for ReqwestTransport {
     fn from(client: ::reqwest::Client) -> Self {
-        Self {
-            client: reqwest_client(client),
-        }
-    }
-}
-
-#[cfg(feature = "transport-reqwest-middleware")]
-impl From<reqwest_middleware::ClientWithMiddleware> for ReqwestTransport {
-    fn from(client: reqwest_middleware::ClientWithMiddleware) -> Self {
         Self { client }
     }
 }
@@ -64,75 +55,189 @@ impl Default for ReqwestTransport {
 impl Transport for ReqwestTransport {
     async fn send(&self, request: TransportRequest) -> Result<TransportResponse> {
         let (parts, body) = request.into_parts();
-        let mut builder = self.client.request(parts.method, parts.uri.to_string());
-        for (name, value) in &parts.headers {
-            builder = builder.header(name, value);
-        }
+        let builder = self.client.request(parts.method, parts.uri.to_string());
+        send_request(builder, &parts.headers, body).await
+    }
+}
 
-        builder = match body {
-            TransportBody::Empty => builder,
-            TransportBody::Bytes(body) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    builder.header(CONTENT_LENGTH, body.len()).body(body)
-                }
+/// `reqwest`-backed transport that runs a configured
+/// [`reqwest_middleware`](crate::reqwest_middleware) chain.
+///
+/// A middleware transport with no middleware is just [`ReqwestTransport`], so
+/// this type is constructed only from an already-built
+/// [`ClientWithMiddleware`](reqwest_middleware::ClientWithMiddleware) — there is
+/// deliberately no `Default` or no-argument constructor.
+#[cfg(feature = "transport-reqwest-middleware")]
+#[derive(Clone, Debug)]
+pub struct ReqwestMiddlewareTransport {
+    client: reqwest_middleware::ClientWithMiddleware,
+}
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    builder.body(body)
-                }
-            }
+#[cfg(feature = "transport-reqwest-middleware")]
+impl From<reqwest_middleware::ClientWithMiddleware> for ReqwestMiddlewareTransport {
+    fn from(client: reqwest_middleware::ClientWithMiddleware) -> Self {
+        Self { client }
+    }
+}
+
+#[cfg(feature = "transport-reqwest-middleware")]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl Transport for ReqwestMiddlewareTransport {
+    async fn send(&self, request: TransportRequest) -> Result<TransportResponse> {
+        let (parts, body) = request.into_parts();
+        let builder = self.client.request(parts.method, parts.uri.to_string());
+        send_request(builder, &parts.headers, body).await
+    }
+}
+
+/// Assembles `body` onto `builder`, applies `headers`, sends the request, and
+/// reads the capped response. Written once and shared by both reqwest
+/// transports through the [`ReqwestRequestBuilder`] adapter, since the plain
+/// and middleware builder types expose identical methods but share no trait.
+async fn send_request<B: ReqwestRequestBuilder>(
+    mut builder: B,
+    headers: &http::HeaderMap,
+    body: TransportBody,
+) -> Result<TransportResponse> {
+    for (name, value) in headers {
+        builder = builder.with_header(name, value);
+    }
+
+    builder = match body {
+        TransportBody::Empty => builder,
+        TransportBody::Bytes(body) => {
             #[cfg(not(target_arch = "wasm32"))]
-            TransportBody::BytesWithTrailer {
-                body,
-                trailer_name,
-                trailer_value,
-            } => {
-                let mut trailers = http::HeaderMap::new();
-                trailers.insert(
-                    trailer_name.clone(),
-                    HeaderValue::from_str(&trailer_value).map_err(|_| {
-                        Error::transport_permanent(format!(
-                            "invalid trailer value for {}",
-                            trailer_name.as_str()
-                        ))
-                    })?,
-                );
-                let body = Full::new(Bytes::from(body))
-                    .with_trailers(std::future::ready(Some(Ok::<_, std::convert::Infallible>(
-                        trailers,
-                    ))))
-                    .map_err(|never| -> std::io::Error { match never {} });
-                builder.body(Body::wrap(body))
+            {
+                builder
+                    .with_header(&CONTENT_LENGTH, &HeaderValue::from(body.len()))
+                    .with_body(Body::from(body))
             }
+
             #[cfg(target_arch = "wasm32")]
-            TransportBody::BytesWithTrailer { .. } => {
-                return Err(Error::transport_permanent(
-                    "reqwest transport does not support request trailers on wasm32",
-                ));
+            {
+                builder.with_body(body)
             }
-        };
-
-        let response = send_request(builder).await?;
-        let status = response.status().as_u16();
-        let headers = response.headers().clone();
-
-        // TUS responses carry no significant body (Location, headers, or a short
-        // error string), so bound the read. Without a cap, a misbehaving or
-        // malicious server — including one reached via a redirect — could return
-        // a multi-gigabyte body and exhaust client memory, since the transport
-        // buffers the whole response before the caller inspects it.
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        let body = read_body_capped(response).await?;
+        TransportBody::BytesWithTrailer {
+            body,
+            trailer_name,
+            trailer_value,
+        } => {
+            let mut trailers = http::HeaderMap::new();
+            trailers.insert(
+                trailer_name.clone(),
+                HeaderValue::from_str(&trailer_value).map_err(|_| {
+                    Error::transport_permanent(format!(
+                        "invalid trailer value for {}",
+                        trailer_name.as_str()
+                    ))
+                })?,
+            );
+            let body = Full::new(Bytes::from(body))
+                .with_trailers(std::future::ready(Some(Ok::<_, std::convert::Infallible>(
+                    trailers,
+                ))))
+                .map_err(|never| -> std::io::Error { match never {} });
+            builder.with_body(Body::wrap(body))
+        }
         #[cfg(target_arch = "wasm32")]
-        let body = response.bytes().await.map_err(reqwest_error)?.to_vec();
+        TransportBody::BytesWithTrailer { .. } => {
+            return Err(Error::transport_permanent(
+                "reqwest transport does not support request trailers on wasm32",
+            ));
+        }
+    };
 
-        let mut response = http::Response::builder()
-            .status(status)
-            .body(body)
-            .map_err(|err| Error::transport(format!("failed to build response: {err}")))?;
-        *response.headers_mut() = headers;
-        Ok(response)
+    let response = builder.execute().await?;
+    finish_response(response).await
+}
+
+/// Turns a completed `reqwest` response into a [`TransportResponse`], reading
+/// the body under [`MAX_RESPONSE_BODY_BYTES`].
+async fn finish_response(response: ::reqwest::Response) -> Result<TransportResponse> {
+    let status = response.status().as_u16();
+    let headers = response.headers().clone();
+
+    // TUS responses carry no significant body (Location, headers, or a short
+    // error string), so bound the read. Without a cap, a misbehaving or
+    // malicious server — including one reached via a redirect — could return
+    // a multi-gigabyte body and exhaust client memory, since the transport
+    // buffers the whole response before the caller inspects it.
+    #[cfg(not(target_arch = "wasm32"))]
+    let body = read_body_capped(response).await?;
+    #[cfg(target_arch = "wasm32")]
+    let body = response.bytes().await.map_err(reqwest_error)?.to_vec();
+
+    let mut response = http::Response::builder()
+        .status(status)
+        .body(body)
+        .map_err(|err| Error::transport(format!("failed to build response: {err}")))?;
+    *response.headers_mut() = headers;
+    Ok(response)
+}
+
+/// Adapter over the plain and middleware `reqwest` request builders so the
+/// request assembly in [`send_request`] is written once. The two builder types
+/// expose identical inherent methods but share no common trait; each impl
+/// differs only in how transport errors are classified on `execute`.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+trait ReqwestRequestBuilder: Sized {
+    fn with_header(self, name: &HeaderName, value: &HeaderValue) -> Self;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_body(self, body: Body) -> Self;
+
+    #[cfg(target_arch = "wasm32")]
+    fn with_body(self, body: Vec<u8>) -> Self;
+
+    async fn execute(self) -> Result<::reqwest::Response>;
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl ReqwestRequestBuilder for ::reqwest::RequestBuilder {
+    fn with_header(self, name: &HeaderName, value: &HeaderValue) -> Self {
+        self.header(name, value)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_body(self, body: Body) -> Self {
+        self.body(body)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn with_body(self, body: Vec<u8>) -> Self {
+        self.body(body)
+    }
+
+    async fn execute(self) -> Result<::reqwest::Response> {
+        self.send().await.map_err(reqwest_error)
+    }
+}
+
+#[cfg(feature = "transport-reqwest-middleware")]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl ReqwestRequestBuilder for reqwest_middleware::RequestBuilder {
+    fn with_header(self, name: &HeaderName, value: &HeaderValue) -> Self {
+        self.header(name, value)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_body(self, body: Body) -> Self {
+        self.body(body)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn with_body(self, body: Vec<u8>) -> Self {
+        self.body(body)
+    }
+
+    async fn execute(self) -> Result<::reqwest::Response> {
+        self.send().await.map_err(reqwest_middleware_error)
     }
 }
 
@@ -178,36 +283,6 @@ fn reqwest_error(error: ::reqwest::Error) -> Error {
         source: Box::new(error),
         retryable,
     }
-}
-
-#[cfg(feature = "transport-reqwest-middleware")]
-fn default_reqwest_client() -> ReqwestClient {
-    reqwest_client(::reqwest::Client::new())
-}
-
-#[cfg(not(feature = "transport-reqwest-middleware"))]
-fn default_reqwest_client() -> ReqwestClient {
-    ::reqwest::Client::new()
-}
-
-#[cfg(feature = "transport-reqwest-middleware")]
-fn reqwest_client(client: ::reqwest::Client) -> ReqwestClient {
-    reqwest_middleware::ClientBuilder::new(client).build()
-}
-
-#[cfg(not(feature = "transport-reqwest-middleware"))]
-fn reqwest_client(client: ::reqwest::Client) -> ReqwestClient {
-    client
-}
-
-#[cfg(feature = "transport-reqwest-middleware")]
-async fn send_request(builder: reqwest_middleware::RequestBuilder) -> Result<::reqwest::Response> {
-    builder.send().await.map_err(reqwest_middleware_error)
-}
-
-#[cfg(not(feature = "transport-reqwest-middleware"))]
-async fn send_request(builder: ::reqwest::RequestBuilder) -> Result<::reqwest::Response> {
-    builder.send().await.map_err(reqwest_error)
 }
 
 #[cfg(feature = "transport-reqwest-middleware")]
@@ -441,7 +516,7 @@ mod tests {
                 calls: calls.clone(),
             })
             .build();
-        let transport = ReqwestTransport::from(middleware_client);
+        let transport = ReqwestMiddlewareTransport::from(middleware_client);
         let client = Client::with_transport(endpoint_url(&endpoint), transport);
 
         client.server_capabilities().await.unwrap();
