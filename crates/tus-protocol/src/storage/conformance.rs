@@ -54,6 +54,7 @@ where
     append_preserves_existing_handle_internal_facts(storage).await;
     append_rejects_stale_offset_without_consuming_body(storage).await;
     append_stream_error_leaves_previous_bytes_visible(storage).await;
+    completing_append_stream_error_does_not_reach_length(storage).await;
     size_supports_recovery_from_stale_handle(storage).await;
     failed_concat_preserves_existing_target_size(storage).await;
     delete_is_idempotent_for_completed_upload(storage).await;
@@ -199,6 +200,64 @@ where
         storage.size(&handle).await.expect("size should succeed"),
         Some(7),
         "a failed PATCH body stream must leave the previous size visible"
+    );
+}
+
+/// A terminal stream error on a *completing* append must roll the write back so
+/// `size()` does not reach the upload length.
+///
+/// This is the completing-chunk counterpart to
+/// [`append_stream_error_leaves_previous_bytes_visible`]: the failing chunk
+/// arrives at full byte count but the append fails (a checksum mismatch on the
+/// final chunk surfaces exactly this way). Recovery adopts `size()` without
+/// re-validating content and completes an upload once it reaches the declared
+/// length, so a backend that finalizes incrementally must not let the completing
+/// chunk's bytes become visible at the length until the append succeeds.
+///
+/// The crash window — a process that dies after the completing bytes are durably
+/// flushed but before `append` returns — cannot be exercised from a conformance
+/// test; a zero-window backend stages the completing write and promotes it
+/// atomically (see the OpenDAL adapter).
+async fn completing_append_stream_error_does_not_reach_length<S>(storage: &S)
+where
+    S: Storage + ?Sized,
+{
+    let handle = create_with_bytes(
+        storage,
+        "completing-stream-error",
+        Bytes::from_static(b"intact "),
+        false,
+    )
+    .await;
+
+    // A completing append whose final frame is an error. The good frame would
+    // bring the upload to its declared length; the backend must not expose it.
+    let stream: ByteStream = Box::pin(futures_util::stream::iter(vec![
+        Ok(Bytes::from_static(b"final-content-that-must-not-commit")),
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "checksum mismatch",
+        )),
+    ]));
+
+    let result = storage
+        .append(AppendRequest::new(
+            handle.clone(),
+            7,
+            ChunkStream::from_stream(stream),
+            true,
+        ))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a completing append with a terminal stream error must fail"
+    );
+    assert_eq!(
+        storage.size(&handle).await.expect("size should succeed"),
+        Some(7),
+        "a failed completing append must roll back to the pre-append offset, \
+         never expose the full-length bytes recovery would adopt as complete"
     );
 }
 

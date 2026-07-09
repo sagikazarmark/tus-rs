@@ -40,9 +40,13 @@ use crate::runtime::MaybeSendSync;
 /// state and the opaque handle snapshot, but storage adapters are the only code
 /// that should interpret handle internals.
 /// Successful write methods should return only after bytes are accepted by the
-/// backend. If a backend can partially write and then fail, it should either
-/// roll the write back or report enough actual size through [`Storage::size`]
-/// for protocol recovery to reconcile state on the next request.
+/// backend. When a write returns an error, the backend must roll it back so that
+/// [`Storage::size`] reports only accepted bytes: protocol recovery adopts
+/// `size()` as the accepted offset and completes an upload once it reaches the
+/// declared length, without re-validating content. Reporting the actual size of
+/// a partial write for recovery to reconcile is permitted only for a genuine
+/// crash — a process that died mid-append and never returned — and even then only
+/// the smaller, partial byte count, never full-length content.
 ///
 /// # Upload ID safety
 ///
@@ -87,14 +91,20 @@ pub trait Storage: MaybeSendSync {
     /// surface a late validation failure (a checksum or exact-length mismatch on
     /// the completing chunk) by yielding an `Err` item as the stream's final
     /// element. A backend must treat a terminal stream error as a failed append:
-    /// return that error and either roll the write back to `expected_offset` or
-    /// leave enough actual size for [`size`](Storage::size) to let recovery
-    /// reconcile. In particular, a backend that finalizes incrementally as data
-    /// drains (for example, completing a multipart object) must **not** treat a
-    /// clean end-of-data as success when `request.completes_upload` is set: only
-    /// a stream that terminates without an `Err` may finalize the upload.
-    /// Otherwise a checksum or length mismatch on a completing chunk would leave
-    /// a corrupt upload marked complete.
+    /// return that error and roll the write back to `expected_offset`, so
+    /// [`size`](Storage::size) reports at most `expected_offset`. Leaving the
+    /// failed bytes in place is not permitted — a checksum mismatch on a
+    /// completing chunk arrives at full byte count but wrong content, and
+    /// recovery adopts `size()` without re-validating, so exposing those bytes
+    /// would complete a corrupt upload.
+    ///
+    /// A backend that finalizes incrementally as data drains (for example,
+    /// completing a multipart object) must not let a completing append's bytes
+    /// become `size()`-visible at the upload length until the append has returned
+    /// `Ok`: it must stage the completing write and expose it only once the
+    /// stream has terminated without an `Err`. Otherwise a clean end-of-data that
+    /// the protocol has not yet accepted — or a crash mid-finalize — would leave a
+    /// corrupt or premature upload marked complete.
     async fn append(&self, request: AppendRequest) -> Result<StorageHandle>;
 
     /// Concatenates multiple partial uploads into a final upload.
