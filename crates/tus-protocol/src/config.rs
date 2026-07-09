@@ -22,6 +22,11 @@ pub const TUS_VERSION: &str = "1.0.0";
 /// Resumable header value for the TUS protocol.
 pub const TUS_RESUMABLE: &str = "1.0.0";
 
+/// Default cap on bytes buffered in memory while accepting a request body whose
+/// length is not known in advance (chunked transfer encoding / no
+/// `Content-Length`). See [`Config::max_intake_buffer`].
+pub const DEFAULT_MAX_INTAKE_BUFFER: u64 = 8 * 1024 * 1024;
+
 /// TUS server configuration.
 ///
 /// # Defaults
@@ -29,7 +34,9 @@ pub const TUS_RESUMABLE: &str = "1.0.0";
 /// [`Config::default`] enables Creation, Termination, and
 /// Creation-Defer-Length; accepts standard empty Creation requests; uses
 /// `/files` as the base path; has no maximum upload size, no expiration, and a
-/// 30-second lock timeout; and does not trust forwarded proxy headers.
+/// 30-second lock timeout; does not trust forwarded proxy headers; and caps
+/// in-memory intake buffering for bodies of unknown length at
+/// [`DEFAULT_MAX_INTAKE_BUFFER`].
 ///
 /// # Examples
 ///
@@ -77,6 +84,13 @@ pub struct Config {
     /// Maximum chunk size per PATCH request. None means unlimited.
     max_chunk_size: Option<u64>,
 
+    /// Maximum bytes buffered in memory while accepting a request body whose
+    /// length is not known in advance (chunked transfer encoding / no
+    /// `Content-Length`, e.g. checksum trailers). `None` disables the cap
+    /// (unbounded intake buffering). Bodies with a known `Content-Length`
+    /// stream in constant memory and are not affected.
+    max_intake_buffer: Option<u64>,
+
     /// Whether to disable download (GET) endpoint.
     disable_download: bool,
 
@@ -101,6 +115,7 @@ impl Default for Config {
             base_url: None,
             respect_forwarded_headers: false,
             max_chunk_size: None,
+            max_intake_buffer: Some(DEFAULT_MAX_INTAKE_BUFFER),
             disable_download: false,
             allow_empty_creation: true,
         }
@@ -273,6 +288,39 @@ impl Config {
         self
     }
 
+    /// Sets the maximum bytes buffered in memory for a request body whose
+    /// length is not known in advance (chunked transfer encoding / no
+    /// `Content-Length`).
+    ///
+    /// Bodies with a known `Content-Length` stream to storage in constant
+    /// memory and are unaffected. A body without `Content-Length` (chunked
+    /// transfer encoding, including checksum-trailer uploads) must be buffered
+    /// to discover its size before it can be committed, so this bounds that
+    /// buffer. Exceeding it fails the request with `413 Payload Too Large`.
+    ///
+    /// Defaults to [`DEFAULT_MAX_INTAKE_BUFFER`]. Raise it for deployments that
+    /// accept large chunked uploads, or call
+    /// [`without_intake_buffer_limit`](Self::without_intake_buffer_limit) to
+    /// remove the cap entirely.
+    #[must_use]
+    pub fn with_max_intake_buffer(mut self, size: u64) -> Self {
+        self.max_intake_buffer = Some(size);
+        self
+    }
+
+    /// Removes the in-memory intake-buffer cap, allowing a body of unknown
+    /// length (chunked transfer / no `Content-Length`) to be buffered without
+    /// bound.
+    ///
+    /// This re-enables the memory-exhaustion exposure that
+    /// [`with_max_intake_buffer`](Self::with_max_intake_buffer) guards against;
+    /// only use it when an upstream layer already bounds request body size.
+    #[must_use]
+    pub fn without_intake_buffer_limit(mut self) -> Self {
+        self.max_intake_buffer = None;
+        self
+    }
+
     /// Disables the download endpoint.
     #[must_use]
     pub fn without_download(mut self) -> Self {
@@ -361,6 +409,12 @@ impl Config {
     /// Returns the maximum PATCH chunk size, if configured.
     pub fn max_chunk_size(&self) -> Option<u64> {
         self.max_chunk_size
+    }
+
+    /// Returns the in-memory intake-buffer cap for bodies of unknown length,
+    /// if any. `None` means intake buffering is unbounded.
+    pub fn max_intake_buffer(&self) -> Option<u64> {
+        self.max_intake_buffer
     }
 
     /// Returns whether the download endpoint is disabled.
