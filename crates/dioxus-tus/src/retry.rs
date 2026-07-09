@@ -1,6 +1,6 @@
 //! Retry classification for chunk PATCH failures.
 //!
-//! The chunk loop in [`crate::hook`] consults [`is_retryable_error`] to
+//! The chunk loop in [`crate::use_tus_upload`] consults [`is_retryable_error`] to
 //! decide whether a failure is transient (retry after backoff) or fatal
 //! (surface to the consumer immediately).
 //!

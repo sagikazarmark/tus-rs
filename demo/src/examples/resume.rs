@@ -109,6 +109,7 @@ fn resume_row(entry: &ResumableEntry, handle: TusUploadHandle) -> Element {
 
     rsx! {
         li {
+            key: "{entry.match_key}",
             label { class: "flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-base-100",
                 input {
                     r#type: "file",

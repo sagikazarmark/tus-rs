@@ -13,6 +13,12 @@ categories.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# The hook, transport, and handle APIs are wasm-only, so docs must be built for
+# wasm32 to resolve their intra-doc links.
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+targets = ["wasm32-unknown-unknown"]
+
 [dependencies]
 # Referenced by path rather than through the workspace table: this crate is the
 # only wasm consumer and needs tus-client *without* its default native reqwest

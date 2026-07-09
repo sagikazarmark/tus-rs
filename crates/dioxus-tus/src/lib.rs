@@ -97,7 +97,7 @@
 //!   list and forwarded headers.
 //!
 //! ### Upload POST succeeds but the URL is missing
-//! [`TusError::MissingHeader("location")`]: the server sends the header
+//! [`TusError::MissingHeader`] for `location`: the server sends the header
 //! but the browser hides it because `Access-Control-Expose-Headers` is
 //! missing. Add `location`, `tus-resumable`, `upload-offset`, and the
 //! OPTIONS discovery headers (`tus-version`, `tus-extension`,

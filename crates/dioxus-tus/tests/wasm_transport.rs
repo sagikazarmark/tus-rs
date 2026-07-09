@@ -40,7 +40,10 @@ async fn gloo_transport_creates_upload_and_gets_location() {
         .expect("create_upload failed");
 
     assert!(
-        info.url().as_str().starts_with(&endpoint) || info.url().as_str().starts_with("http://")
+        info.url().as_str().starts_with(&endpoint),
+        "upload url {} not rooted at endpoint {}",
+        info.url(),
+        endpoint
     );
     assert_eq!(info.offset(), 0);
 }

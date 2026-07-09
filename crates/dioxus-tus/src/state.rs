@@ -26,7 +26,7 @@ pub enum TusError {
 
     /// The server did not send a required response header. Common cause: CORS
     /// `Access-Control-Expose-Headers` is missing this header in the preflight
-    /// response. See https://docs.rs/dioxus-tus for CORS setup.
+    /// response. See <https://docs.rs/dioxus-tus> for CORS setup.
     #[error("missing required response header: {0}")]
     MissingHeader(String),
 
@@ -39,7 +39,7 @@ pub enum TusError {
 
     /// Cross-origin request blocked by the browser. Confirm the server is sending
     /// CORS preflight headers (Access-Control-Allow-Origin / -Headers / -Methods).
-    /// See https://docs.rs/dioxus-tus for the required header set.
+    /// See <https://docs.rs/dioxus-tus> for the required header set.
     #[error(
         "cross-origin request blocked by browser CORS policy. See https://docs.rs/dioxus-tus for CORS setup."
     )]

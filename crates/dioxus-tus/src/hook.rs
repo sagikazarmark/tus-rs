@@ -74,7 +74,7 @@ impl TusUploadHandle {
     /// prior session. Issues a HEAD against `url` to learn the server-side
     /// offset rather than POSTing to create a new upload.
     ///
-    /// Equivalent to setting `options.existing_url` before calling [`start`].
+    /// Equivalent to setting `options.existing_url` before calling [`Self::start`].
     pub fn start_with_url(&self, file: File, url: impl Into<String>, mut options: TusStartOptions) {
         options.existing_url = Some(url.into());
         self.start(file, options);
@@ -138,7 +138,7 @@ impl TusUploadHandle {
         }
     }
 
-    /// Resumes a specific [`ResumableEntry`] (e.g. one the user picked from
+    /// Resumes a specific [`crate::persistence::ResumableEntry`] (e.g. one the user picked from
     /// a list of multiple resumable uploads). Validates the file's match
     /// key against the entry; returns `false` on mismatch so the caller
     /// can surface a "that doesn't look like the same file" error.

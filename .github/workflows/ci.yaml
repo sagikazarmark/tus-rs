@@ -61,7 +61,7 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - name: Install wasm test runner
-        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
 
       - name: Run tests (wasm)
         run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test -p tus-client --target wasm32-unknown-unknown --lib
@@ -113,8 +113,17 @@ jobs:
       - name: Set up Rust
         uses: ./.github/actions/rust/
 
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
       - name: Build documentation
-        run: cargo doc --workspace --no-deps --all-features
+        run: cargo doc --workspace --no-deps --all-features --exclude dioxus-tus
+
+      # dioxus-tus is a wasm-only crate: its hook, transport, and handle APIs
+      # are `#[cfg(target_arch = "wasm32")]`, so intra-doc links only resolve
+      # against the wasm target (matching its docs.rs metadata).
+      - name: Build dioxus-tus documentation (wasm)
+        run: cargo doc -p dioxus-tus --no-deps --all-features --target wasm32-unknown-unknown
 
   lint:
     name: Lint

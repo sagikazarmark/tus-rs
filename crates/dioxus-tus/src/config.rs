@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::fmt;
 
 /// Static configuration for a [`crate::use_tus_upload`] hook instance.
 ///
 /// Construct via [`TusConfig::new`] (endpoint is non-optional) and chain
 /// `with_*` setters for the rest. The struct is `#[non_exhaustive]` so adding
 /// fields is not a breaking change for external consumers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct TusConfig {
     pub endpoint: String,
@@ -30,6 +31,26 @@ pub struct TusConfig {
     /// chunked path's amortised reads scale better. The chunked path's
     /// per-chunk size is controlled separately by [`Self::chunk_size`].
     pub creation_with_upload_threshold: usize,
+}
+
+/// Redacts `bearer_token` so credentials never reach logs via `{:?}`.
+impl fmt::Debug for TusConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TusConfig")
+            .field("endpoint", &self.endpoint)
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("chunk_size", &self.chunk_size)
+            .field("max_retries", &self.max_retries)
+            .field("retry_delay_ms", &self.retry_delay_ms)
+            .field(
+                "creation_with_upload_threshold",
+                &self.creation_with_upload_threshold,
+            )
+            .finish()
+    }
 }
 
 impl TusConfig {
@@ -92,7 +113,7 @@ impl TusConfig {
 }
 
 /// Per-upload options passed to [`crate::TusUploadHandle::start`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
 pub struct TusStartOptions {
     /// Bearer token for this upload only; takes precedence over
@@ -111,6 +132,32 @@ pub struct TusStartOptions {
     /// HEAD against this URL to learn the server-side offset rather than
     /// creating a fresh upload via POST.
     pub existing_url: Option<String>,
+}
+
+/// Redacts `bearer_token_override` and header values (any of which may carry
+/// credentials such as `Authorization`) so `{:?}` never leaks them. Header
+/// names are kept to preserve debuggability.
+impl fmt::Debug for TusStartOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TusStartOptions")
+            .field(
+                "bearer_token_override",
+                &self.bearer_token_override.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "extra_headers",
+                &self
+                    .extra_headers
+                    .iter()
+                    .map(|(name, _)| (name.as_str(), "[redacted]"))
+                    .collect::<Vec<_>>(),
+            )
+            .field("extra_metadata", &self.extra_metadata)
+            .field("filename_override", &self.filename_override)
+            .field("content_type_override", &self.content_type_override)
+            .field("existing_url", &self.existing_url)
+            .finish()
+    }
 }
 
 impl TusStartOptions {

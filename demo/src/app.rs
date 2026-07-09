@@ -118,7 +118,10 @@ fn EndpointSwitcher() -> Element {
     let current = use_endpoint();
     let mut value = use_signal(|| current.clone());
 
-    let submit = move |_| {
+    let submit = move |evt: FormEvent| {
+        // Suppress the browser's native form navigation; we do our own
+        // full-page navigation via `navigate_to_endpoint`.
+        evt.prevent_default();
         let next = value.read().trim().to_string();
         if !next.is_empty() {
             navigate_to_endpoint(&next);
