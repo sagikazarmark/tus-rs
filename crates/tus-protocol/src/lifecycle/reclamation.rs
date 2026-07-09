@@ -138,6 +138,24 @@ impl ExpiredUploadReclamationOutcome {
 /// uploads. A final upload that is itself expired is reclaimed as its own
 /// candidate; otherwise protocol reads treat expired or missing referenced parts
 /// as making the planned final upload expired until it has been materialized.
+///
+/// # Reclaiming a referenced partial (intentional)
+///
+/// This is a deliberate, stable stance: an expired partial is reclaimed even
+/// while a not-yet-materialized final (Concatenation) upload still references
+/// it. Once the part is gone, that final upload becomes permanently
+/// unreadable — reads of it report [`Error::Expired`] — so a concatenation
+/// whose parts outlive their expiry before the final is materialized is lost,
+/// not merely stale.
+///
+/// The alternatives were rejected as worse defaults: cascading deletion would
+/// reach across references to delete finals that are not themselves expired,
+/// and retaining referenced parts indefinitely would let never-materialized
+/// finals pin their parts forever (a storage-leak / denial-of-service vector).
+/// Materialize final uploads before their parts expire, or set an expiration
+/// window that comfortably outlasts the client's concatenation flow.
+///
+/// [`Error::Expired`]: crate::Error::Expired
 pub async fn reclaim_expired_uploads<S, St, L>(
     storage: &S,
     state_store: &St,

@@ -251,17 +251,21 @@ fn prepare_receive(
         ));
     }
 
+    // Completion is checked before the offset so a client retrying a finished
+    // upload at any offset (typically `0`) gets the accurate
+    // `CompletedUploadModificationForbidden` rather than an `OffsetMismatch`
+    // against the full length.
+    if state.is_complete() {
+        return Err(Error::CompletedUploadModificationForbidden(
+            state.id().to_string(),
+        ));
+    }
+
     if request.client_offset != state.offset() {
         return Err(Error::OffsetMismatch {
             expected: state.offset(),
             actual: request.client_offset,
         });
-    }
-
-    if state.is_complete() {
-        return Err(Error::CompletedUploadModificationForbidden(
-            state.id().to_string(),
-        ));
     }
 
     if let Some(length) = request.upload_length {
@@ -543,6 +547,31 @@ mod tests {
                 expected: 4,
                 actual: 3
             }
+        ));
+    }
+
+    #[test]
+    fn prepare_receive_reports_completion_before_offset_for_retried_upload() {
+        // A client retrying an already-completed upload — typically at offset 0
+        // — must get the accurate completion error, not an `OffsetMismatch`
+        // against the full length.
+        let mut state = UploadState::new("upload-1").with_length(10);
+        state.set_offset(10);
+        assert!(state.is_complete());
+
+        let err = prepare_receive(
+            &Config::default(),
+            &mut state,
+            ReceiveRequest {
+                client_offset: 0,
+                upload_length: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::CompletedUploadModificationForbidden(id) if id == "upload-1"
         ));
     }
 
