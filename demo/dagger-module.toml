@@ -1,0 +1,20 @@
+name = "demo"
+engineVersion = "v1.0.0"
+runtime.source = "dang"
+include = ["!assets", "!dist", "!node_modules", "!target", "!.devenv"]
+
+[[dependencies]]
+name = "dioxus"
+source = "github.com/sagikazarmark/daggerverse-beta/dioxus"
+
+[[dependencies]]
+name = "rust"
+source = "github.com/sagikazarmark/daggerverse-beta/rust"
+
+[[dependencies]]
+name = "javascript-environment"
+source = "github.com/sagikazarmark/daggerverse-beta/javascript-environment"
+
+[[dependencies]]
+name = "tus"
+source = "../"

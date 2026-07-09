@@ -1,0 +1,13 @@
+{
+  "name": "dioxus-tus-demo",
+  "private": true,
+  "scripts": {
+    "build": "tailwindcss -i ./style.css -o ./assets/tailwind.css --minify",
+    "watch": "tailwindcss -i ./style.css -o ./assets/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3",
+    "daisyui": "^5.5",
+    "tailwindcss": "^4.3"
+  }
+}

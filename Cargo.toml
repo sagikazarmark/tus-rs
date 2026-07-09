@@ -14,6 +14,7 @@ keywords = ["tus", "upload", "resumable", "http", "server"]
 categories = ["web-programming::http-server", "network-programming", "asynchronous"]
 
 [workspace.dependencies]
+dioxus-tus = { path = "crates/dioxus-tus", version = "0.0.1" }
 tus-axum = { path = "crates/tus-axum", version = "0.0.1" }
 tus-cli = { path = "crates/tus-cli", version = "0.0.1" }
 tus-client = { path = "crates/tus-client", version = "0.0.1" }

@@ -7,15 +7,18 @@
 //! part of [`tus_protocol::Config`].
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
     Router,
+    body::Body,
+    extract::{Request, State},
     http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
     routing::{get, options},
 };
-use tower_http::cors::{Any, CorsLayer};
 
 use tus_protocol::{
     Config, HookExecutor, Locker, StateStore, Storage, StorageReader, TUS_RESUMABLE,
@@ -562,12 +565,19 @@ where
     L: Locker + Send + Sync + 'static,
     H: HookExecutor + Send + Sync + 'static,
 {
-    // Only apply CORS layer when CORS is explicitly configured.
-    // CorsLayer intercepts OPTIONS requests for preflight handling, which would
-    // prevent the TUS OPTIONS handler from running and returning TUS headers.
+    // Only apply the CORS middleware when CORS is explicitly configured.
+    //
+    // Unlike `tower_http::cors::CorsLayer`, this middleware answers a request
+    // as a CORS preflight ONLY when it is an `OPTIONS` carrying
+    // `Access-Control-Request-Method`. A bare `OPTIONS` — the TUS
+    // capability-discovery request — falls through to `handle_options`, which
+    // returns `Tus-Version`/`Tus-Extension`/`Tus-Max-Size` (TUS 1.0.0 §3.1);
+    // the CORS response headers are then appended. `CorsLayer` short-circuits
+    // *every* `OPTIONS`, which would shadow discovery for browser clients.
     if options.cors_enabled() {
+        let cors = Arc::new(CorsConfig::build(options, download)?);
         Ok(router
-            .layer(build_cors_layer(options, download)?)
+            .layer(from_fn_with_state(cors, cors_middleware))
             .with_state(state))
     } else {
         Ok(router.with_state(state))
@@ -597,48 +607,154 @@ fn exposed_headers(download: bool) -> Vec<HeaderName> {
     headers
 }
 
-/// Builds the CORS layer from router options.
-///
-/// Only called when CORS is enabled (the origin list is non-empty). The
-/// CorsLayer intercepts OPTIONS requests for preflight handling.
-fn build_cors_layer(options: &RouterOptions, download: bool) -> Result<CorsLayer, RouterError> {
-    // Credentialed CORS against a wildcard origin is forbidden by the Fetch
-    // standard and panics inside tower-http; reject it before building.
-    if options.cors_allow_credentials && options.allows_any_origin() {
-        return Err(RouterError::CredentialsRequireExplicitOrigin);
+/// Precomputed CORS response values, derived once from [`RouterOptions`] and
+/// shared with [`cors_middleware`] through request state.
+#[derive(Clone, Debug)]
+struct CorsConfig {
+    /// Wildcard (`*`) origin policy.
+    allow_any_origin: bool,
+    /// Explicit allowed origins (empty when `allow_any_origin`).
+    allowed_origins: Vec<HeaderValue>,
+    allow_credentials: bool,
+    /// `Access-Control-Allow-Methods` value.
+    allow_methods: HeaderValue,
+    /// `Access-Control-Allow-Headers` value (preflight).
+    allow_headers: HeaderValue,
+    /// `Access-Control-Expose-Headers` value (actual responses).
+    expose_headers: HeaderValue,
+    /// `Access-Control-Max-Age` value (preflight).
+    max_age: HeaderValue,
+}
+
+impl CorsConfig {
+    /// Builds the config from router options. Only called when CORS is enabled.
+    fn build(options: &RouterOptions, download: bool) -> Result<Self, RouterError> {
+        // Credentialed CORS against a wildcard origin is forbidden by the Fetch
+        // standard, so reject it before building rather than emitting an
+        // unusable `*` + credentials response.
+        if options.cors_allow_credentials && options.allows_any_origin() {
+            return Err(RouterError::CredentialsRequireExplicitOrigin);
+        }
+
+        let allowed_origins = if options.allows_any_origin() {
+            Vec::new()
+        } else {
+            options
+                .cors_allowed_origins
+                .iter()
+                .map(|origin| {
+                    origin
+                        .parse::<HeaderValue>()
+                        .map_err(|_| RouterError::InvalidCorsOrigin(origin.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        let max_age = options.cors_max_age.unwrap_or(DEFAULT_CORS_MAX_AGE);
+
+        Ok(Self {
+            allow_any_origin: options.allows_any_origin(),
+            allowed_origins,
+            allow_credentials: options.cors_allow_credentials,
+            allow_methods: HeaderValue::from_static("GET,POST,PATCH,DELETE,HEAD,OPTIONS"),
+            allow_headers: join_header_names(&allowed_request_headers(options)?),
+            expose_headers: join_header_names(&exposed_headers(download)),
+            // `Duration::as_secs()` is a plain integer, always a valid header value.
+            max_age: HeaderValue::from_str(&max_age.as_secs().to_string())
+                .expect("integer seconds is a valid header value"),
+        })
     }
 
-    let mut cors = CorsLayer::new()
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::HEAD,
-            Method::OPTIONS,
-        ])
-        .allow_headers(allowed_request_headers(options)?)
-        .expose_headers(exposed_headers(download))
-        .max_age(options.cors_max_age.unwrap_or(DEFAULT_CORS_MAX_AGE));
-
-    if options.cors_allow_credentials {
-        cors = cors.allow_credentials(true);
-    }
-
-    if options.allows_any_origin() {
-        Ok(cors.allow_origin(Any))
-    } else {
-        let origins = options
-            .cors_allowed_origins
+    /// Resolves the `Access-Control-Allow-Origin` value for a request's
+    /// `Origin`. Wildcard policy always allows (`*`); an explicit policy
+    /// reflects the origin only when it is on the allowlist.
+    fn resolve_allow_origin(&self, origin: Option<&HeaderValue>) -> Option<HeaderValue> {
+        if self.allow_any_origin {
+            return Some(HeaderValue::from_static("*"));
+        }
+        let origin = origin?;
+        self.allowed_origins
             .iter()
-            .map(|origin| {
-                origin
-                    .parse::<HeaderValue>()
-                    .map_err(|_| RouterError::InvalidCorsOrigin(origin.clone()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(cors.allow_origin(origins))
+            .any(|allowed| allowed == origin)
+            .then(|| origin.clone())
     }
+}
+
+/// Joins header names into a comma-separated `HeaderValue`.
+fn join_header_names(names: &[HeaderName]) -> HeaderValue {
+    let joined = names
+        .iter()
+        .map(HeaderName::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    // Header names are ASCII tokens, so their comma-join is a valid value.
+    HeaderValue::from_str(&joined).expect("joined header names form a valid header value")
+}
+
+/// CORS middleware that preserves TUS `OPTIONS` capability discovery.
+///
+/// A CORS *preflight* — an `OPTIONS` carrying `Access-Control-Request-Method` —
+/// is answered directly. Every other request (including a bare `OPTIONS`
+/// discovery request) is passed to the inner router and then decorated with
+/// the CORS response headers, so `handle_options` runs and its `Tus-Version`
+/// et al. survive.
+async fn cors_middleware(
+    State(cors): State<Arc<CorsConfig>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let allow_origin = cors.resolve_allow_origin(req.headers().get(header::ORIGIN));
+    let is_preflight = req.method() == Method::OPTIONS
+        && req
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+
+    if is_preflight {
+        let mut response = Response::new(Body::empty());
+        let headers = response.headers_mut();
+        if let Some(origin) = allow_origin {
+            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+            if !cors.allow_any_origin {
+                headers.insert(header::VARY, HeaderValue::from_static("origin"));
+            }
+        }
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            cors.allow_methods.clone(),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            cors.allow_headers.clone(),
+        );
+        headers.insert(header::ACCESS_CONTROL_MAX_AGE, cors.max_age.clone());
+        if cors.allow_credentials {
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
+        }
+        return response;
+    }
+
+    let mut response = next.run(req).await;
+    if let Some(origin) = allow_origin {
+        let headers = response.headers_mut();
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        headers.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            cors.expose_headers.clone(),
+        );
+        if cors.allow_credentials {
+            headers.insert(
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
+        }
+        if !cors.allow_any_origin {
+            headers.insert(header::VARY, HeaderValue::from_static("origin"));
+        }
+    }
+    response
 }
 
 /// The CORS preflight request-header allowlist: the fixed TUS protocol headers
@@ -731,6 +847,23 @@ mod tests {
         );
 
         create_router(TusState::new(protocol), RouterOptions::default()).unwrap()
+    }
+
+    fn router_with_cors(
+        config: Config,
+        storage: Arc<MemoryStorage>,
+        state_store: Arc<MemoryStateStore>,
+        options: RouterOptions,
+    ) -> Router {
+        let protocol = ProtocolHandle::from_arcs(
+            Arc::new(config),
+            storage,
+            state_store,
+            Arc::new(MemoryLocker::new()),
+            Arc::new(NoopHookExecutor::new()),
+        );
+
+        create_router(TusState::new(protocol), options).unwrap()
     }
 
     fn download_router_with_parts(
@@ -1071,6 +1204,93 @@ mod tests {
         assert_eq!(response.headers().get("tus-resumable").unwrap(), "1.0.0");
     }
 
+    /// Regression: with CORS enabled, a bare `OPTIONS` (no
+    /// `Access-Control-Request-Method`) is a TUS capability-discovery request,
+    /// not a preflight. It must reach `handle_options` and return
+    /// `Tus-Version`/`Tus-Extension` (TUS 1.0.0 §3.1), with CORS response
+    /// headers appended so a browser client can actually read them. Before the
+    /// custom CORS middleware, `tower_http`'s `CorsLayer` short-circuited every
+    /// `OPTIONS` and this response carried no TUS headers.
+    #[tokio::test]
+    async fn cors_options_discovery_returns_tus_headers() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        let router = router_with_cors(
+            Config::default(),
+            storage,
+            state_store,
+            RouterOptions::new().with_cors_any_origin(),
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("tus-version").unwrap(), "1.0.0");
+        assert!(
+            response.headers().get("tus-extension").is_some(),
+            "discovery OPTIONS must advertise extensions"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .unwrap(),
+            "*",
+            "discovery response still needs the CORS allow-origin header"
+        );
+    }
+
+    /// A true preflight (`OPTIONS` + `Access-Control-Request-Method`) is
+    /// answered by the CORS middleware and never reaches `handle_options`, so
+    /// it carries the preflight headers but no TUS discovery headers.
+    #[tokio::test]
+    async fn cors_true_preflight_is_answered_without_tus_headers() {
+        let storage = Arc::new(MemoryStorage::new());
+        let state_store = Arc::new(MemoryStateStore::new());
+        let router = router_with_cors(
+            Config::default(),
+            storage,
+            state_store,
+            RouterOptions::new().with_cors_any_origin(),
+        );
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/files")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-methods")
+                .unwrap(),
+            "GET,POST,PATCH,DELETE,HEAD,OPTIONS"
+        );
+        assert!(
+            response.headers().get("tus-version").is_none(),
+            "a preflight must not run the TUS OPTIONS handler"
+        );
+    }
+
     #[tokio::test]
     async fn router_creates_upload() {
         let storage = Arc::new(MemoryStorage::new());
@@ -1409,7 +1629,7 @@ mod tests {
         let options = RouterOptions::new()
             .with_cors_any_origin()
             .with_cors_allow_credentials();
-        let err = build_cors_layer(&options, false).unwrap_err();
+        let err = CorsConfig::build(&options, false).unwrap_err();
         assert!(matches!(err, RouterError::CredentialsRequireExplicitOrigin));
     }
 
@@ -1418,7 +1638,7 @@ mod tests {
         let options = RouterOptions::new()
             .with_cors_allowed_origins(["https://example.com"])
             .with_cors_allow_credentials();
-        let _ = build_cors_layer(&options, false).unwrap();
+        let _ = CorsConfig::build(&options, false).unwrap();
     }
 
     #[test]
@@ -1426,7 +1646,7 @@ mod tests {
         let options = RouterOptions::new()
             .with_cors_any_origin()
             .with_cors_extra_allowed_headers(["x-api-key", "bad header"]);
-        let err = build_cors_layer(&options, false).unwrap_err();
+        let err = CorsConfig::build(&options, false).unwrap_err();
         assert!(matches!(err, RouterError::InvalidAllowedHeader(name) if name == "bad header"));
     }
 
@@ -1440,7 +1660,10 @@ mod tests {
             .with_cors_allowed_origins(["https://example.com"])
             .with_cors_allow_credentials();
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&options, false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(CorsConfig::build(&options, false).unwrap()),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1477,7 +1700,10 @@ mod tests {
             .with_cors_any_origin()
             .with_cors_extra_allowed_headers(["x-api-key"]);
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&options, false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(CorsConfig::build(&options, false).unwrap()),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1517,7 +1743,10 @@ mod tests {
             .with_cors_any_origin()
             .with_cors_max_age(Duration::from_secs(120));
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&options, false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(CorsConfig::build(&options, false).unwrap()),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1553,7 +1782,10 @@ mod tests {
 
         let options = RouterOptions::new().with_cors_any_origin();
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&options, false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(CorsConfig::build(&options, false).unwrap()),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1582,23 +1814,23 @@ mod tests {
     }
 
     #[test]
-    fn test_build_cors_layer_wildcard() {
+    fn cors_config_build_wildcard() {
         let options = RouterOptions::new().with_cors_any_origin();
-        let _ = build_cors_layer(&options, false).unwrap();
+        let _ = CorsConfig::build(&options, false).unwrap();
     }
 
     #[test]
-    fn test_build_cors_layer_specific_origins() {
+    fn cors_config_build_specific_origins() {
         let options = RouterOptions::new()
             .with_cors_allowed_origins(["http://localhost:3000", "https://example.com"]);
-        let _ = build_cors_layer(&options, false).unwrap();
+        let _ = CorsConfig::build(&options, false).unwrap();
     }
 
     #[test]
-    fn test_build_cors_layer_rejects_invalid_origin() {
+    fn cors_config_build_rejects_invalid_origin() {
         let options =
             RouterOptions::new().with_cors_allowed_origins(["http://ok.example", "bad\norigin"]);
-        let err = build_cors_layer(&options, false).unwrap_err();
+        let err = CorsConfig::build(&options, false).unwrap_err();
         assert!(matches!(err, RouterError::InvalidCorsOrigin(origin) if origin.contains("bad")));
     }
 
@@ -1609,7 +1841,12 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin(), false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(
+                    CorsConfig::build(&RouterOptions::new().with_cors_any_origin(), false).unwrap(),
+                ),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1646,7 +1883,12 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin(), false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(
+                    CorsConfig::build(&RouterOptions::new().with_cors_any_origin(), false).unwrap(),
+                ),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1686,7 +1928,12 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin(), false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(
+                    CorsConfig::build(&RouterOptions::new().with_cors_any_origin(), false).unwrap(),
+                ),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1731,7 +1978,12 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin(), true).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(
+                    CorsConfig::build(&RouterOptions::new().with_cors_any_origin(), true).unwrap(),
+                ),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));
@@ -1786,7 +2038,12 @@ mod tests {
         use tower::{ServiceBuilder, ServiceExt, service_fn};
 
         let service = ServiceBuilder::new()
-            .layer(build_cors_layer(&RouterOptions::new().with_cors_any_origin(), false).unwrap())
+            .layer(from_fn_with_state(
+                std::sync::Arc::new(
+                    CorsConfig::build(&RouterOptions::new().with_cors_any_origin(), false).unwrap(),
+                ),
+                cors_middleware,
+            ))
             .service(service_fn(|_req: Request<Body>| async {
                 Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
             }));

@@ -1,0 +1,99 @@
+type Demo {
+  let jsEnv: JavascriptEnvironment!
+  let dioxus: Dioxus!
+
+  new {
+    let rustVersion = "1.96-trixie"
+
+    # Shared base container: the official Rust image plus clang. clang is needed
+    # to cross-compile the C sysroot pulled in by the `dioxus-code` snippet
+    # highlighter (arborium/tree-sitter) for the wasm32 target. Both the Dioxus
+    # and worker-build toolchains build on top of this same container so they
+    # share one environment.
+    let rustContainer = Dagger
+      .container
+      .from("rust:" + rustVersion)
+      .withMountedCache("/var/cache/apt/archives", Dagger.cacheVolume("debian-apt-archives"))
+      # .withMountedCache("/var/lib/apt/lists", Dagger.cacheVolume("debian-apt-lists"))
+      .withEnvVariable("DEBIAN_FRONTEND", "noninteractive")
+      .withExec(["apt-get", "update"])
+      .withExec(["apt-get", "install", "-y", "--no-install-recommends"] + ["clang"])
+
+    self.jsEnv = Dagger.javascriptEnvironment(install: true, locked: true)
+    self.dioxus = Dagger.dioxus(container: rustContainer)
+
+    self
+  }
+
+  let withAssets(ws: Workspace!): Workspace! {
+    let assets = self.jsEnv.withRun(ws, "build").directory("assets")
+
+    # DAGGER_TODO: need better way to pass module outputs to other modules
+    let dir = ws
+      .directory("/", gitignore: true)
+      .withDirectory(ws.cwd + "/assets", assets)
+
+    # DAGGER_TODO:
+    # assets is normally ignored by git
+    # so adding it back causes it to be ignored next time workspace is called
+    dir = dir
+      .withFile(
+        "demo/.gitignore",
+        dir.file("demo/.gitignore").withReplaced("/assets/", ""),
+      )
+
+    dir.asWorkspace(ws.cwd)
+  }
+
+  """
+  Build the demo application.
+  """
+  build(ws: Workspace!): Directory! @check {
+    self.dioxus.bundle(
+      self.withAssets(ws),
+      release: true,
+      debugSymbols: false,
+      platform: DioxusPlatform.WEB,
+    )
+  }
+
+  """
+  Demo application service.
+  """
+  service(ws: Workspace!): Service! @up {
+    self.dioxus.serve(self.withAssets(ws), port: 8081)
+  }
+
+  """
+  Tus server service.
+  """
+  server(ws: Workspace!): Service! @up {
+    # DAGGER_TODO: need a way to change cwd OR call a remote workspace
+    let ws = ws.directory("/", gitignore: true).asWorkspace("/")
+
+    let binary = Dagger.tus.server(ws)
+
+    Dagger
+      .container
+      .from("debian:trixie")
+      # tus-server builds a reqwest/rustls HTTP client at startup (via
+      # OpenDAL's default registry), which panics without system CA
+      # certificates. The stock debian:trixie image ships none.
+      .withEnvVariable("DEBIAN_FRONTEND", "noninteractive")
+      .withExec(["apt-get", "update"])
+      .withExec(["apt-get", "install", "-y", "--no-install-recommends", "ca-certificates"])
+      .withFile("/usr/local/bin/tus-server", binary)
+      .withExec(["mkdir", "-p", "/data", "/state"])
+      .withExposedPort(8080)
+      .asService(args: [
+        "tus-server",
+        "serve",
+        "--addr", "0.0.0.0:8080",
+        "--base-url", "http://localhost:8080",
+        "--all-extensions",
+        "--cors",
+        "--storage-uri", "fs:///data",
+        "--state-dir", "/state",
+      ])
+  }
+}
