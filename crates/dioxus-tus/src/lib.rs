@@ -142,7 +142,7 @@ pub mod state;
 // for extracting `web_sys::File`s from form events.
 // Not compiled for native test builds (cargo test --tests).
 #[cfg(target_arch = "wasm32")]
-pub mod blob;
+mod blob;
 #[cfg(target_arch = "wasm32")]
 mod event;
 #[cfg(target_arch = "wasm32")]
@@ -153,6 +153,14 @@ mod options_cache;
 mod queue;
 #[cfg(target_arch = "wasm32")]
 pub mod transport;
+
+/// Re-export of the underlying [`tus_client`] crate.
+///
+/// The custom-transport use case ([`use_tus_upload_with_transport`], which is
+/// generic over [`tus_client::Transport`]) requires naming trait and types
+/// from this crate. Re-exporting it lets consumers do so without adding — and
+/// version-matching — their own direct `tus_client` dependency.
+pub use tus_client;
 
 pub use config::{TusConfig, TusStartOptions};
 pub use state::{TusError, TusUploadState, UploadStatus};

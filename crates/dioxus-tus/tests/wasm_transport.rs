@@ -89,24 +89,28 @@ async fn patch_chunk_delivers_bytes_and_advances_offset() {
     assert_eq!(downloaded, content);
 }
 
-#[wasm_bindgen_test]
-async fn blob_slice_reads_correct_bytes() {
-    use dioxus_tus::blob::blob_slice_to_bytes;
+/// Reads bytes `[start, end)` from `blob` via the public browser APIs. Mirrors
+/// the crate-internal `blob::blob_slice_to_bytes` (which is `pub(crate)` and
+/// unit-tested in `src/blob.rs`); reproduced here so this integration test can
+/// drive a real chunked upload loop without reaching into crate internals.
+async fn read_blob_slice(blob: &web_sys::Blob, start: u64, end: u64) -> Vec<u8> {
+    use js_sys::Uint8Array;
+    use wasm_bindgen_futures::JsFuture;
 
-    let file = make_file("test.bin", b"abcdefghij");
-    let blob: web_sys::Blob = file.into();
-
-    let chunk = blob_slice_to_bytes(&blob, 2, 6).await.expect("slice");
-    assert_eq!(chunk, b"cdef");
+    let sliced = blob
+        .slice_with_f64_and_f64(start as f64, end as f64)
+        .expect("slice");
+    let array_buffer = JsFuture::from(sliced.array_buffer())
+        .await
+        .expect("array_buffer");
+    Uint8Array::new(&array_buffer).to_vec()
 }
 
 #[wasm_bindgen_test]
 async fn full_upload_via_client_and_blob_slice() {
-    use dioxus_tus::TusStartOptions;
-    use dioxus_tus::blob::blob_slice_to_bytes;
     use dioxus_tus::transport::GlooNetTransport;
     use tus_client::url::Url;
-    use tus_client::{Client, NewUpload};
+    use tus_client::{Client, NewUpload, UploadMetadata};
 
     let endpoint = test_endpoint();
     let content = b"wasm hook test data";
@@ -115,13 +119,8 @@ async fn full_upload_via_client_and_blob_slice() {
 
     let client = Client::with_transport(Url::parse(&endpoint).unwrap(), GlooNetTransport);
 
-    let metadata = {
-        let opts = TusStartOptions::default();
-        opts.build_metadata(&file.name(), &file.type_())
-    };
-
     let (upload, info) = client
-        .create_upload(NewUpload::new(content.len() as u64, metadata))
+        .create_upload(NewUpload::new(content.len() as u64, UploadMetadata::new()))
         .await
         .expect("create");
 
@@ -130,9 +129,7 @@ async fn full_upload_via_client_and_blob_slice() {
 
     while offset < content.len() as u64 {
         let end = (offset + chunk_size).min(content.len() as u64);
-        let chunk = blob_slice_to_bytes(&blob, offset, end)
-            .await
-            .expect("slice");
+        let chunk = read_blob_slice(&blob, offset, end).await;
         offset = upload.upload_chunk(offset, chunk).await.expect("patch");
     }
 
