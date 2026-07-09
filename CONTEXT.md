@@ -52,6 +52,10 @@ The facts owned by TUS lifecycle rules: upload ID, offset, length, expiration, c
 A failure the client classifies as plausibly succeeding on a later attempt (a network hiccup, a transient `5xx`, a refreshable credential), as opposed to a permanent failure that is deterministic and never retried (a torn upload source, an offset desync, a bad request line). The classification is a typed property of the error the retry loop reads, not a per-call-site guess.
 _Avoid_: transient error, recoverable error.
 
+### Stored bytes
+
+The byte count a Storage adapter reports through `Storage::size`. Crash recovery adopts this count as the accepted offset and completes an upload once it reaches the declared length, so a backend must report only accepted bytes — never bytes from an append that did not succeed. This is distinct from accepted bytes only when a backend misbehaves; the contract exists to keep them equal.
+
 ### Storage-owned facts
 
 The locator and backend-specific bookkeeping needed by a Storage adapter to find, append, concatenate, size, delete, recover, or clean up upload bytes. These facts are persisted as an opaque `StorageHandle` with upload state, but protocol lifecycle code does not interpret them.
