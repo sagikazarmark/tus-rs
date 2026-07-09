@@ -300,6 +300,143 @@ impl Default for Settings {
     }
 }
 
+/// Storage byte backend plus the on-disk upload-state location. Shared
+/// by the serve runtime and the `cleanup` command so both build their
+/// backends from exactly the same source fields.
+#[derive(Clone, Debug)]
+pub(crate) struct BackendConfig {
+    pub(crate) storage: StorageConfig,
+    pub(crate) state_dir: PathBuf,
+}
+
+/// HTTP runtime group consumed by the serving loop: the bind target and
+/// the connection-lifecycle durations.
+#[derive(Clone, Debug)]
+pub(crate) struct RuntimeConfig {
+    pub(crate) addr: BindTarget,
+    pub(crate) shutdown_grace: Duration,
+    pub(crate) drain_delay: Duration,
+    pub(crate) header_read_timeout: Duration,
+}
+
+/// The subset of settings that maps into `tus_protocol::Config` — the
+/// protocol-behavior group consumed by [`build_tus_config`].
+#[derive(Clone, Debug)]
+pub(crate) struct ProtocolConfig {
+    pub(crate) base_path: String,
+    pub(crate) base_url: Option<String>,
+    pub(crate) max_size: u64,
+    pub(crate) max_chunk_size: u64,
+    pub(crate) respect_forwarded_headers: bool,
+    pub(crate) expiration: Duration,
+    pub(crate) disable_download: bool,
+    pub(crate) all_extensions: bool,
+    pub(crate) disable_concatenation_unfinished: bool,
+    pub(crate) disable_checksum_trailer: bool,
+}
+
+/// Expiration-reclamation policy for the in-process sweeper.
+#[derive(Clone, Debug)]
+pub(crate) struct ReclamationConfig {
+    /// Upload expiration window; zero means expiration is not configured.
+    pub(crate) expiration: Duration,
+    /// Interval between background scans that delete expired uploads.
+    pub(crate) scan_interval: Duration,
+    /// Operator opt-out of in-process reclamation.
+    pub(crate) disabled: bool,
+}
+
+impl ReclamationConfig {
+    /// Whether expiration is configured at all (a non-zero window).
+    pub(crate) fn expiration_configured(&self) -> bool {
+        !self.expiration.is_zero()
+    }
+
+    /// Whether the in-process sweeper should run: expiration is
+    /// configured and reclamation has not been disabled.
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.expiration_configured() && !self.disabled
+    }
+}
+
+/// Auth and HTTP-body group consumed when building the axum application:
+/// the bearer tokens, the request-body bounds, and the resolved list of
+/// CORS-allowed origins.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AppConfig {
+    pub(crate) auth_token: Vec<String>,
+    pub(crate) max_request_body_bytes: usize,
+    pub(crate) request_body_read_timeout: u64,
+    pub(crate) cors_origins: Vec<String>,
+}
+
+impl Settings {
+    /// Storage + state backend locations, shared with the cleanup path.
+    pub(crate) fn backend(&self) -> BackendConfig {
+        BackendConfig {
+            storage: self.storage.clone(),
+            state_dir: self.state_dir.clone(),
+        }
+    }
+
+    /// HTTP runtime group: bind target and connection-lifecycle timeouts.
+    pub(crate) fn runtime(&self) -> RuntimeConfig {
+        RuntimeConfig {
+            addr: self.addr.clone(),
+            shutdown_grace: Duration::from_secs(self.shutdown_grace),
+            drain_delay: Duration::from_secs(self.drain_delay),
+            header_read_timeout: Duration::from_secs(self.request_header_read_timeout),
+        }
+    }
+
+    /// Protocol-behavior group consumed by [`build_tus_config`].
+    pub(crate) fn protocol(&self) -> ProtocolConfig {
+        ProtocolConfig {
+            base_path: self.base_path.clone(),
+            base_url: self.base_url.clone(),
+            max_size: self.max_size,
+            max_chunk_size: self.max_chunk_size,
+            respect_forwarded_headers: self.respect_forwarded_headers,
+            expiration: self.expiration.as_duration(),
+            disable_download: self.disable_download,
+            all_extensions: self.all_extensions,
+            disable_concatenation_unfinished: self.disable_concatenation_unfinished,
+            disable_checksum_trailer: self.disable_checksum_trailer,
+        }
+    }
+
+    /// Expiration-reclamation policy for the in-process sweeper.
+    pub(crate) fn reclamation(&self) -> ReclamationConfig {
+        ReclamationConfig {
+            expiration: self.expiration.as_duration(),
+            scan_interval: self.expiration_scan_interval.as_duration(),
+            disabled: self.disable_expiration_reclamation,
+        }
+    }
+
+    /// Auth + HTTP-body + resolved CORS group consumed by `build_app`.
+    pub(crate) fn app(&self) -> AppConfig {
+        AppConfig {
+            auth_token: self.auth_token.clone(),
+            max_request_body_bytes: self.max_request_body_bytes,
+            request_body_read_timeout: self.request_body_read_timeout,
+            cors_origins: self.resolved_cors_origins(),
+        }
+    }
+
+    /// The effective CORS allow-list: explicit origins win; otherwise a
+    /// bare `cors = true` allows any origin (`*`); otherwise CORS is off.
+    fn resolved_cors_origins(&self) -> Vec<String> {
+        if !self.cors_origins.is_empty() {
+            self.cors_origins.clone()
+        } else if self.cors {
+            vec!["*".to_string()]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct StorageConfig {
     #[serde(default = "default_storage_uri")]
@@ -958,23 +1095,52 @@ pub(crate) fn merge_config_file(
     Ok(figment)
 }
 
-pub(crate) fn load_settings_from_sources(
+/// Merges configuration sources in explicit precedence order, lowest to
+/// highest: built-in defaults, then the optional config file, then
+/// environment variables, then CLI flags. Each later source overrides
+/// the earlier ones field by field. Both the serve and cleanup loaders
+/// go through this single helper so the precedence is defined once.
+fn layer_config_sources<D, E, C>(
+    defaults: D,
     config_path: Option<&Path>,
-    cli_patch: SettingsPatch,
-) -> anyhow::Result<Settings> {
-    let mut figment = figment::Figment::new()
-        .merge(figment::providers::Serialized::defaults(Settings::default()));
+    env_patch: E,
+    cli_patch: C,
+) -> anyhow::Result<figment::Figment>
+where
+    D: Serialize,
+    E: Serialize,
+    C: Serialize,
+{
+    use figment::providers::Serialized;
+
+    let mut figment = figment::Figment::new().merge(Serialized::defaults(defaults));
 
     if let Some(path) = config_path {
         figment = merge_config_file(figment, path)?;
     }
 
-    figment = figment.merge(figment::providers::Serialized::defaults(
-        env_settings_patch()?,
-    ));
-    figment = figment.merge(figment::providers::Serialized::defaults(cli_patch));
+    figment = figment.merge(Serialized::defaults(env_patch));
+    figment = figment.merge(Serialized::defaults(cli_patch));
 
-    figment
+    Ok(figment)
+}
+
+pub(crate) fn load_settings_from_sources(
+    config_path: Option<&Path>,
+    cli_patch: SettingsPatch,
+) -> anyhow::Result<Settings> {
+    load_settings_layered(config_path, env_settings_patch()?, cli_patch)
+}
+
+/// Layers the serve settings with an injectable environment patch so the
+/// defaults < file < env < CLI precedence is unit-testable without
+/// mutating process-wide environment variables.
+fn load_settings_layered(
+    config_path: Option<&Path>,
+    env_patch: SettingsPatch,
+    cli_patch: SettingsPatch,
+) -> anyhow::Result<Settings> {
+    layer_config_sources(Settings::default(), config_path, env_patch, cli_patch)?
         .extract()
         .map_err(|error| anyhow::anyhow!("failed to load configuration: {error}"))
 }
@@ -1005,30 +1171,45 @@ pub(crate) fn load_serve_settings(cli: &ServeCli) -> anyhow::Result<(Settings, O
     Ok((settings, config_path))
 }
 
+impl CleanupSettings {
+    /// Storage + state backend locations. Mirrors [`Settings::backend`]
+    /// so cleanup and serve build backends from the same group.
+    pub(crate) fn backend(&self) -> BackendConfig {
+        BackendConfig {
+            storage: self.storage.clone(),
+            state_dir: self.state_dir.clone(),
+        }
+    }
+}
+
 pub(crate) fn load_cleanup_settings(
     cli: &CleanupCli,
 ) -> anyhow::Result<(CleanupSettings, Option<PathBuf>)> {
     let config_path = cli.config.clone();
-    let mut figment = figment::Figment::new().merge(figment::providers::Serialized::defaults(
-        CleanupSettings::default(),
-    ));
-
-    if let Some(path) = config_path.as_deref() {
-        figment = merge_config_file(figment, path)?;
-    }
-
-    figment = figment.merge(figment::providers::Serialized::defaults(
+    let settings = load_cleanup_settings_layered(
+        config_path.as_deref(),
         cleanup_env_settings_patch()?,
-    ));
-    figment = figment.merge(figment::providers::Serialized::defaults(
         cli.settings_patch(),
-    ));
-
-    let settings = figment
-        .extract()
-        .map_err(|error| anyhow::anyhow!("failed to load configuration: {error}"))?;
-
+    )?;
     Ok((settings, config_path))
+}
+
+/// Cleanup counterpart of [`load_settings_layered`]: layers cleanup
+/// settings through the shared precedence helper with an injectable
+/// environment patch.
+fn load_cleanup_settings_layered(
+    config_path: Option<&Path>,
+    env_patch: CleanupSettingsPatch,
+    cli_patch: CleanupSettingsPatch,
+) -> anyhow::Result<CleanupSettings> {
+    layer_config_sources(
+        CleanupSettings::default(),
+        config_path,
+        env_patch,
+        cli_patch,
+    )?
+    .extract()
+    .map_err(|error| anyhow::anyhow!("failed to load configuration: {error}"))
 }
 
 pub(crate) fn resolved_storage_options(
@@ -1064,44 +1245,44 @@ pub(crate) fn build_storage_operator(
     Ok((operator, scheme))
 }
 
-pub(crate) fn build_tus_config(settings: &Settings) -> TusConfig {
-    let mut config = if settings.all_extensions {
+pub(crate) fn build_tus_config(protocol: &ProtocolConfig) -> TusConfig {
+    let mut config = if protocol.all_extensions {
         TusConfig::all_extensions()
     } else {
         TusConfig::default()
     };
 
-    config = config.with_base_path(&settings.base_path);
+    config = config.with_base_path(&protocol.base_path);
 
-    if let Some(base_url) = &settings.base_url {
+    if let Some(base_url) = &protocol.base_url {
         config = config.with_base_url(base_url);
     }
 
-    if settings.max_size > 0 {
-        config = config.with_max_size(settings.max_size);
+    if protocol.max_size > 0 {
+        config = config.with_max_size(protocol.max_size);
     }
 
-    if settings.max_chunk_size > 0 {
-        config = config.with_max_chunk_size(settings.max_chunk_size);
+    if protocol.max_chunk_size > 0 {
+        config = config.with_max_chunk_size(protocol.max_chunk_size);
     }
 
-    if settings.respect_forwarded_headers {
+    if protocol.respect_forwarded_headers {
         config = config.with_respect_forwarded_headers();
     }
 
-    if !settings.expiration.as_duration().is_zero() {
-        config = config.with_expiration(settings.expiration.as_duration());
+    if !protocol.expiration.is_zero() {
+        config = config.with_expiration(protocol.expiration);
     }
 
-    if settings.disable_download {
+    if protocol.disable_download {
         config = config.without_download();
     }
 
-    if settings.disable_concatenation_unfinished {
+    if protocol.disable_concatenation_unfinished {
         config = config.without_extension(Extension::ConcatenationUnfinished);
     }
 
-    if settings.disable_checksum_trailer {
+    if protocol.disable_checksum_trailer {
         config = config.without_extension(Extension::ChecksumTrailer);
     }
 
@@ -1153,7 +1334,7 @@ mod tests {
         assert_eq!(settings.request_header_read_timeout, 0);
         assert_eq!(settings.max_chunk_size, 0);
 
-        let config = build_tus_config(&settings);
+        let config = build_tus_config(&settings.protocol());
         assert_eq!(config.max_chunk_size(), None);
     }
 
@@ -1164,7 +1345,7 @@ mod tests {
 
         assert_eq!(settings.max_chunk_size, 1048576);
 
-        let config = build_tus_config(&settings);
+        let config = build_tus_config(&settings.protocol());
         assert_eq!(config.max_chunk_size(), Some(1048576));
     }
 
@@ -1202,7 +1383,7 @@ mod tests {
 
         assert!(settings.respect_forwarded_headers);
 
-        let config = build_tus_config(&settings);
+        let config = build_tus_config(&settings.protocol());
         assert!(config.respects_forwarded_headers());
     }
 
@@ -1212,7 +1393,7 @@ mod tests {
             settings_patch_from_env_vars([("TUS_RESPECT_FORWARDED_HEADERS", "true")]).unwrap();
         assert_eq!(patch.respect_forwarded_headers, Some(true));
 
-        let config = build_tus_config(&Settings::default());
+        let config = build_tus_config(&Settings::default().protocol());
         assert!(!config.respects_forwarded_headers());
     }
 
@@ -1325,7 +1506,7 @@ mod tests {
             ..Settings::default()
         };
 
-        let config = build_tus_config(&settings);
+        let config = build_tus_config(&settings.protocol());
 
         assert_eq!(config.expiration(), Some(Duration::from_millis(500)));
     }
@@ -1600,7 +1781,7 @@ root = "from-file"
             disable_concatenation_unfinished: true,
             ..Settings::default()
         };
-        let config = build_tus_config(&settings);
+        let config = build_tus_config(&settings.protocol());
 
         assert!(config.has_extension(Extension::Concatenation));
         assert!(!config.has_extension(Extension::ConcatenationUnfinished));
@@ -1613,7 +1794,7 @@ root = "from-file"
             disable_checksum_trailer: true,
             ..Settings::default()
         };
-        let config = build_tus_config(&settings);
+        let config = build_tus_config(&settings.protocol());
 
         assert!(config.has_extension(Extension::Checksum));
         assert!(!config.has_extension(Extension::ChecksumTrailer));
@@ -1828,5 +2009,213 @@ auth_token = ["token"]
             err.to_string().contains("serve") || err.to_string().contains("subcommand"),
             "unexpected parse error: {err}"
         );
+    }
+
+    // ---- Source precedence: defaults < config file < env < CLI ----
+
+    #[test]
+    fn cli_patch_overrides_environment_and_config_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "base_path = \"/from-file\"\n").unwrap();
+
+        let env_patch = SettingsPatch {
+            base_path: Some("/from-env".to_string()),
+            ..SettingsPatch::default()
+        };
+        let cli_patch = SettingsPatch {
+            base_path: Some("/from-cli".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        let settings = load_settings_layered(Some(&path), env_patch, cli_patch).unwrap();
+
+        assert_eq!(settings.base_path, "/from-cli");
+    }
+
+    #[test]
+    fn environment_patch_overrides_config_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "base_path = \"/from-file\"\nmax_size = 10\n").unwrap();
+
+        let env_patch = SettingsPatch {
+            base_path: Some("/from-env".to_string()),
+            ..SettingsPatch::default()
+        };
+
+        let settings =
+            load_settings_layered(Some(&path), env_patch, SettingsPatch::default()).unwrap();
+
+        // base_path comes from env (overrides the file); max_size, which
+        // env did not set, still comes from the file.
+        assert_eq!(settings.base_path, "/from-env");
+        assert_eq!(settings.max_size, 10);
+    }
+
+    #[test]
+    fn config_file_overrides_defaults_when_no_env_or_cli() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "base_path = \"/from-file\"\n").unwrap();
+
+        let settings = load_settings_layered(
+            Some(&path),
+            SettingsPatch::default(),
+            SettingsPatch::default(),
+        )
+        .unwrap();
+
+        assert_eq!(settings.base_path, "/from-file");
+        // Untouched fields fall through to the built-in defaults.
+        assert_eq!(settings.shutdown_grace, Settings::default().shutdown_grace);
+    }
+
+    // ---- Focused config groups ----
+
+    #[test]
+    fn settings_groups_extract_focused_config() {
+        let settings = Settings {
+            addr: BindTarget::Tcp("127.0.0.1:9000".parse().unwrap()),
+            state_dir: PathBuf::from("/srv/state"),
+            shutdown_grace: 12,
+            drain_delay: 3,
+            request_header_read_timeout: 7,
+            auth_token: vec!["token".to_string()],
+            max_request_body_bytes: 4096,
+            request_body_read_timeout: 5,
+            expiration: "1h".parse().unwrap(),
+            expiration_scan_interval: "30s".parse().unwrap(),
+            disable_expiration_reclamation: false,
+            ..Settings::default()
+        };
+
+        let backend = settings.backend();
+        assert_eq!(backend.state_dir, PathBuf::from("/srv/state"));
+        assert_eq!(backend.storage.uri, DEFAULT_STORAGE_URI);
+
+        let runtime = settings.runtime();
+        assert_eq!(runtime.shutdown_grace, Duration::from_secs(12));
+        assert_eq!(runtime.drain_delay, Duration::from_secs(3));
+        assert_eq!(runtime.header_read_timeout, Duration::from_secs(7));
+
+        let reclamation = settings.reclamation();
+        assert!(reclamation.is_enabled());
+        assert_eq!(reclamation.scan_interval, Duration::from_secs(30));
+
+        let app = settings.app();
+        assert_eq!(app.auth_token, vec!["token"]);
+        assert_eq!(app.max_request_body_bytes, 4096);
+        assert_eq!(app.request_body_read_timeout, 5);
+    }
+
+    #[test]
+    fn reclamation_group_reflects_expiration_and_opt_out() {
+        // No expiration configured: nothing to reclaim.
+        let settings = Settings::default();
+        assert!(!settings.reclamation().expiration_configured());
+        assert!(!settings.reclamation().is_enabled());
+
+        // Expiration configured but reclamation disabled: configured, not enabled.
+        let settings = Settings {
+            expiration: "1h".parse().unwrap(),
+            disable_expiration_reclamation: true,
+            ..Settings::default()
+        };
+        let reclamation = settings.reclamation();
+        assert!(reclamation.expiration_configured());
+        assert!(!reclamation.is_enabled());
+    }
+
+    #[test]
+    fn app_group_resolves_cors_origins() {
+        // Explicit origins win over the wildcard toggle.
+        let settings = Settings {
+            cors: true,
+            cors_origins: vec!["https://app.example.com".to_string()],
+            ..Settings::default()
+        };
+        assert_eq!(settings.app().cors_origins, vec!["https://app.example.com"]);
+
+        // Bare `cors = true` allows any origin.
+        let settings = Settings {
+            cors: true,
+            ..Settings::default()
+        };
+        assert_eq!(settings.app().cors_origins, vec!["*".to_string()]);
+
+        // CORS off by default.
+        assert!(Settings::default().app().cors_origins.is_empty());
+    }
+
+    #[test]
+    fn protocol_group_converts_into_tus_config() {
+        let settings = Settings {
+            base_path: "/uploads".to_string(),
+            max_size: 2048,
+            max_chunk_size: 1024,
+            expiration: "10m".parse().unwrap(),
+            all_extensions: true,
+            disable_checksum_trailer: true,
+            ..Settings::default()
+        };
+
+        let protocol = settings.protocol();
+        assert_eq!(protocol.expiration, Duration::from_secs(600));
+
+        let config = build_tus_config(&protocol);
+        assert_eq!(config.base_path(), "/uploads");
+        assert_eq!(config.max_size(), Some(2048));
+        assert_eq!(config.max_chunk_size(), Some(1024));
+        assert_eq!(config.expiration(), Some(Duration::from_secs(600)));
+        assert!(config.has_extension(Extension::Checksum));
+        assert!(!config.has_extension(Extension::ChecksumTrailer));
+    }
+
+    // ---- Cleanup shares the storage/logging path ----
+
+    #[test]
+    fn cleanup_settings_backend_extracts_storage_group() {
+        let settings = CleanupSettings {
+            storage: StorageConfig {
+                uri: "s3://bucket".to_string(),
+                settings: BTreeMap::from([("region".to_string(), "us-east-1".to_string())]),
+            },
+            state_dir: PathBuf::from("/srv/state"),
+            ..CleanupSettings::default()
+        };
+
+        let backend = settings.backend();
+
+        assert_eq!(backend.storage.uri, "s3://bucket");
+        assert_eq!(
+            backend.storage.settings.get("region"),
+            Some(&"us-east-1".to_string())
+        );
+        assert_eq!(backend.state_dir, PathBuf::from("/srv/state"));
+    }
+
+    #[test]
+    fn cleanup_cli_patch_overrides_environment_and_config_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("server.toml");
+        std::fs::write(&path, "state_dir = \"/from-file\"\nlog_format = \"text\"\n").unwrap();
+
+        let env_patch = CleanupSettingsPatch {
+            state_dir: Some(PathBuf::from("/from-env")),
+            log_format: Some(LogFormat::Json),
+            ..CleanupSettingsPatch::default()
+        };
+        let cli_patch = CleanupSettingsPatch {
+            state_dir: Some(PathBuf::from("/from-cli")),
+            ..CleanupSettingsPatch::default()
+        };
+
+        let settings = load_cleanup_settings_layered(Some(&path), env_patch, cli_patch).unwrap();
+
+        // CLI wins on state_dir; log_format falls back to the env layer
+        // since the CLI did not set it.
+        assert_eq!(settings.state_dir, PathBuf::from("/from-cli"));
+        assert_eq!(settings.log_format, LogFormat::Json);
     }
 }
