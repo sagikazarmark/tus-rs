@@ -302,6 +302,12 @@ impl Config {
     /// accept large chunked uploads, or call
     /// [`without_intake_buffer_limit`](Self::without_intake_buffer_limit) to
     /// remove the cap entirely.
+    ///
+    /// Note the distinction between the two edge cases: `size == 0` *disables*
+    /// buffering support, so any non-empty unknown-length body is rejected with
+    /// `413` on its first chunk, whereas
+    /// [`without_intake_buffer_limit`](Self::without_intake_buffer_limit) leaves
+    /// the buffer *unbounded*.
     #[must_use]
     pub fn with_max_intake_buffer(mut self, size: u64) -> Self {
         self.max_intake_buffer = Some(size);
