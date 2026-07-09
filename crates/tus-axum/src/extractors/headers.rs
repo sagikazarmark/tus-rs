@@ -28,6 +28,9 @@ use crate::error::TusRejection;
 ///     // handler body
 /// }
 /// ```
+///
+/// The `pub` field is a deliberate 1.0 commitment so this destructuring works,
+/// matching every other axum extractor. See ADR 0006.
 #[derive(Debug, Clone)]
 pub struct TusHeaders(pub tus_protocol::Headers);
 
