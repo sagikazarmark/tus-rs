@@ -29,7 +29,9 @@ pub(crate) use receive::ReceiveRequest;
 pub use reclamation::{
     ExpiredUploadReclamationOutcome, ExpiredUploadReclamationReport, reclaim_expired_uploads,
 };
-pub(crate) use recovery::{reconcile_state_offset, reconcile_stored_completion};
+pub(crate) use recovery::{
+    reconcile_state_offset, reconcile_stored_completion, stored_bytes_complete_upload,
+};
 pub(crate) use termination::UploadTerminator;
 
 use crate::error::{Error, Result};

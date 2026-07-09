@@ -200,7 +200,7 @@ where
         Err(error) => return ExpiredUploadReclamationOutcome::Failed { upload_id, error },
     };
 
-    match prepare_upload_reclamation_access(storage, state_store, &mut state).await {
+    match prepare_upload_reclamation_access(storage, &mut state).await {
         Ok(true) => {}
         Ok(false) => return ExpiredUploadReclamationOutcome::NoLongerExpired { upload_id },
         Err(error) => return ExpiredUploadReclamationOutcome::Failed { upload_id, error },
@@ -410,7 +410,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reclaim_expired_uploads_recovers_storage_completed_upload_before_delete() {
+    async fn reclaim_does_not_reclaim_or_persist_storage_completed_upload() {
+        // Stored bytes reached the declared length but the completing state
+        // write never landed. Reclamation must recognize this as completed
+        // content and leave it alone (not reclaimable). Crucially, it must NOT
+        // persist the completion: this scan has no hook context, and finalizing
+        // the upload here would permanently skip its PreFinish/PostFinish hooks.
+        // The completion is left for the next client request to persist and fire
+        // the finish gate.
         let storage = TestStorage::default();
         let state_store = TestStateStore::default();
         let locker = TestLocker::default();
@@ -433,7 +440,9 @@ mod tests {
         ));
         assert!(storage.deleted().is_empty());
         assert!(state_store.deleted().is_empty());
-        assert_eq!(recovered.offset(), 5);
+        // Completion is intentionally left unpersisted so the finish hooks fire
+        // on the next HEAD/PATCH/GET rather than being silently skipped here.
+        assert_eq!(recovered.offset(), 0);
     }
 
     #[tokio::test]

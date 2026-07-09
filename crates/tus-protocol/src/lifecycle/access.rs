@@ -7,6 +7,7 @@ use crate::storage::Storage;
 
 use super::{
     FinalUploadMaterializer, ensure_active, reconcile_state_offset, reconcile_stored_completion,
+    stored_bytes_complete_upload,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,14 +40,17 @@ impl UploadAccessFacts {
     }
 }
 
-pub(crate) async fn prepare_upload_mutation_access<S, St>(
+pub(crate) async fn prepare_upload_mutation_access<S, St, H>(
     storage: &S,
     state_store: &St,
+    hooks: &H,
+    request_info: &HookRequestInfo,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
     St: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
 {
     if state.is_final() {
         ensure_active(state)?;
@@ -55,7 +59,7 @@ where
         ));
     }
 
-    prepare_regular_upload_access(storage, state_store, state).await?;
+    prepare_regular_upload_access(storage, state_store, hooks, request_info, state).await?;
 
     Ok(())
 }
@@ -120,16 +124,22 @@ where
     Ok(prepared)
 }
 
-pub(crate) async fn prepare_upload_reclamation_access<S, St>(
+pub(crate) async fn prepare_upload_reclamation_access<S>(
     storage: &S,
-    state_store: &St,
     state: &mut UploadState,
 ) -> Result<bool>
 where
     S: Storage + ?Sized,
-    St: StateStore + ?Sized,
 {
-    reconcile_stored_completion(storage, state_store, state).await?;
+    // Reclamation runs without request or hook context, so it must not persist
+    // a recovered completion here: doing so would finalize the upload while
+    // permanently skipping its `PreFinish`/`PostFinish` hooks. Detecting the
+    // completion is enough to know the upload is completed content rather than
+    // an abandoned resource — and therefore not reclaimable. The next client
+    // HEAD/PATCH/GET runs the finish gate and persists the completion.
+    if stored_bytes_complete_upload(storage, state).await? {
+        return Ok(false);
+    }
 
     Ok(state.is_expired())
 }
@@ -164,23 +174,26 @@ where
         });
     }
 
-    prepare_regular_upload_access(storage, state_store, state).await?;
+    prepare_regular_upload_access(storage, state_store, hooks, request_info, state).await?;
 
     Ok(PreparedUploadAccess {
         facts: UploadAccessFacts::for_regular_upload(state),
     })
 }
 
-async fn prepare_regular_upload_access<S, St>(
+async fn prepare_regular_upload_access<S, St, H>(
     storage: &S,
     state_store: &St,
+    hooks: &H,
+    request_info: &HookRequestInfo,
     state: &mut UploadState,
 ) -> Result<()>
 where
     S: Storage + ?Sized,
     St: StateStore + ?Sized,
+    H: HookExecutor + ?Sized,
 {
-    reconcile_stored_completion(storage, state_store, state).await?;
+    reconcile_stored_completion(storage, state_store, hooks, request_info, state).await?;
     ensure_active(state)?;
     reconcile_state_offset(storage, state_store, state).await?;
 
