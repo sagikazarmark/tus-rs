@@ -25,6 +25,8 @@ allow = [
   "ISC",
   "CDLA-Permissive-2.0",
   "CC0-1.0",
+  # Pulled in by the Dioxus tree (const_format, konst, slotmap).
+  "Zlib",
 ]
 
 [bans]

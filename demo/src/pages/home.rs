@@ -1,0 +1,85 @@
+use dioxus::prelude::*;
+use dioxus_code::{Code, code};
+
+use crate::app::Route;
+use crate::ui::{PageHeader, SourcePanel, snippet_theme};
+
+struct Feature {
+    title: &'static str,
+    body: &'static str,
+    route: Route,
+    cta: &'static str,
+}
+
+fn features() -> Vec<Feature> {
+    vec![
+        Feature {
+            title: "Minimal by default",
+            body: "A file input and one hook — chunked, resumable uploads with typed state.",
+            route: Route::Minimal {},
+            cta: "See the minimal example",
+        },
+        Feature {
+            title: "Concurrent queue",
+            body: "Drag-and-drop many files with per-file speed, ETA, and queue-wide controls.",
+            route: Route::Queue {},
+            cta: "Open the queue",
+        },
+        Feature {
+            title: "Full control",
+            body: "Pause, resume, and abort at chunk boundaries — no fighting the runtime.",
+            route: Route::Controls {},
+            cta: "Try the controls",
+        },
+        Feature {
+            title: "Resumes across reloads",
+            body: "Progress persists to localStorage; re-pick a file to continue where it stopped.",
+            route: Route::Resume {},
+            cta: "See resume",
+        },
+    ]
+}
+
+#[component]
+pub fn Home() -> Element {
+    rsx! {
+        PageHeader {
+            eyebrow: "dioxus-tus",
+            title: "Resumable uploads for Dioxus web apps",
+            intro: "A headless TUS upload hook: type-safe reactive state, chunked PATCH with retry, pause / resume / abort, and resume-from-existing-URL — no stringly-typed events, no runtime to fight.",
+        }
+
+        div { class: "mt-8 flex flex-wrap gap-3",
+            Link { to: Route::Minimal {}, class: "btn btn-primary", "Get started" }
+            Link { to: Route::Queue {}, class: "btn btn-ghost", "Explore the queue" }
+        }
+
+        div { class: "mt-10 grid gap-4 sm:grid-cols-2",
+            for feature in features() {
+                Link {
+                    to: feature.route,
+                    class: "group rounded-2xl border border-base-300 bg-base-100 p-5 transition-colors hover:border-primary/50",
+                    h3 { class: "font-semibold tracking-tight", "{feature.title}" }
+                    p { class: "mt-1.5 text-sm leading-6 text-base-content/65", "{feature.body}" }
+                    span { class: "mt-3 inline-block text-sm font-medium text-primary",
+                        "{feature.cta} →"
+                    }
+                }
+            }
+        }
+
+        section { class: "mt-12",
+            h2 { class: "text-xl font-semibold tracking-tight", "Quick start" }
+            p { class: "mt-2 max-w-[70ch] text-sm leading-6 text-base-content/65",
+                "The whole surface is one hook returning reactive state and a handle. Point it at your TUS endpoint (use the switcher in the header to try a live server):"
+            }
+            div { class: "mt-4 max-w-2xl",
+                SourcePanel {
+                    code: rsx! {
+                        Code { src: code!("/snippets/quickstart.rs"), theme: snippet_theme() }
+                    },
+                }
+            }
+        }
+    }
+}

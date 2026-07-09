@@ -8,161 +8,30 @@ on:
 permissions:
   contents: read
 
-# Non-Send futures for single-threaded runtimes (Cloudflare Workers and
-# similar) are selected automatically on wasm32 targets, so the full feature
-# set is additive and `--all-features` covers the native side. Dedicated
-# steps cover wasm32 and feature-combination probes.
+env:
+  DAGGER_VERSION: 86d1d2f5791bcf3213d56903cfa81a3ba0abe54a
+
 jobs:
-  build:
-    name: Build
+  checks:
+    name: Checks (${{ matrix.workspace }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [".", "demo"]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.workspace }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      - name: Build (native)
-        run: cargo build --workspace --all-targets --all-features
-
-      - name: Install wasm target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Check tus-protocol (wasm)
-        run: cargo check -p tus-protocol --target wasm32-unknown-unknown --no-default-features --features storage-memory,state-memory,checksum
-
-      - name: Check tus-client (wasm, default features)
-        run: cargo check -p tus-client --target wasm32-unknown-unknown
-
-      - name: Check feature combinations
-        run: |
-          cargo check -p tus-protocol --no-default-features
-          cargo check -p tus-client --no-default-features
-          cargo check -p tus-client --no-default-features --features transport-reqwest
-          cargo check -p tus-client --no-default-features --features checksum
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      - name: Run tests (native)
-        run: cargo test --workspace --all-features
-
-      - name: Install wasm target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install wasm test runner
-        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
-
-      - name: Run tests (wasm)
-        run: CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test -p tus-client --target wasm32-unknown-unknown --lib
-
-  msrv:
-    name: MSRV
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      # Keep this in sync with `rust-version` in the workspace Cargo.toml. It
-      # verifies the declared MSRV actually builds instead of letting it drift.
-      - name: Install MSRV toolchain
-        run: rustup toolchain install 1.92 --profile minimal
-
-      - name: Check against MSRV
-        run: cargo +1.92 check --workspace --all-features
-
-  # cargo-semver-checks guards against accidental breaking changes to the public
-  # API. It compares against the last release published to crates.io, so enable
-  # it once a stable baseline (>= 1.0.0) has been published:
-  #
-  # semver:
-  #   name: Semver
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout repository
-  #       uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-  #     - name: Set up Rust
-  #       uses: ./.github/actions/rust/
-  #     - name: Check semver
-  #       uses: obiononsuru/action-semver-checks@... # pin by SHA when enabling
-
-  docs:
-    name: Docs
-    runs-on: ubuntu-latest
-    env:
-      RUSTDOCFLAGS: -D warnings
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      - name: Build documentation
-        run: cargo doc --workspace --no-deps --all-features
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      - name: Run fmt
-        run: cargo fmt -- --check
-
-      - name: Run clippy (native)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  audit:
-    name: Audit
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Run cargo audit
-        run: cargo audit
-
-  deny:
-    name: Deny
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up Rust
-        uses: ./.github/actions/rust/
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-
-      - name: Run cargo deny
-        run: cargo deny check
+      - name: Check
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77 # v8.4.1
+        with:
+          verb: check
+          args: --lock pinned
+          # version: ${{ env.DAGGER_VERSION }}
+          commit: ${{ env.DAGGER_VERSION }}

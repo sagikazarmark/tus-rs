@@ -1,0 +1,31 @@
+# Standalone workspace: this demo targets wasm and carries its own Cargo.lock,
+# so it must not be absorbed into the root `crates/*` workspace.
+[workspace]
+
+[package]
+name = "dioxus-tus-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dioxus = { version = "0.7", features = ["router", "web"] }
+# Compile-time syntax highlighting for the on-page source snippets: the `code!`
+# macro embeds a pre-highlighted span tree at build time (no runtime
+# highlighter). Its arborium/tree-sitter parser cross-compiles a C sysroot for
+# wasm32, so the build needs clang (`CC_wasm32_unknown_unknown`) — see the
+# devenv config and the Dagger container.
+dioxus-code = "0.1"
+dioxus-tus = { path = "../crates/dioxus-tus" }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Event", "EventTarget", "File", "FileList", "HtmlInputElement", "Location", "Window"] }
+
+# Size-tuned wasm profile, mirroring the dioxus-clerk demo: optimize for size
+# and strip everything the browser bundle doesn't need.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

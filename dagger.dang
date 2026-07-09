@@ -11,9 +11,13 @@ type Tus {
   The tus CLI binary.
   """
   cli(ws: Workspace!): File! {
-    self
-      .rust
-      .build(ws, bin: ["tus"])
-      .file("tus")
+    self.rust.build(ws, bin: ["tus"]).file("tus")
+  }
+
+  """
+  The tus server binary.
+  """
+  server(ws: Workspace!): File! {
+    self.rust.build(ws, bin: ["tus-server"]).file("tus-server")
   }
 }
