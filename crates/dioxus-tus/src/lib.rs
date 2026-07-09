@@ -125,6 +125,14 @@
 //! Pre-1.0 and exploratory. Expect breaking changes between releases until
 //! the API stabilises.
 
+// The hook, handle, and transport APIs are `#[cfg(target_arch = "wasm32")]`, so
+// intra-doc links to them only resolve for the wasm target. docs.rs and CI
+// build this crate for wasm (see the `package.metadata.docs.rs` table), where
+// these links are still validated under `-D warnings`. On other targets — the
+// host doc builds used by some CI checks — those items don't exist, so tolerate
+// the unresolvable links there rather than failing the build.
+#![cfg_attr(not(target_arch = "wasm32"), allow(rustdoc::broken_intra_doc_links))]
+
 pub mod config;
 pub mod persistence;
 pub mod retry;
