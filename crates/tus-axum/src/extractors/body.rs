@@ -31,6 +31,14 @@ use crate::error::TusRejection;
 ///     // handler body
 /// }
 /// ```
+///
+/// The `pub` field is a deliberate 1.0 commitment so this destructuring works,
+/// matching every other axum extractor. See ADR 0006.
+///
+/// Note the coupling: [`RequestBody`] is deliberately exhaustive (not
+/// `#[non_exhaustive]`), so adding a variant to it is a breaking change for
+/// `tus-axum` consumers too. This is inherent to exposing the body at all, not a
+/// consequence of the `pub` field.
 pub struct TusBody(pub RequestBody);
 
 impl TusBody {

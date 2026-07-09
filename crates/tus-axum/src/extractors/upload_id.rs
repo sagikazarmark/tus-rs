@@ -6,6 +6,10 @@ use axum::{
 use crate::error::TusRejection;
 
 /// Axum path extractor for a validated TUS upload ID.
+///
+/// The `pub` field is a deliberate 1.0 commitment: it lets handlers destructure
+/// `TusUploadId(id)` in the signature, matching every other axum extractor. See
+/// ADR 0006.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TusUploadId(pub tus_protocol::UploadId);
 
