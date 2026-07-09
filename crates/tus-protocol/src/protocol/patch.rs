@@ -71,7 +71,14 @@ where
             .await?
             .ok_or_else(|| Error::NotFound(upload_id.to_string()))?;
 
-        prepare_upload_mutation_access(self.storage, self.state_store, &mut state).await?;
+        prepare_upload_mutation_access(
+            self.storage,
+            self.state_store,
+            self.hooks,
+            hook_contexts.request_info(),
+            &mut state,
+        )
+        .await?;
 
         let receiver = ByteReceiver::new(
             self.storage,
@@ -1173,5 +1180,67 @@ mod tests {
 
         let stored = store.get("test-id").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 11);
+    }
+
+    #[tokio::test]
+    async fn patch_recovers_storage_completed_upload_and_runs_finish_hooks() {
+        // Storage reached the declared length but the completing state write
+        // never landed. A PATCH preflight recovers the completion, runs the
+        // finish gate, then rejects the write as targeting an already-complete
+        // upload — so downstream processing wired to PostFinish still fires.
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let mut state = UploadState::new("test-id").with_length(5);
+        create_storage(&storage, &mut state).await;
+        append_storage(&storage, &mut state, b"hello").await;
+        state.set_offset(0);
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new()
+            .on_pre_finish({
+                let events = Arc::clone(&events);
+                move |_| {
+                    let events = Arc::clone(&events);
+                    async move {
+                        events.lock().unwrap().push(HookEvent::PreFinish);
+                        Ok(PreHookResult::proceed())
+                    }
+                }
+            })
+            .on_post_finish({
+                let events = Arc::clone(&events);
+                move |_| {
+                    let events = Arc::clone(&events);
+                    async move {
+                        events.lock().unwrap().push(HookEvent::PostFinish);
+                        Ok(())
+                    }
+                }
+            });
+        let locker = NoopLocker::new();
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .patch(
+                headers(0),
+                &upload_id,
+                RequestBody::from_chunk_stream(body(b"hello")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::CompletedUploadModificationForbidden(id) if id == "test-id"
+        ));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![HookEvent::PreFinish, HookEvent::PostFinish]
+        );
+
+        let stored = store.get("test-id").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 5);
+        assert!(stored.is_complete());
     }
 }

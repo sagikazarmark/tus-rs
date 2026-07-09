@@ -700,4 +700,110 @@ mod tests {
         let stored = store.get("test-id").await.unwrap().unwrap();
         assert_eq!(stored.offset(), 5);
     }
+
+    #[tokio::test]
+    async fn head_recovery_completion_runs_finish_hooks() {
+        // Storage reached the declared length but the completing state write
+        // never landed (a crash between the durable append and the state
+        // update). A subsequent HEAD must recover the completion AND run the
+        // same PreFinish/PostFinish gates as the normal completion path, so
+        // downstream processing wired to PostFinish is not silently skipped.
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let mut state = UploadState::new("test-id").with_length(5);
+        create_storage(&storage, &mut state).await;
+        append_storage(&storage, &mut state, Bytes::from_static(b"hello")).await;
+        state.set_offset(0);
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hooks = HookChain::new()
+            .on_pre_finish({
+                let events = Arc::clone(&events);
+                move |ctx| {
+                    let events = Arc::clone(&events);
+                    let offset = ctx.upload().offset();
+                    async move {
+                        events.lock().unwrap().push(("pre_finish", offset));
+                        Ok(PreHookResult::proceed())
+                    }
+                }
+            })
+            .on_post_finish({
+                let events = Arc::clone(&events);
+                move |ctx| {
+                    let events = Arc::clone(&events);
+                    let offset = ctx.upload().offset();
+                    async move {
+                        events.lock().unwrap().push(("post_finish", offset));
+                        Ok(())
+                    }
+                }
+            });
+        let locker = NoopLocker::new();
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let response = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .head(&upload_id)
+            .await
+            .unwrap();
+
+        assert_eq!(response.headers.get("upload-offset").unwrap(), "5");
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![("pre_finish", 5), ("post_finish", 5)]
+        );
+
+        let stored = store.get("test-id").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 5);
+        assert!(stored.is_complete());
+    }
+
+    #[tokio::test]
+    async fn head_recovery_completion_pre_finish_rejection_preserves_state() {
+        // A PreFinish rejection during recovery completion must fail the request
+        // and leave the upload untouched — the completion is not persisted and
+        // PostFinish does not fire — mirroring the normal completion path.
+        let storage = MemoryStorage::new();
+        let store = MemoryStateStore::new();
+        let mut state = UploadState::new("test-id").with_length(5);
+        create_storage(&storage, &mut state).await;
+        append_storage(&storage, &mut state, Bytes::from_static(b"hello")).await;
+        state.set_offset(0);
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
+
+        let post_finish_ran = Arc::new(AtomicUsize::new(0));
+        let hooks = HookChain::new()
+            .on_pre_finish(|_| async { Ok(PreHookResult::reject(403, "finish blocked")) })
+            .on_post_finish({
+                let post_finish_ran = Arc::clone(&post_finish_ran);
+                move |_| {
+                    let post_finish_ran = Arc::clone(&post_finish_ran);
+                    async move {
+                        post_finish_ran.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                }
+            });
+        let locker = NoopLocker::new();
+        let upload_id: UploadId = "test-id".parse().unwrap();
+
+        let err = Protocol::new(&Config::default(), &storage, &store, &locker, &hooks)
+            .head(&upload_id)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::HookRejected {
+                status_code: 403,
+                ..
+            }
+        ));
+        assert_eq!(post_finish_ran.load(Ordering::SeqCst), 0);
+
+        let stored = store.get("test-id").await.unwrap().unwrap();
+        assert_eq!(stored.offset(), 0);
+        assert!(!stored.is_complete());
+    }
 }
