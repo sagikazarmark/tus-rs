@@ -105,11 +105,41 @@ pub enum Error {
     /// The upload source misbehaved (for example a short or oversized read,
     /// or content that changed underneath the client). Deterministic and
     /// never retried.
-    #[error("upload source failed: {message}")]
+    ///
+    /// Custom [`UploadSource`](crate::UploadSource) implementations should
+    /// build this variant through [`Error::source`] rather than constructing
+    /// it directly; the underlying failure is preserved as the error
+    /// [`source`](std::error::Error::source).
+    #[error("upload source failed: {source}")]
     #[non_exhaustive]
     Source {
-        /// Description of the source misbehavior.
-        message: String,
+        /// The underlying source failure.
+        #[source]
+        source: BoxError,
+    },
+
+    /// A [`HeaderProvider`](crate::HeaderProvider) failed to produce the
+    /// dynamic request headers for an attempt — for example a token refresh
+    /// that could not reach the auth server, or a credential that is no
+    /// longer valid.
+    ///
+    /// `retryable` reports whether producing the headers could plausibly
+    /// succeed on a later attempt (a transient refresh failure) or is
+    /// deterministic (a permanently bad credential). The retry loop
+    /// re-invokes the provider on each attempt, so a retryable failure gives
+    /// a transient refresh another chance after backoff. Custom providers
+    /// should build this variant through [`Error::header_provider`] or
+    /// [`Error::header_provider_permanent`] rather than constructing it
+    /// directly; the underlying failure is preserved as the error
+    /// [`source`](std::error::Error::source).
+    #[error("{}: {source}", header_provider_failure_message(.retryable))]
+    #[non_exhaustive]
+    HeaderProvider {
+        /// The underlying header-provider failure.
+        #[source]
+        source: BoxError,
+        /// Whether producing the headers could plausibly succeed on retry.
+        retryable: bool,
     },
 
     /// The server returned an unexpected HTTP response.
@@ -217,14 +247,56 @@ impl Error {
         }
     }
 
+    /// Wraps a failure from a custom [`UploadSource`](crate::UploadSource),
+    /// such as a short or oversized read or content that changed underneath
+    /// the client. Always permanent — the local source is authoritative, so
+    /// the failure is never retried. Accepts any error type (or a plain
+    /// message string):
+    ///
+    /// ```
+    /// use tus_client::Error;
+    ///
+    /// let error = Error::source("read returned fewer bytes than requested");
+    /// assert!(!error.is_retryable());
+    /// ```
+    pub fn source(source: impl Into<BoxError>) -> Self {
+        Error::Source {
+            source: source.into(),
+        }
+    }
+
+    /// Wraps a [`HeaderProvider`](crate::HeaderProvider) failure that may
+    /// succeed on retry, such as a token refresh that could not reach the
+    /// auth server. The retry loop re-invokes the provider, so a retryable
+    /// failure gets another attempt after backoff. Use
+    /// [`Error::header_provider_permanent`] for deterministic failures such
+    /// as a permanently invalid credential.
+    pub fn header_provider(source: impl Into<BoxError>) -> Self {
+        Error::HeaderProvider {
+            source: source.into(),
+            retryable: true,
+        }
+    }
+
+    /// Wraps a deterministic [`HeaderProvider`](crate::HeaderProvider)
+    /// failure that is never retried, such as a permanently invalid
+    /// credential or a misconfigured provider.
+    pub fn header_provider_permanent(source: impl Into<BoxError>) -> Self {
+        Error::HeaderProvider {
+            source: source.into(),
+            retryable: false,
+        }
+    }
+
     /// Reports whether retrying the failed operation could plausibly
     /// succeed.
     ///
     /// Transient failures (the transient `5xx` responses `500`/`502`/`503`/`504`,
-    /// plus `408`/`409`/`429`/`460`, and retryable [`Error::Transport`]
-    /// failures) are retryable. Deterministic failures — source misbehavior,
-    /// offset desync, request construction errors, and permanent transport
-    /// failures — are not.
+    /// plus `408`/`409`/`429`/`460`, retryable [`Error::Transport`] failures,
+    /// and retryable [`Error::HeaderProvider`] failures) are retryable.
+    /// Deterministic failures — source misbehavior, offset desync, request
+    /// construction errors, permanent transport failures, and permanent
+    /// header-provider failures — are not.
     ///
     /// Only the transient `5xx` codes are retried. Deterministic server-side
     /// codes such as `501 Not Implemented` and `505 HTTP Version Not Supported`
@@ -245,6 +317,7 @@ impl Error {
                 )
             }
             Error::Transport { retryable, .. } => *retryable,
+            Error::HeaderProvider { retryable, .. } => *retryable,
             _ => false,
         }
     }
@@ -273,6 +346,16 @@ fn transport_failure_message(retryable: &bool) -> &'static str {
         "transport failed"
     } else {
         "transport failed permanently"
+    }
+}
+
+// Takes `&bool` because thiserror's `.retryable` format shorthand expands to
+// `&self.retryable`.
+fn header_provider_failure_message(retryable: &bool) -> &'static str {
+    if *retryable {
+        "header provider failed"
+    } else {
+        "header provider failed permanently"
     }
 }
 
@@ -313,9 +396,40 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn source_and_header_provider_errors_preserve_the_source_chain() {
+        let inner = std::io::Error::other("file changed length after open");
+        let error = Error::source(inner);
+        assert_eq!(
+            error.to_string(),
+            "upload source failed: file changed length after open"
+        );
+        assert!(!error.is_retryable());
+        let source = std::error::Error::source(&error).expect("source must be preserved");
+        assert_eq!(source.to_string(), "file changed length after open");
+
+        let retryable = Error::header_provider("token refresh timed out");
+        assert_eq!(
+            retryable.to_string(),
+            "header provider failed: token refresh timed out"
+        );
+        assert!(retryable.is_retryable());
+        let source = std::error::Error::source(&retryable).expect("source must be preserved");
+        assert_eq!(source.to_string(), "token refresh timed out");
+
+        let permanent = Error::header_provider_permanent("invalid refresh token");
+        assert_eq!(
+            permanent.to_string(),
+            "header provider failed permanently: invalid refresh token"
+        );
+        assert!(!permanent.is_retryable());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn retryability_is_a_typed_property() {
         let retryable = [
             Error::transport("connection reset"),
+            Error::header_provider("token refresh timed out"),
             Error::UnexpectedResponse {
                 operation: "patch upload",
                 status: StatusCode::SERVICE_UNAVAILABLE,
@@ -371,9 +485,8 @@ mod tests {
 
         let permanent = [
             Error::transport_permanent("bad credentials"),
-            Error::Source {
-                message: "short read".into(),
-            },
+            Error::source("short read"),
+            Error::header_provider_permanent("invalid refresh token"),
             Error::OffsetDesync {
                 expected: 4,
                 actual: 2,

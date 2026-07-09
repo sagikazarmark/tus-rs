@@ -116,8 +116,10 @@ the tus concatenation extension.
 
 On `wasm32`, sequential upload and resume APIs work with `UploadSource`. The
 reqwest transport uses the browser `fetch` backend, so request trailers and
-manually setting `Content-Length` are not available. Middleware can be used on
-wasm when the middleware implementation itself is wasm-compatible.
+manually setting `Content-Length` are not available. `ReqwestMiddlewareTransport`
+compiles for `wasm32`, but `reqwest-middleware`'s own wasm support is unmaintained
+upstream, so middleware on wasm is best-effort and untested here — use it only
+when the middleware implementation itself is known to be wasm-compatible.
 
 On `wasm32` targets, trait bounds relax to non-`Send` futures automatically.
 Custom transports and upload sources should match the target runtime's
