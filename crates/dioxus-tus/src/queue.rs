@@ -78,7 +78,12 @@ pub enum QueueItemStatus {
 }
 
 /// One row in the queue.
+///
+/// `#[non_exhaustive]`: consumers read queue rows rather than constructing
+/// them, and this struct is expected to grow (e.g. speed/ETA fields), so
+/// adding fields must not be a breaking change.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TusQueueItem {
     pub id: u64,
     pub file_name: String,
@@ -148,7 +153,11 @@ impl TusQueueItem {
 }
 
 /// Reactive snapshot of the whole queue.
+///
+/// `#[non_exhaustive]`: read by consumers, not constructed, and likely to grow
+/// aggregate fields (e.g. totals/throughput), so new fields must stay additive.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct TusQueueState {
     pub items: Vec<TusQueueItem>,
 }

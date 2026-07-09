@@ -14,7 +14,7 @@
 //!
 //! ## TTL + eviction
 //!
-//! Entries older than [`STORAGE_TTL_MS`] are filtered out by [`scan`]. They
+//! Entries older than the storage TTL are filtered out by [`scan`]. They
 //! aren't proactively garbage-collected on every read — operationally the
 //! storage namespace is `dioxus-tus:v1:*`, distinct enough that stale
 //! entries don't leak into other consumers.
@@ -28,18 +28,20 @@
 use serde::{Deserialize, Serialize};
 
 /// Key prefix scoping our entries inside the page's localStorage namespace.
-pub const STORAGE_KEY_PREFIX: &str = "dioxus-tus:v1:";
+///
+/// `pub(crate)`: the on-disk key format is an internal compatibility detail,
+/// not a public contract.
+pub(crate) const STORAGE_KEY_PREFIX: &str = "dioxus-tus:v1:";
 
 /// Entries older than this are filtered from [`scan`]. 24 hours.
-pub const STORAGE_TTL_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
+pub(crate) const STORAGE_TTL_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
 
 /// One persisted in-flight upload.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub struct ResumableEntry {
     /// Stable derived key used for both the localStorage entry name and
-    /// matching a re-picked file against the entry. Computed by
-    /// [`match_key`].
+    /// matching a re-picked file against the entry.
     pub match_key: String,
     /// Endpoint this URL was created against. Used for origin validation.
     pub endpoint: String,
@@ -65,7 +67,17 @@ pub struct ResumableEntry {
 /// than parsing it.
 ///
 /// Pure function — no I/O, callable from native tests without wasm.
-pub fn match_key(endpoint: &str, filename: &str, file_size: u64, last_modified: f64) -> String {
+///
+/// `pub(crate)`: the key-derivation scheme is an internal detail. Consumers
+/// read the derived value via [`ResumableEntry::match_key`]; they don't
+/// recompute it.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn match_key(
+    endpoint: &str,
+    filename: &str,
+    file_size: u64,
+    last_modified: f64,
+) -> String {
     // last_modified can be NaN on some browsers; coerce to a stable integer
     // milliseconds value to keep the key deterministic.
     let lm_ms = if last_modified.is_finite() {
@@ -105,7 +117,10 @@ pub fn match_key(endpoint: &str, filename: &str, file_size: u64, last_modified: 
 }
 
 /// Returns the localStorage key for the given match key.
-pub fn storage_key(match_key: &str) -> String {
+///
+/// `pub(crate)`: internal storage-layout detail.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn storage_key(match_key: &str) -> String {
     format!("{STORAGE_KEY_PREFIX}{match_key}")
 }
 
@@ -159,7 +174,10 @@ fn parse_origin(s: &str) -> Option<(String, String, u16)> {
 /// Returns `true` when the URLs share scheme + host + port, OR when
 /// either URL fails to parse (in which case we conservatively reject by
 /// returning false).
-pub fn origin_matches(endpoint: &str, upload_url: &str) -> bool {
+///
+/// `pub(crate)`: internal same-origin defence, not part of the public surface.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn origin_matches(endpoint: &str, upload_url: &str) -> bool {
     match (parse_origin(endpoint), parse_origin(upload_url)) {
         (Some(a), Some(b)) => a == b,
         _ => false,

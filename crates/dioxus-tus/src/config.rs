@@ -71,27 +71,32 @@ impl TusConfig {
         }
     }
 
+    #[must_use]
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token = Some(token.into());
         self
     }
 
     /// Sets the per-PATCH chunk size, clamped to at least 1 byte.
+    #[must_use]
     pub fn with_chunk_size(mut self, bytes: usize) -> Self {
         self.chunk_size = bytes.max(1);
         self
     }
 
+    #[must_use]
     pub fn with_max_retries(mut self, n: usize) -> Self {
         self.max_retries = n;
         self
     }
 
+    #[must_use]
     pub fn with_retry_delay_ms(mut self, ms: u64) -> Self {
         self.retry_delay_ms = ms;
         self
     }
 
+    #[must_use]
     pub fn with_creation_with_upload_threshold(mut self, bytes: usize) -> Self {
         self.creation_with_upload_threshold = bytes;
         self
@@ -107,7 +112,10 @@ impl TusConfig {
     /// e.g. `4 GiB + 100 KiB` would truncate to `100 KiB`, falsely match a
     /// 256 KiB threshold, and route the entire 4 GiB payload through the
     /// load-whole-body path — OOMing wasm linear memory.
-    pub fn use_creation_with_upload(&self, file_size: u64) -> bool {
+    ///
+    /// Consulted only by the wasm upload engine; `allow(dead_code)` off-wasm.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn use_creation_with_upload(&self, file_size: u64) -> bool {
         file_size > 0 && file_size <= self.creation_with_upload_threshold as u64
     }
 }
@@ -163,6 +171,7 @@ impl fmt::Debug for TusStartOptions {
 impl TusStartOptions {
     /// Sets a bearer token for this upload only, taking precedence over any
     /// [`TusConfig::bearer_token`].
+    #[must_use]
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token_override = Some(token.into());
         self
@@ -170,6 +179,7 @@ impl TusStartOptions {
 
     /// Appends an extra request header sent with every TUS request for this
     /// upload. Call repeatedly to add more than one.
+    #[must_use]
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_headers.push((name.into(), value.into()));
         self
@@ -178,18 +188,21 @@ impl TusStartOptions {
     /// Adds (or overrides) a single `Upload-Metadata` key-value pair. Keys set
     /// here win over the auto-populated `filename` / `filetype`. Call
     /// repeatedly to add more than one.
+    #[must_use]
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_metadata.insert(key.into(), value.into());
         self
     }
 
     /// Overrides the auto-populated `filename` metadata value.
+    #[must_use]
     pub fn with_filename(mut self, filename: impl Into<String>) -> Self {
         self.filename_override = Some(filename.into());
         self
     }
 
     /// Overrides the auto-populated `filetype` metadata value.
+    #[must_use]
     pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
         self.content_type_override = Some(content_type.into());
         self
@@ -197,6 +210,7 @@ impl TusStartOptions {
 
     /// Resumes from an existing TUS upload URL instead of creating a new one.
     /// Equivalent to [`crate::TusUploadHandle::start_with_url`].
+    #[must_use]
     pub fn with_existing_url(mut self, url: impl Into<String>) -> Self {
         self.existing_url = Some(url.into());
         self
@@ -205,7 +219,10 @@ impl TusStartOptions {
     /// Returns true when these options can change request-specific server
     /// capabilities and therefore must not reuse endpoint-only OPTIONS cache.
     /// Static config-level bearer tokens are intentionally not represented here.
-    pub fn has_request_specific_headers(&self) -> bool {
+    ///
+    /// Consulted only by the wasm upload engine; `allow(dead_code)` off-wasm.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn has_request_specific_headers(&self) -> bool {
         self.bearer_token_override.is_some() || !self.extra_headers.is_empty()
     }
 
@@ -214,7 +231,14 @@ impl TusStartOptions {
     /// `file_name` and `file_type` come from `web_sys::File::name()` and
     /// `web_sys::File::type_()`. Overrides from `self` take precedence.
     /// `self.extra_metadata` is merged last (wins over auto-populated values).
-    pub fn build_metadata(&self, file_name: &str, file_type: &str) -> HashMap<String, String> {
+    ///
+    /// Consulted only by the wasm upload engine; `allow(dead_code)` off-wasm.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn build_metadata(
+        &self,
+        file_name: &str,
+        file_type: &str,
+    ) -> HashMap<String, String> {
         let mut m = HashMap::new();
         m.insert(
             "filename".into(),
@@ -232,5 +256,120 @@ impl TusStartOptions {
             m.insert(k.clone(), v.clone());
         }
         m
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // These exercise the `pub(crate)` engine helpers (`has_request_specific_headers`,
+    // `build_metadata`, `use_creation_with_upload`), so they live here rather than in
+    // the `tests/` integration suite, which can only reach the public surface.
+    use super::*;
+
+    #[test]
+    fn start_options_identifies_request_specific_headers() {
+        let options = TusStartOptions::default().with_bearer_token("upload-token");
+        assert!(options.has_request_specific_headers());
+
+        let options = TusStartOptions::default().with_header("X-Tenant-Id", "tenant-a");
+        assert!(options.has_request_specific_headers());
+    }
+
+    #[test]
+    fn start_options_without_per_upload_auth_is_options_cacheable() {
+        let options = TusStartOptions::default();
+        assert!(!options.has_request_specific_headers());
+    }
+
+    #[test]
+    fn metadata_auto_populates_filename_and_filetype() {
+        let opts = TusStartOptions::default();
+        let meta = opts.build_metadata("photo.jpg", "image/jpeg");
+        assert_eq!(meta.get("filename").map(String::as_str), Some("photo.jpg"));
+        assert_eq!(meta.get("filetype").map(String::as_str), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn filename_override_replaces_auto_populated() {
+        let opts = TusStartOptions::default().with_filename("renamed.jpg");
+        let meta = opts.build_metadata("original.jpg", "image/jpeg");
+        assert_eq!(
+            meta.get("filename").map(String::as_str),
+            Some("renamed.jpg")
+        );
+    }
+
+    #[test]
+    fn extra_metadata_is_merged() {
+        let opts = TusStartOptions::default().with_metadata("user_id", "u123");
+        let meta = opts.build_metadata("file.bin", "application/octet-stream");
+        assert_eq!(meta.get("user_id").map(String::as_str), Some("u123"));
+        assert!(meta.contains_key("filename"));
+    }
+
+    #[test]
+    fn extra_metadata_key_wins_over_auto_populated() {
+        let opts = TusStartOptions::default().with_metadata("filename", "from-extra.txt");
+        let meta = opts.build_metadata("auto.txt", "text/plain");
+        assert_eq!(
+            meta.get("filename").map(String::as_str),
+            Some("from-extra.txt")
+        );
+    }
+
+    // =================================================================
+    // creation-with-upload predicate — regression tests for the wasm32
+    // 32-bit `usize` truncation bug. With the fix the predicate compares
+    // in `u64` space, so files larger than `u32::MAX` no longer alias into
+    // the "small enough for cwu" range.
+    // =================================================================
+
+    #[test]
+    fn cwu_predicate_includes_files_under_threshold() {
+        let c =
+            TusConfig::new("https://x.test/files").with_creation_with_upload_threshold(256 * 1024);
+        assert!(c.use_creation_with_upload(1));
+        assert!(c.use_creation_with_upload(100 * 1024));
+        assert!(c.use_creation_with_upload(256 * 1024));
+    }
+
+    #[test]
+    fn cwu_predicate_excludes_files_over_threshold() {
+        let c =
+            TusConfig::new("https://x.test/files").with_creation_with_upload_threshold(256 * 1024);
+        assert!(!c.use_creation_with_upload(256 * 1024 + 1));
+        assert!(!c.use_creation_with_upload(10 * 1024 * 1024));
+    }
+
+    #[test]
+    fn cwu_predicate_excludes_zero_size_files() {
+        // Empty files don't take the cwu fast path — the create_upload branch
+        // handles them and short-circuits the chunk loop.
+        let c =
+            TusConfig::new("https://x.test/files").with_creation_with_upload_threshold(256 * 1024);
+        assert!(!c.use_creation_with_upload(0));
+    }
+
+    #[test]
+    fn cwu_predicate_does_not_truncate_huge_files_on_wasm32() {
+        // Pre-fix this used `(file_size as usize) <= threshold`. On wasm32 (32-bit
+        // usize) a 4 GiB + 100 KiB file truncates to 100 KiB, falsely matches a
+        // 256 KiB threshold, and routes the entire >4 GiB payload through the
+        // load-whole-body POST — OOMing wasm linear memory. The predicate now
+        // compares in u64 space so the truncation can't happen.
+        let c =
+            TusConfig::new("https://x.test/files").with_creation_with_upload_threshold(256 * 1024);
+        let four_gib_plus_100kib: u64 = (1u64 << 32) + 100 * 1024;
+        assert!(
+            !c.use_creation_with_upload(four_gib_plus_100kib),
+            "huge file whose low 32 bits land below the threshold must NOT \
+             take the cwu path",
+        );
+
+        // Boundary at exactly 2^32: low 32 bits are 0, which would have aliased
+        // to "zero-size" and ALSO failed the `> 0` guard. Make sure the u64
+        // comparison gets it right.
+        let exactly_four_gib: u64 = 1u64 << 32;
+        assert!(!c.use_creation_with_upload(exactly_four_gib));
     }
 }

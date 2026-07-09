@@ -25,6 +25,17 @@ pub(crate) struct ServeOptions {
     pub(crate) header_read_timeout: Duration,
 }
 
+impl From<crate::config::RuntimeConfig> for ServeOptions {
+    fn from(runtime: crate::config::RuntimeConfig) -> Self {
+        Self {
+            addr: runtime.addr,
+            shutdown_grace: runtime.shutdown_grace,
+            drain_delay: runtime.drain_delay,
+            header_read_timeout: runtime.header_read_timeout,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ShutdownSignal {
     receiver: tokio::sync::watch::Receiver<bool>,

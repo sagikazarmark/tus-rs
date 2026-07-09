@@ -33,7 +33,7 @@ pub(super) async fn run(command: ServeCli) -> anyhow::Result<()> {
     tracing::info!("Starting TUS server");
     tracing::info!("State directory: {:?}", settings.state_dir);
 
-    let config = config::build_tus_config(&settings);
+    let config = config::build_tus_config(&settings.protocol());
     log_tus_config(&config);
 
     let parts = build_serve_command_parts(&settings, config).await?;
@@ -45,8 +45,8 @@ pub(super) async fn run(command: ServeCli) -> anyhow::Result<()> {
 
     if !cleanup_targets.is_empty() {
         let scan_interval = settings
-            .expiration_scan_interval
-            .as_duration()
+            .reclamation()
+            .scan_interval
             .max(Duration::from_secs(1));
         tracing::info!(
             interval_secs = scan_interval.as_secs(),
@@ -59,18 +59,7 @@ pub(super) async fn run(command: ServeCli) -> anyhow::Result<()> {
         );
     }
 
-    lifecycle::serve_app(
-        app,
-        lifecycle::ServeOptions {
-            addr: settings.addr.clone(),
-            shutdown_grace: Duration::from_secs(settings.shutdown_grace),
-            drain_delay: Duration::from_secs(settings.drain_delay),
-            header_read_timeout: Duration::from_secs(settings.request_header_read_timeout),
-        },
-        shutdown_notify,
-        draining,
-    )
-    .await?;
+    lifecycle::serve_app(app, settings.runtime().into(), shutdown_notify, draining).await?;
 
     tracing::info!("server stopped");
     Ok(())
@@ -80,8 +69,7 @@ async fn build_serve_command_parts(
     settings: &Settings,
     config: tus_protocol::Config,
 ) -> anyhow::Result<ServeCommandParts> {
-    let runtime =
-        super::runtime::build_command_runtime(&settings.storage, &settings.state_dir).await?;
+    let runtime = super::runtime::build_command_runtime(&settings.backend()).await?;
     let hooks = Arc::new(super::runtime::build_hooks(&settings.hook)?);
 
     let protocol = ProtocolHandle::from_arcs(
@@ -93,35 +81,20 @@ async fn build_serve_command_parts(
     );
 
     let draining = Arc::new(AtomicBool::new(false));
-    let cors_origins = if !settings.cors_origins.is_empty() {
-        settings.cors_origins.clone()
-    } else if settings.cors {
-        vec!["*".to_string()]
-    } else {
-        Vec::new()
-    };
-    if !cors_origins.is_empty() {
-        tracing::info!("  CORS origins: {}", cors_origins.join(", "));
+    let app_config = settings.app();
+    if !app_config.cors_origins.is_empty() {
+        tracing::info!("  CORS origins: {}", app_config.cors_origins.join(", "));
     }
-    let app = app::build_app(
-        protocol,
-        &app::AppSettings {
-            auth_token: settings.auth_token.clone(),
-            max_request_body_bytes: settings.max_request_body_bytes,
-            request_body_read_timeout: settings.request_body_read_timeout,
-            cors_origins,
-        },
-        draining.clone(),
-    )?;
+    let app = app::build_app(protocol, &app_config, draining.clone())?;
     // The in-process sweeper reclaims expired upload data and state.
     // It shares the live protocol's process-local locker, so it is
     // online-safe and follows --expiration by default; only skip it
     // when there is nothing to expire or the operator opted out.
-    let expiration_configured = !settings.expiration.as_duration().is_zero();
-    let cleanup_targets = if expiration_configured && !settings.disable_expiration_reclamation {
+    let reclamation = settings.reclamation();
+    let cleanup_targets = if reclamation.is_enabled() {
         vec![runtime.cleanup_target]
     } else {
-        if expiration_configured && settings.disable_expiration_reclamation {
+        if reclamation.expiration_configured() && reclamation.disabled {
             tracing::warn!(
                 "expiration is configured but in-process reclamation is disabled; expired upload data and state will accumulate on disk until reclaimed out-of-band (for example with `tus-server cleanup`)"
             );
@@ -189,7 +162,7 @@ mod tests {
             ..settings_with_storage(root.path())
         };
 
-        let config = crate::config::build_tus_config(&settings);
+        let config = crate::config::build_tus_config(&settings.protocol());
         let parts = super::build_serve_command_parts(&settings, config)
             .await
             .unwrap();
@@ -214,7 +187,7 @@ mod tests {
 
         // No expiration configured: nothing to reclaim, no sweeper.
         let settings = settings_with_storage(root.path());
-        let config = crate::config::build_tus_config(&settings);
+        let config = crate::config::build_tus_config(&settings.protocol());
         let parts = super::build_serve_command_parts(&settings, config)
             .await
             .unwrap();
@@ -226,7 +199,7 @@ mod tests {
             disable_expiration_reclamation: true,
             ..settings_with_storage(root.path())
         };
-        let config = crate::config::build_tus_config(&settings);
+        let config = crate::config::build_tus_config(&settings.protocol());
         let parts = super::build_serve_command_parts(&settings, config)
             .await
             .unwrap();

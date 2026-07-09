@@ -10,7 +10,7 @@ use tus_protocol::{
 };
 use tus_storage_opendal::OpendalStorage;
 
-use crate::config::{HookConfig, StorageConfig, build_storage_operator};
+use crate::config::{BackendConfig, HookConfig, StorageConfig, build_storage_operator};
 use crate::expiration::ExpirationTarget;
 
 pub(in crate::command) struct CommandRuntime {
@@ -51,10 +51,9 @@ pub(in crate::command) struct CommandBackends {
 }
 
 pub(in crate::command) async fn build_command_runtime(
-    storage_config: &StorageConfig,
-    state_dir: &std::path::Path,
+    backend: &BackendConfig,
 ) -> anyhow::Result<CommandRuntime> {
-    let backends = build_backends(storage_config, state_dir).await?;
+    let backends = build_backends(&backend.storage, &backend.state_dir).await?;
     let cleanup_target = ExpirationTarget::new(
         "default",
         backends.storage.clone(),

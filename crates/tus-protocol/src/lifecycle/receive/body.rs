@@ -71,14 +71,28 @@ pub(super) async fn prepare(
             } else {
                 // Without Content-Length (chunked transfer, e.g. checksum
                 // trailers) the body size is unknown until the stream is
-                // drained, so intake must buffer. `body_limit` already encodes
-                // every bound that applies to this path: the caller folds the
-                // per-PATCH `max_chunk_size` cap into it for PATCH and
-                // deliberately excludes it for Creation-With-Upload (whose
-                // initial body travels on the POST, not a PATCH). Re-reading
-                // `max_chunk_size` here would wrongly re-impose the PATCH cap
-                // on a chunked CwU body. Refuse when nothing bounds the buffer.
-                let Some(effective_limit) = body_limit else {
+                // drained, so intake must buffer the whole body in memory to
+                // discover its size before committing. Two bounds apply:
+                //
+                // - `body_limit` already encodes every protocol bound for this
+                //   path: the caller folds the per-PATCH `max_chunk_size` cap
+                //   into it for PATCH and deliberately excludes it for
+                //   Creation-With-Upload (whose initial body travels on the
+                //   POST, not a PATCH). Re-reading `max_chunk_size` here would
+                //   wrongly re-impose the PATCH cap on a chunked CwU body.
+                // - `config.max_intake_buffer()` caps the memory this buffer may
+                //   consume regardless of the declared upload length, which is
+                //   what stops a large fixed-length upload sent chunked from
+                //   buffering gigabytes of RAM (the default `body_limit` for a
+                //   PATCH is only `length - offset`, i.e. the whole remainder).
+                //
+                // Buffer up to the tighter of the two; refuse only when neither
+                // bounds it (deferred length with no intake cap).
+                let effective_limit = [body_limit, config.max_intake_buffer()]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                let Some(effective_limit) = effective_limit else {
                     return Err(Error::LengthRequired);
                 };
                 let (bytes, trailers) =
@@ -686,9 +700,9 @@ mod tests {
 
     #[tokio::test]
     async fn chunked_body_without_any_limit_requires_length() {
-        // With no caller limit at all, a chunked body cannot be safely
-        // buffered, so intake refuses it with 411 Length Required.
-        let config = Config::default();
+        // With no caller limit AND no intake-buffer cap, a chunked body cannot
+        // be safely buffered, so intake refuses it with 411 Length Required.
+        let config = Config::default().without_intake_buffer_limit();
         let headers = Headers::default();
         let stream: BodyStream = Box::pin(futures::stream::iter([Ok(BodyFrame::Data(
             Bytes::from_static(b"hello"),
@@ -699,6 +713,95 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, Error::LengthRequired));
+    }
+
+    #[tokio::test]
+    async fn chunked_body_without_caller_limit_is_bounded_by_intake_buffer() {
+        // The default config caps intake buffering, so a chunked body with no
+        // caller limit is accepted (up to the cap) rather than refused with
+        // 411. This is the counterpart to the `without_intake_buffer_limit`
+        // case above.
+        let config = Config::default();
+        let headers = Headers::default();
+        let stream: BodyStream = Box::pin(futures::stream::iter([Ok(BodyFrame::Data(
+            Bytes::from_static(b"hello"),
+        ))]));
+
+        let collected = prepare(&config, &headers, None, RequestBody::from_stream(stream))
+            .await
+            .expect("chunked body under the intake cap must be accepted");
+
+        assert_eq!(collected.size, 5);
+    }
+
+    #[tokio::test]
+    async fn intake_buffer_cap_bounds_below_caller_limit() {
+        // Even when the caller limit (e.g. `length - offset` for a large
+        // fixed-length PATCH) is huge, the intake-buffer cap bounds the
+        // buffered chunked body and rejects the overflow with 413.
+        let config = Config::default().with_max_intake_buffer(4);
+        let headers = Headers::default();
+        let stream: BodyStream = Box::pin(futures::stream::iter([Ok(BodyFrame::Data(
+            Bytes::from_static(b"abcde"),
+        ))]));
+
+        let err = prepare(
+            &config,
+            &headers,
+            Some(1_000_000),
+            RequestBody::from_stream(stream),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, Error::SizeExceeded { size: 5, max: 4 }));
+    }
+
+    #[tokio::test]
+    async fn large_chunked_body_does_not_buffer_full_declared_length_on_default_config() {
+        // Regression for the memory-exhaustion DoS: a large fixed-length upload
+        // sent with a chunked body (no Content-Length) must not buffer the whole
+        // declared length. Under default config the only caller limit is
+        // `length - offset` (here ~5 GiB), but the intake cap bounds the buffer
+        // to `DEFAULT_MAX_INTAKE_BUFFER` and stops draining once it is exceeded.
+        use crate::config::DEFAULT_MAX_INTAKE_BUFFER;
+
+        let five_gib: u64 = 5 * 1024 * 1024 * 1024;
+        let polled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let polled_for_stream = Arc::clone(&polled);
+
+        // Yield 1 MiB frames lazily; the stream would produce far more than the
+        // cap, but intake must stop shortly after crossing it.
+        let stream: BodyStream = Box::pin(futures::stream::unfold(0usize, move |n| {
+            let polled = Arc::clone(&polled_for_stream);
+            async move {
+                polled.fetch_add(1, Ordering::SeqCst);
+                let chunk = Bytes::from(vec![0u8; 1024 * 1024]);
+                Some((Ok(BodyFrame::Data(chunk)), n + 1))
+            }
+        }));
+
+        let err = prepare(
+            &Config::default(),
+            &Headers::default(),
+            Some(five_gib),
+            RequestBody::from_stream(stream),
+        )
+        .await
+        .unwrap_err();
+
+        match err {
+            Error::SizeExceeded { max, .. } => assert_eq!(max, DEFAULT_MAX_INTAKE_BUFFER),
+            other => panic!("expected SizeExceeded at the intake cap, got {other:?}"),
+        }
+
+        // Intake stopped near the 8 MiB cap, nowhere near the 5 GiB length: only
+        // a handful of 1 MiB frames were pulled (cap/1 MiB + 1 = 9).
+        let frames = polled.load(Ordering::SeqCst);
+        assert!(
+            frames <= (DEFAULT_MAX_INTAKE_BUFFER / (1024 * 1024)) as usize + 1,
+            "intake pulled {frames} frames, expected it to stop at the cap",
+        );
     }
 
     #[cfg(feature = "checksum")]

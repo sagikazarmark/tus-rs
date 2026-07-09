@@ -14,17 +14,11 @@ use axum::{
 use tus_axum::TusState;
 use tus_protocol::{HookExecutor, Locker, ProtocolHandle, StateStore, Storage, StorageReader};
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct AppSettings {
-    pub(crate) auth_token: Vec<String>,
-    pub(crate) max_request_body_bytes: usize,
-    pub(crate) request_body_read_timeout: u64,
-    pub(crate) cors_origins: Vec<String>,
-}
+use crate::config::AppConfig;
 
 pub(crate) fn build_app<S, I, L, H>(
     protocol: ProtocolHandle<S, I, L, H>,
-    settings: &AppSettings,
+    settings: &AppConfig,
     draining: Arc<AtomicBool>,
 ) -> anyhow::Result<Router>
 where

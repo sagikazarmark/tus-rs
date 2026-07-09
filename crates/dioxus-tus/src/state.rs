@@ -159,7 +159,12 @@ fn is_sensitive_header_name(name: &str) -> bool {
 }
 
 /// Reactive snapshot of upload state returned by [`crate::use_tus_upload`].
+///
+/// `#[non_exhaustive]`: consumers read this snapshot rather than constructing
+/// it, and it is expected to grow (e.g. `speed`, `eta`, `started_at`), so new
+/// fields must not be a breaking change.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct TusUploadState {
     pub status: UploadStatus,
     pub bytes_uploaded: u64,
@@ -207,7 +212,11 @@ impl TusUploadState {
 /// Method names avoid `read` to keep `state.read().is_uploading()` resolving
 /// to Dioxus's `ReadableExt::read` at the few call sites that depend on it
 /// (notably outside the engine).
-pub trait StateSink {
+///
+/// Internal write seam (`pub(crate)`): not object-safe and not part of the
+/// public surface. Consulted only by the wasm upload engine.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) trait StateSink {
     /// Mutate the state in place. Production-side this acquires a write
     /// guard on the underlying `Signal` and notifies subscribers.
     fn update<F: FnOnce(&mut TusUploadState)>(&mut self, f: F);
@@ -215,4 +224,75 @@ pub trait StateSink {
     /// Snapshot the current state. Equivalent to `signal.read().clone()` on
     /// the production side; tests return a clone of their captured value.
     fn snapshot(&self) -> TusUploadState;
+}
+
+#[cfg(test)]
+mod tests {
+    // `TusUploadState` is `#[non_exhaustive]`, so it can only be constructed
+    // with a struct literal from inside this crate — hence these live here
+    // rather than in the `tests/` integration suite.
+    use super::*;
+
+    #[test]
+    fn default_state_is_idle() {
+        let s = TusUploadState::default();
+        assert!(s.is_idle());
+        assert!(!s.is_uploading());
+        assert!(s.progress_fraction().is_none());
+    }
+
+    #[test]
+    fn progress_fraction_zero_when_no_bytes_uploaded() {
+        let s = TusUploadState {
+            status: UploadStatus::Uploading,
+            bytes_uploaded: 0,
+            bytes_total: Some(100),
+            ..Default::default()
+        };
+        assert_eq!(s.progress_fraction(), Some(0.0));
+    }
+
+    #[test]
+    fn progress_fraction_half() {
+        let s = TusUploadState {
+            status: UploadStatus::Uploading,
+            bytes_uploaded: 50,
+            bytes_total: Some(100),
+            ..Default::default()
+        };
+        assert_eq!(s.progress_fraction(), Some(0.5));
+    }
+
+    #[test]
+    fn progress_fraction_complete() {
+        let s = TusUploadState {
+            status: UploadStatus::Complete,
+            bytes_uploaded: 100,
+            bytes_total: Some(100),
+            ..Default::default()
+        };
+        assert_eq!(s.progress_fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn progress_fraction_none_when_total_unknown() {
+        let s = TusUploadState {
+            status: UploadStatus::Uploading,
+            bytes_uploaded: 50,
+            bytes_total: None,
+            ..Default::default()
+        };
+        assert!(s.progress_fraction().is_none());
+    }
+
+    #[test]
+    fn progress_fraction_one_for_zero_size_file() {
+        let s = TusUploadState {
+            status: UploadStatus::Complete,
+            bytes_uploaded: 0,
+            bytes_total: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(s.progress_fraction(), Some(1.0));
+    }
 }

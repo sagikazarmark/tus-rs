@@ -47,8 +47,7 @@ async fn run_with_settings(
         );
     }
 
-    let runtime =
-        super::runtime::build_command_runtime(&settings.storage, &settings.state_dir).await?;
+    let runtime = super::runtime::build_command_runtime(&settings.backend()).await?;
     run_once(&runtime.cleanup_target).await
 }
 

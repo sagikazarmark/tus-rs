@@ -15,8 +15,12 @@ pub fn calculate(algorithm: ChecksumAlgorithm, data: &[u8]) -> Vec<u8> {
 
 /// Incrementally computes a checksum over streamed body chunks.
 ///
-/// Use this instead of [`calculate`] when the body is not held in memory at
-/// once; memory use stays constant regardless of body size.
+/// Use this instead of [`calculate`] when the body is fed in chunks rather than
+/// as one slice: the hasher's own state stays constant regardless of body size.
+/// This bounds only the digest state — it does not imply the surrounding intake
+/// is constant-memory. A body of unknown length (chunked transfer / no
+/// `Content-Length`) is still buffered whole to discover its size, bounded by
+/// [`Config::max_intake_buffer`](crate::Config::max_intake_buffer).
 #[cfg(feature = "checksum")]
 pub struct Hasher {
     inner: HasherInner,
