@@ -89,7 +89,13 @@ pub trait StateStore: MaybeSendSync {
 ///
 /// Replaces the former `create: bool` flag so call sites read intentionally
 /// (`WriteMode::CreateNew` vs `WriteMode::Update`) instead of a bare boolean.
+///
+/// Marked `#[non_exhaustive]` to reserve room for future reconciliation modes
+/// (for example a compare-and-set / `Upsert` variant, as hinted in
+/// [`WriteMode::CreateNew`]) without a breaking change: external `StateStore`
+/// implementors must include a wildcard arm when matching on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum WriteMode {
     /// Create a brand-new record, failing with `Error::AlreadyExists` if the
     /// upload ID is already present. Backends with compare-and-set or
