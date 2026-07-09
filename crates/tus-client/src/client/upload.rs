@@ -845,7 +845,9 @@ where
         S: UploadSource,
     {
         let capacity = usize::try_from(length).map_err(|_| {
-            Error::source(format!("source range length {length} does not fit in memory"))
+            Error::source(format!(
+                "source range length {length} does not fit in memory"
+            ))
         })?;
         let mut body = Vec::with_capacity(capacity);
 

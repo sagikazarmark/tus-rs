@@ -399,7 +399,10 @@ mod tests {
     fn source_and_header_provider_errors_preserve_the_source_chain() {
         let inner = std::io::Error::other("file changed length after open");
         let error = Error::source(inner);
-        assert_eq!(error.to_string(), "upload source failed: file changed length after open");
+        assert_eq!(
+            error.to_string(),
+            "upload source failed: file changed length after open"
+        );
         assert!(!error.is_retryable());
         let source = std::error::Error::source(&error).expect("source must be preserved");
         assert_eq!(source.to_string(), "file changed length after open");
