@@ -76,6 +76,19 @@ AWS_SECRET_ACCESS_KEY=... \
 cargo run -p tus-server --features opendal-s3 -- serve
 ```
 
+Without a local Rust toolchain, Dagger builds the `tus-server` and `tus` CLI
+binaries in a container:
+
+```sh
+dagger call server export --path ./tus-server   # tus-server binary
+dagger call cli export --path ./tus             # tus client CLI binary
+```
+
+These produce the same default-feature (`opendal-fs`) binaries as
+`cargo build -p tus-server` and `cargo build -p tus-cli`; run the exported files
+exactly as the `cargo run` examples above. The Dagger build has no feature knobs,
+so alternative feature sets such as `opendal-s3` still require the Cargo build.
+
 Object storage only covers uploaded bytes. Upload state remains file-backed under `--state-dir`, and locking remains process-local through the in-memory locker.
 
 Expired upload reclamation follows expiration by default. `tus-server serve` rejects protocol-expired unfinished or intermediate uploads according to protocol configuration, and whenever `--expiration` is set it also runs an in-process sweeper that deletes the expired uploads' data and state, so they do not accumulate on disk. That sweeper shares the live server's process-local locker, so it is safe to run alongside serving. Pass `--disable-expiration-reclamation` (or set `TUS_DISABLE_EXPIRATION_RECLAMATION=true`) to keep expiry enforced on access while leaving expired data in place. Completed deliverable uploads do not expire through TUS expiration; deleting them is a separate retention policy. To reclaim expired uploads out-of-band in a single sweep, use `tus-server cleanup` with the same storage and state configuration; that subcommand builds its own locker and is not safe to run concurrently with a live `serve` process until cross-process locking is available.

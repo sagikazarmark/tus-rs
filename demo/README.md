@@ -74,6 +74,9 @@ dx serve --port 8080
 Open `http://localhost:8080`. Set the upload endpoint from the header switcher,
 or bake a default in with `TUS_ENDPOINT=http://localhost:8081/files dx serve`.
 
+To produce a static bundle instead of serving, run `dx bundle --platform web`;
+the bundle is written under `target/dx/`.
+
 ## Run with Dagger
 
 Dagger builds and runs everything in containers, no local `dx`, Bun, Node, or
@@ -92,8 +95,9 @@ own dev server and get a `405`. Point elsewhere anytime with the header's
 endpoint switcher.
 
 Start just one with `dagger up serve` or `dagger up server`; uploads the server
-handles live in the container and are discarded when it stops. To produce the
-static bundle instead:
+handles live in the container and are discarded when it stops. To produce that
+same static bundle in a container instead (the Dagger counterpart of
+`dx bundle --platform web` above):
 
 ```sh
 dagger call build export --path ./dist   # static SPA bundle to ./dist
