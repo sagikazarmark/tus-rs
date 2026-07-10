@@ -1,7 +1,3 @@
-# Standalone workspace: this demo targets wasm and carries its own Cargo.lock,
-# so it must not be absorbed into the root `crates/*` workspace.
-[workspace]
-
 [package]
 name = "dioxus-tus-demo"
 version = "0.1.0"
@@ -9,17 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-# The custom-transport example implements `tus_client::Transport`, whose
-# `async fn` is expressed with the crate's re-exported `#[async_trait]` shape.
 async-trait = "0.1"
 dioxus = { version = "0.7", features = ["router", "web"] }
-# Compile-time syntax highlighting for the on-page source snippets: the `code!`
-# macro embeds a pre-highlighted span tree at build time (no runtime
-# highlighter). Its arborium/tree-sitter parser cross-compiles a C sysroot for
-# wasm32, so the build needs clang (`CC_wasm32_unknown_unknown`), see the
-# devenv config and the Dagger container.
 dioxus-code = "0.1"
-# Just the GitHub mark for the header link; only the brands icon set is pulled in.
 dioxus-free-icons = { version = "0.10", features = ["font-awesome-brands"] }
 dioxus-tus = { path = "../crates/dioxus-tus" }
 js-sys = "0.3"
