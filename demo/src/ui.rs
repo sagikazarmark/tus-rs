@@ -1,4 +1,4 @@
-//! Shared presentation helpers. Pure layout chrome — nothing here touches
+//! Shared presentation helpers. Pure layout chrome; nothing here touches
 //! `dioxus-tus`, so the `pages` and `examples` modules stay focused on the
 //! library being demonstrated.
 
@@ -12,42 +12,69 @@ pub fn snippet_theme() -> Theme {
 }
 
 /// Consistent page heading: a small colored eyebrow, a title, and a lead
-/// paragraph.
+/// paragraph. `intro` is an `Element` so it can carry inline [`InlineCode`] and
+/// links rather than rendering literal backticks.
 #[component]
 pub fn PageHeader(
     #[props(into)] eyebrow: String,
     #[props(into)] title: String,
-    #[props(into)] intro: String,
+    intro: Element,
 ) -> Element {
     rsx! {
         header { class: "max-w-3xl",
             p { class: "text-sm font-semibold uppercase tracking-[0.18em] text-primary", "{eyebrow}" }
             h1 { class: "mt-3 text-4xl font-bold tracking-tight text-balance", "{title}" }
-            p { class: "mt-4 text-lg leading-8 text-base-content/70", "{intro}" }
+            p { class: "mt-4 text-lg leading-8 text-base-content/70", {intro} }
+        }
+    }
+}
+
+/// Inline monospace styling for an API or type name mentioned in prose (e.g.
+/// `InlineCode { "use_tus_upload" }`). Keeps every code reference reading the
+/// same, and avoids literal backticks in rendered text.
+#[component]
+pub fn InlineCode(children: Element) -> Element {
+    rsx! {
+        code { class: "rounded bg-base-200 px-1.5 py-0.5 font-mono text-[0.85em] text-base-content/80",
+            {children}
         }
     }
 }
 
 /// A single documented example: heading, short explanation, the live component,
 /// and the exact source that produced it in a scrollable code panel.
+///
+/// `intro` is an `Element` so it can carry inline [`InlineCode`] and links. By
+/// default the live demo and its source sit side by side; set `stacked` for
+/// wider examples (a multi-panel layout, a request log) whose natural width
+/// overflows a half-width column, so the source drops below a full-width live
+/// demo instead of fighting it for horizontal space.
 #[component]
 pub fn ExampleSection(
     #[props(into)] title: String,
-    #[props(into)] intro: String,
+    intro: Element,
     demo: Element,
     code: Element,
+    #[props(default = false)] stacked: bool,
 ) -> Element {
+    // Stacked lays the demo and source out in one full-width column;
+    // side-by-side keeps them in a two-column grid on large screens.
+    let layout_class = if stacked {
+        "mt-6 grid grid-cols-1 gap-6"
+    } else {
+        "mt-6 grid gap-6 lg:grid-cols-2"
+    };
     rsx! {
         section { class: "mt-10 rounded-[1.5rem] border border-base-300 bg-base-100 p-6 shadow-sm sm:p-8",
             h2 { class: "text-xl font-semibold tracking-tight", "{title}" }
-            p { class: "mt-2 max-w-[70ch] text-sm leading-6 text-base-content/65", "{intro}" }
-            div { class: "mt-6 grid gap-6 lg:grid-cols-2",
+            p { class: "mt-2 max-w-[70ch] text-sm leading-6 text-base-content/65", {intro} }
+            div { class: "{layout_class}",
                 // Live column.
                 div {
                     p { class: "mb-3 text-xs font-semibold uppercase tracking-wider text-base-content/45",
                         "Live"
                     }
-                    div { class: "rounded-2xl border border-base-300 bg-base-200/40 p-5", {demo} }
+                    div { class: "overflow-x-auto rounded-2xl border border-base-300 bg-base-200/40 p-5", {demo} }
                 }
                 // Source column.
                 div {
@@ -125,6 +152,6 @@ pub fn format_eta(seconds: Option<f64>) -> String {
                 format!("{:.1}h left", s / 3600.0)
             }
         }
-        _ => "—".to_string(),
+        _ => "n/a".to_string(),
     }
 }

@@ -552,8 +552,8 @@ mod tests {
 
     #[test]
     fn prepare_receive_reports_completion_before_offset_for_retried_upload() {
-        // A client retrying an already-completed upload — typically at offset 0
-        // — must get the accurate completion error, not an `OffsetMismatch`
+        // A client retrying an already-completed upload, typically at offset 0,
+        // must get the accurate completion error, not an `OffsetMismatch`
         // against the full length.
         let mut state = UploadState::new("upload-1").with_length(10);
         state.set_offset(10);

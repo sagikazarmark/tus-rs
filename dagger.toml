@@ -3,5 +3,7 @@ ignore = [".devenv", "target"]
 [modules.rust]
 source = "github.com/sagikazarmark/daggerverse-beta/rust"
 
+settings.version = "1.96-trixie"
+
 [modules.tests]
 source = ".dagger/modules/tests"

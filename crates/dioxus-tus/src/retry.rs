@@ -15,7 +15,7 @@ use tus_client::Error;
 ///
 /// Retryable conditions:
 /// - 5xx responses (transient server errors).
-/// - 408 Request Timeout (proxy / server side timeout — safe to retry
+/// - 408 Request Timeout (proxy / server side timeout, safe to retry
 ///   PATCH because PATCH is idempotent under TUS).
 /// - 409 Conflict (offset mismatch recovery signal; retry after re-reading
 ///   the server offset).

@@ -65,7 +65,7 @@ impl Transport for ReqwestTransport {
 ///
 /// A middleware transport with no middleware is just [`ReqwestTransport`], so
 /// this type is constructed only from an already-built
-/// [`ClientWithMiddleware`](reqwest_middleware::ClientWithMiddleware) — there is
+/// [`ClientWithMiddleware`](reqwest_middleware::ClientWithMiddleware); there is
 /// deliberately no `Default` or no-argument constructor.
 #[cfg(feature = "transport-reqwest-middleware")]
 #[derive(Clone, Debug)]
@@ -162,7 +162,7 @@ async fn finish_response(response: ::reqwest::Response) -> Result<TransportRespo
 
     // TUS responses carry no significant body (Location, headers, or a short
     // error string), so bound the read. Without a cap, a misbehaving or
-    // malicious server — including one reached via a redirect — could return
+    // malicious server, including one reached via a redirect, could return
     // a multi-gigabyte body and exhaust client memory, since the transport
     // buffers the whole response before the caller inspects it.
     #[cfg(not(target_arch = "wasm32"))]

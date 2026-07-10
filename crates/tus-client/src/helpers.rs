@@ -224,9 +224,9 @@ pub(crate) fn max_backoff_delay(base: Duration) -> Duration {
 
 /// Computes the delay before the next retry attempt.
 ///
-/// A valid server `Retry-After` hint wins — clamped to
+/// A valid server `Retry-After` hint wins, clamped to
 /// [`max_backoff_delay`] so an abusive value cannot stall the client
-/// indefinitely — otherwise the client falls back to its own full-jitter
+/// indefinitely; otherwise the client falls back to its own full-jitter
 /// exponential backoff.
 pub(crate) fn next_retry_delay(
     retry_after: Option<Duration>,

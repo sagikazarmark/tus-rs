@@ -27,8 +27,8 @@ use crate::storage::{
 /// only bounds that intake by the client-declared `Content-Length` (or the
 /// configured chunk/size limits). For deployments that accept untrusted
 /// uploads, configure [`Config::with_max_chunk_size`](crate::Config::with_max_chunk_size)
-/// and a maximum upload size, or use a streaming backend such as `FileStorage`
-/// — otherwise a client can drive allocation up to its declared body size.
+/// and a maximum upload size, or use a streaming backend such as `FileStorage`;
+/// otherwise a client can drive allocation up to its declared body size.
 pub struct MemoryStorage {
     data: RwLock<HashMap<String, BytesMut>>,
 }

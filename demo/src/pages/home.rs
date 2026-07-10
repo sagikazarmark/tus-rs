@@ -15,7 +15,7 @@ fn features() -> Vec<Feature> {
     vec![
         Feature {
             title: "Minimal by default",
-            body: "A file input and one hook — chunked, resumable uploads with typed state.",
+            body: "A file input and one hook: chunked, resumable uploads with typed state.",
             route: Route::Minimal {},
             cta: "See the minimal example",
         },
@@ -27,7 +27,7 @@ fn features() -> Vec<Feature> {
         },
         Feature {
             title: "Full control",
-            body: "Pause, resume, and abort at chunk boundaries — no fighting the runtime.",
+            body: "Pause, resume, and abort at chunk boundaries, no fighting the runtime.",
             route: Route::Controls {},
             cta: "Try the controls",
         },
@@ -36,6 +36,30 @@ fn features() -> Vec<Feature> {
             body: "Progress persists to localStorage; re-pick a file to continue where it stopped.",
             route: Route::Resume {},
             cta: "See resume",
+        },
+        Feature {
+            title: "Resume from a server URL",
+            body: "Continue a pre-created upload with start_with_url; the URL is always on state.upload_url.",
+            route: Route::ExistingUrl {},
+            cta: "See URL resume",
+        },
+        Feature {
+            title: "Headers, metadata & config",
+            body: "Bearer tokens, custom headers, Upload-Metadata, chunk size, retries and backoff.",
+            route: Route::Options {},
+            cta: "Configure an upload",
+        },
+        Feature {
+            title: "Typed errors",
+            body: "state.error is a TusError enum: branch on CORS, server status, oversize files and more.",
+            route: Route::Errors {},
+            cta: "Handle errors",
+        },
+        Feature {
+            title: "Bring your own transport",
+            body: "Swap the HTTP layer for any tus_client::Transport: middleware, proxies, or a test mock.",
+            route: Route::Transport {},
+            cta: "See custom transport",
         },
     ]
 }
@@ -46,7 +70,9 @@ pub fn Home() -> Element {
         PageHeader {
             eyebrow: "dioxus-tus",
             title: "Resumable uploads for Dioxus web apps",
-            intro: "A headless TUS upload hook: type-safe reactive state, chunked PATCH with retry, pause / resume / abort, and resume-from-existing-URL — no stringly-typed events, no runtime to fight.",
+            intro: rsx! {
+                "A headless TUS upload hook: type-safe reactive state, chunked PATCH with retry, pause / resume / abort, and resume-from-existing-URL, no stringly-typed events, no runtime to fight."
+            },
         }
 
         div { class: "mt-8 flex flex-wrap gap-3",

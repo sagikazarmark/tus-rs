@@ -92,7 +92,7 @@ where
     /// Creates a new remote upload resource.
     ///
     /// Returns the resource reference alongside the [`UploadInfo`] observed
-    /// at creation (URL, initial offset — nonzero for creation-with-upload —
+    /// at creation (URL, initial offset, nonzero for creation-with-upload,
     /// declared length, and metadata), so callers do not need an extra HEAD
     /// roundtrip to learn the creation state.
     pub async fn create_upload(&self, upload: NewUpload) -> Result<(Upload<T>, UploadInfo)> {

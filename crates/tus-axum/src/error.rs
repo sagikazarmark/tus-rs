@@ -11,7 +11,7 @@ use axum::{
 /// Construct through `From<tus_protocol::Error>`; the conversion is where
 /// transport-level body-limit failures are remapped to a 413 response (see
 /// [`TusRejection::into_inner`]). The inner error is private so the remap invariant
-/// is enforced by construction — read it through [`TusRejection::inner`] or
+/// is enforced by construction; read it through [`TusRejection::inner`] or
 /// [`TusRejection::into_inner`].
 #[derive(Debug)]
 pub struct TusRejection {
@@ -317,8 +317,8 @@ mod tests {
     /// IntoResponse impl must produce a Response whose status, header set,
     /// and body bytes exactly match the framework-neutral pieces from
     /// ProtocolError::error_response(). This proves the axum bridge does not
-    /// add or lose information. (The single deliberate exception — the body
-    /// override for transport body-limit remaps — is covered by
+    /// add or lose information. (The single deliberate exception, the body
+    /// override for transport body-limit remaps, is covered by
     /// `transport_body_limit_413_has_sensible_body`; none of the variants
     /// here trigger it.)
     #[tokio::test]

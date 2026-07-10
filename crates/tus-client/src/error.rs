@@ -41,7 +41,7 @@ pub enum Error {
         header: &'static str,
     },
 
-    /// The server sent a response header the client could not parse — a
+    /// The server sent a response header the client could not parse: a
     /// non-UTF-8 value, a non-numeric `Upload-Offset`/`Upload-Length`, or a
     /// malformed `Upload-Metadata`. Returned only while decoding a server
     /// response; client-built request headers surface as
@@ -55,7 +55,7 @@ pub enum Error {
         value: String,
     },
 
-    /// A request header the client constructs could not be built — a
+    /// A request header the client constructs could not be built: a
     /// protocol header (`Upload-Offset`, `Upload-Length`, `Upload-Concat`),
     /// the encoded `Upload-Metadata`, or the `Upload-Checksum` value. This
     /// is a client-side construction failure (e.g. a metadata key or value
@@ -90,8 +90,8 @@ pub enum Error {
     },
 
     /// The server acknowledged an offset inconsistent with what the client
-    /// sent — either behind the previous offset or beyond the bytes actually
-    /// transmitted — which indicates a protocol bug on one side rather than
+    /// sent, either behind the previous offset or beyond the bytes actually
+    /// transmitted, which indicates a protocol bug on one side rather than
     /// a transient network failure. Never retried.
     #[error("server offset {actual} does not match expected offset {expected}")]
     #[non_exhaustive]
@@ -119,7 +119,7 @@ pub enum Error {
     },
 
     /// A [`HeaderProvider`](crate::HeaderProvider) failed to produce the
-    /// dynamic request headers for an attempt — for example a token refresh
+    /// dynamic request headers for an attempt: for example a token refresh
     /// that could not reach the auth server, or a credential that is no
     /// longer valid.
     ///
@@ -249,7 +249,7 @@ impl Error {
 
     /// Wraps a failure from a custom [`UploadSource`](crate::UploadSource),
     /// such as a short or oversized read or content that changed underneath
-    /// the client. Always permanent — the local source is authoritative, so
+    /// the client. Always permanent; the local source is authoritative, so
     /// the failure is never retried. Accepts any error type (or a plain
     /// message string):
     ///
@@ -294,9 +294,9 @@ impl Error {
     /// Transient failures (the transient `5xx` responses `500`/`502`/`503`/`504`,
     /// plus `408`/`409`/`429`/`460`, retryable [`Error::Transport`] failures,
     /// and retryable [`Error::HeaderProvider`] failures) are retryable.
-    /// Deterministic failures — source misbehavior, offset desync, request
+    /// Deterministic failures (source misbehavior, offset desync, request
     /// construction errors, permanent transport failures, and permanent
-    /// header-provider failures — are not.
+    /// header-provider failures) are not.
     ///
     /// Only the transient `5xx` codes are retried. Deterministic server-side
     /// codes such as `501 Not Implemented` and `505 HTTP Version Not Supported`

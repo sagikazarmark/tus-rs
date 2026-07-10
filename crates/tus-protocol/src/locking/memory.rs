@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 ///
 /// Provides upload-level locking within a single process. Each upload ID maps
 /// to a single-permit [`Semaphore`], so waiters are queued (FIFO) inside the
-/// semaphore itself and a release always wakes the next waiter — there is no
+/// semaphore itself and a release always wakes the next waiter; there is no
 /// wakeup window to lose between checking the lock and starting to wait.
 ///
 /// Entries are removed from the internal map as soon as an upload ID has no

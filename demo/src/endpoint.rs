@@ -1,8 +1,8 @@
 //! Shared TUS endpoint plumbing.
 //!
-//! The endpoint is resolved once at startup — preferring `?endpoint=...` in the
+//! The endpoint is resolved once at startup, preferring `?endpoint=...` in the
 //! URL, then the `TUS_ENDPOINT` env var baked in at build time, then a
-//! localhost default — and provided through context so every example reads the
+//! localhost default, and provided through context so every example reads the
 //! same value. Changing it navigates with a fresh `?endpoint=` query so a
 //! single build works against any TUS server without rebuilding.
 
@@ -14,7 +14,7 @@ pub struct Endpoint(pub String);
 
 /// Compile-time fallback, overridable at runtime via `?endpoint=`.
 const COMPILE_TIME_ENDPOINT: Option<&str> = option_env!("TUS_ENDPOINT");
-const DEFAULT_ENDPOINT: &str = "http://localhost:8080/files";
+const DEFAULT_ENDPOINT: &str = "http://localhost:8081/files";
 
 /// Reads the effective endpoint: `?endpoint=` query string, then the
 /// build-time `TUS_ENDPOINT`, then the localhost default.

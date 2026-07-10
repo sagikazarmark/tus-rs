@@ -86,7 +86,7 @@ fn upload_id_from_location(location: &str) -> &str {
 async fn happy_path_lifecycle() {
     let router = build_router();
 
-    // POST — create a 10-byte upload.
+    // POST: create a 10-byte upload.
     let response = send(
         router.clone(),
         tus_request(Method::POST, "/files")
@@ -106,7 +106,7 @@ async fn happy_path_lifecycle() {
     let id = upload_id_from_location(&location).to_string();
     let item = format!("/files/{}", id);
 
-    // HEAD — fresh upload has offset 0.
+    // HEAD: fresh upload has offset 0.
     let response = send(
         router.clone(),
         tus_request(Method::HEAD, &item)
@@ -118,7 +118,7 @@ async fn happy_path_lifecycle() {
     assert_eq!(response.headers().get("upload-offset").unwrap(), "0");
     assert_eq!(response.headers().get("upload-length").unwrap(), "10");
 
-    // PATCH — first 4 bytes.
+    // PATCH: first 4 bytes.
     let response = send(
         router.clone(),
         tus_request(Method::PATCH, &item)
@@ -132,7 +132,7 @@ async fn happy_path_lifecycle() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(response.headers().get("upload-offset").unwrap(), "4");
 
-    // PATCH — remaining 6 bytes. Completes the upload.
+    // PATCH: remaining 6 bytes. Completes the upload.
     let response = send(
         router.clone(),
         tus_request(Method::PATCH, &item)
@@ -146,7 +146,7 @@ async fn happy_path_lifecycle() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(response.headers().get("upload-offset").unwrap(), "10");
 
-    // HEAD — upload is complete.
+    // HEAD: upload is complete.
     let response = send(
         router.clone(),
         tus_request(Method::HEAD, &item)
@@ -156,7 +156,7 @@ async fn happy_path_lifecycle() {
     .await;
     assert_eq!(response.headers().get("upload-offset").unwrap(), "10");
 
-    // DELETE — terminate.
+    // DELETE: terminate.
     let response = send(
         router.clone(),
         tus_request(Method::DELETE, &item)
@@ -166,7 +166,7 @@ async fn happy_path_lifecycle() {
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    // HEAD — upload is gone.
+    // HEAD: upload is gone.
     let response = send(
         router,
         tus_request(Method::HEAD, &item)
@@ -371,7 +371,7 @@ async fn post_final_concat_with_upload_length_is_rejected() {
         upload_id_from_location(partial.headers().get("location").unwrap().to_str().unwrap())
             .to_string();
 
-    // Attempt final POST with Upload-Length — spec says it MUST NOT be set.
+    // Attempt final POST with Upload-Length; spec says it MUST NOT be set.
     let response = send(
         router,
         tus_request(Method::POST, "/files")
@@ -457,7 +457,7 @@ async fn post_both_length_and_defer_length_is_rejected() {
 async fn deferred_length_set_on_first_patch() {
     let router = build_router();
 
-    // Create with Upload-Defer-Length: 1 — no Upload-Length yet.
+    // Create with Upload-Defer-Length: 1, no Upload-Length yet.
     let post = send(
         router.clone(),
         tus_request(Method::POST, "/files")
@@ -472,7 +472,7 @@ async fn deferred_length_set_on_first_patch() {
         upload_id_from_location(post.headers().get("location").unwrap().to_str().unwrap())
     );
 
-    // HEAD — Upload-Length absent, Upload-Defer-Length: 1.
+    // HEAD: Upload-Length absent, Upload-Defer-Length: 1.
     let head = send(
         router.clone(),
         tus_request(Method::HEAD, &item)
@@ -497,7 +497,7 @@ async fn deferred_length_set_on_first_patch() {
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    // HEAD — now reports Upload-Length and is complete.
+    // HEAD: now reports Upload-Length and is complete.
     let head = send(
         router,
         tus_request(Method::HEAD, &item)
@@ -765,7 +765,7 @@ async fn delete_rejected_when_termination_extension_is_disabled() {
 #[tokio::test]
 async fn not_found_body_mentions_upload_id() {
     // Use DELETE (not HEAD) so the response is permitted to carry a body per
-    // HTTP semantics — HEAD responses may legitimately be stripped upstream.
+    // HTTP semantics: HEAD responses may legitimately be stripped upstream.
     let router = build_router();
     let response = send(
         router,

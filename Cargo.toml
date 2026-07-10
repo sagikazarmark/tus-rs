@@ -24,9 +24,6 @@ tus-storage-opendal = { path = "crates/tus-storage-opendal", version = "0.0.1" }
 
 anyhow = "1"
 async-trait = "0.1"
-# Default features (form/json/query/matched-path/original-uri/tower-log/...)
-# are not used anywhere in the workspace. `http1` + `tokio` are all that
-# `axum::serve` needs; enable only those.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = "0.22"
 bytes = "1"

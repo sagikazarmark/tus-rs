@@ -127,8 +127,8 @@ use crate::state::{UploadMetadata, UploadState};
 pub trait Hook: MaybeSendSync {
     /// Returns the hook name for logging/debugging.
     ///
-    /// Unlike the `Storage`/`StateStore`/`Locker` backends — which return
-    /// `&'static str` because they are singletons with compile-time names —
+    /// Unlike the `Storage`/`StateStore`/`Locker` backends, which return
+    /// `&'static str` because they are singletons with compile-time names,
     /// this returns `&str` on purpose: hooks are frequently constructed with a
     /// runtime name (for example [`FnHook::new`] takes `impl Into<String>`), so
     /// the borrow is tied to `&self` rather than `'static`.
@@ -448,8 +448,8 @@ pub struct HookRequestInfo {
 
 /// Result from a pre-hook execution.
 ///
-/// Construct with the associated helpers — [`PreHookResult::proceed`],
-/// [`PreHookResult::proceed_with_metadata`], or [`PreHookResult::reject`] —
+/// Construct with the associated helpers, [`PreHookResult::proceed`],
+/// [`PreHookResult::proceed_with_metadata`], or [`PreHookResult::reject`],
 /// then refine with the `with_*` builders. Fields are private so a "proceed"
 /// result can never also carry a rejection status (invalid states are
 /// unrepresentable), and read them back through the accessors

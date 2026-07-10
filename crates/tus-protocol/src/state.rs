@@ -145,7 +145,7 @@ fn default_schema_version() -> u32 {
 /// a *self-describing* format such as JSON (which the built-in file-backed
 /// store uses). Binary metadata is carried by [`MetadataValue`], whose
 /// `#[serde(untagged)]` representation cannot round-trip through
-/// non-self-describing formats (bincode, postcard) — see
+/// non-self-describing formats (bincode, postcard); see
 /// [`MetadataValue`'s serialization notes](MetadataValue#serialization). A
 /// custom `StateStore` using such a format will fail or corrupt binary metadata
 /// at runtime with no compile-time signal.
@@ -575,7 +575,7 @@ impl<'a> IntoIterator for &'a UploadMetadata {
 /// The [`Serialize`]/[`Deserialize`] impls encode a value either as a plain
 /// string (UTF-8 text) or as a `{ "base64": "..." }` object (binary), and rely
 /// on `#[serde(untagged)]` to distinguish the two on read. This requires a
-/// self-describing format such as JSON — which is what the built-in file-backed
+/// self-describing format such as JSON, which is what the built-in file-backed
 /// state store uses. Non-self-describing formats (bincode, postcard) cannot
 /// round-trip this type.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]

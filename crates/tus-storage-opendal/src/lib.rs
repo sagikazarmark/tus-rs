@@ -968,7 +968,7 @@ mod tests {
         // Root (as in CI containers) and some filesystems ignore permission
         // bits, so the read-only directory would not actually block deletion.
         // When the injection can't take effect, the failure path is untestable
-        // here — restore the mode and skip rather than assert a failure that
+        // here; restore the mode and skip rather than assert a failure that
         // can't happen.
         if std::fs::File::create(parts_dir.join(".probe")).is_ok() {
             let _ = std::fs::remove_file(parts_dir.join(".probe"));
@@ -1089,8 +1089,8 @@ mod tests {
     async fn dot_suffixed_sibling_ids_do_not_corrupt_each_other() {
         // Upload ids may contain dots, so `report` and `report.complete` are
         // both valid, distinct ids. Under the previous dot-suffixed staging
-        // layout `report`'s completion marker lived at `report.complete` — the
-        // exact key holding upload `report.complete`'s main object — so
+        // layout `report`'s completion marker lived at `report.complete` (the
+        // exact key holding upload `report.complete`'s main object), so
         // finalizing `report` (which writes then deletes that marker) would
         // clobber the sibling upload's data. The `/`-nested layout gives each
         // upload a disjoint `{id}/` keyspace (ids can never contain `/`), so

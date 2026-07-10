@@ -130,7 +130,7 @@ impl TusQueueItem {
     /// items, or when speed can't yet be determined.
     ///
     /// Paused items are excluded because `started_at_ms` keeps ticking while
-    /// `bytes_uploaded` is frozen — `speed_bytes_per_sec` trends toward zero
+    /// `bytes_uploaded` is frozen; `speed_bytes_per_sec` trends toward zero
     /// and ETA grows without bound, which renders as "47 hours" in the UI.
     pub fn eta_seconds(&self, now_ms: f64) -> Option<f64> {
         if matches!(
@@ -234,7 +234,7 @@ pub struct TusQueueHandle {
     /// scheduler future so it can release a slot when its worker reports
     /// terminal state.
     slot_assignments: Rc<RefCell<Vec<Option<u64>>>>,
-    /// Endpoint URL — captured from the [`TusConfig`] at hook-call time.
+    /// Endpoint URL, captured from the [`TusConfig`] at hook-call time.
     /// Used by [`Self::add`] to look up persisted resumable entries and by
     /// [`Self::scan_resumable`] for the resume-across-reload UX.
     endpoint: String,
@@ -259,7 +259,7 @@ impl TusQueueHandle {
         // that and skip the lookup.
         //
         // Skip auto-resume when a non-terminal queue item already shares
-        // this match key — otherwise dropping the same file twice (or
+        // this match key; otherwise dropping the same file twice (or
         // submitting the same multi-file selection twice) would assign the
         // same `existing_url` to both items, race them onto two worker
         // slots, and one of them would 409 from the server. The duplicate
@@ -321,7 +321,7 @@ impl TusQueueHandle {
     /// match the configured endpoint are filtered out.
     ///
     /// Use this on component mount to surface a "resume previous upload"
-    /// affordance — e.g. show a banner listing the resumable filenames so
+    /// affordance: e.g. show a banner listing the resumable filenames so
     /// the user knows which file to re-pick.
     pub fn scan_resumable(&self) -> Vec<crate::persistence::ResumableEntry> {
         crate::persistence::scan(&self.endpoint)
@@ -342,7 +342,7 @@ impl TusQueueHandle {
         }
     }
 
-    /// Resume every paused worker. Does not start queued items — the scheduler
+    /// Resume every paused worker. Does not start queued items; the scheduler
     /// pulls those automatically when a worker is idle.
     pub fn resume_all(&self) {
         for w in self.workers.iter() {
@@ -405,7 +405,7 @@ impl TusQueueHandle {
     ///
     /// For slot-held items the engine's chunk-loop Abort handler clears any
     /// persisted localStorage entry. For queued items there's no engine in
-    /// the loop to do that — so this method clears the entry directly.
+    /// the loop to do that, so this method clears the entry directly.
     /// Without this, a queued item that was auto-resumed (i.e. `add()` set
     /// `existing_url` from a stored entry) would leave the entry behind on
     /// abort, and re-adding the same file would re-attach the dead URL.
@@ -485,7 +485,7 @@ impl TusQueueHandle {
     /// `upload_url` (the previous one may be a completed-or-expired
     /// resource that triggered the failure) and the bytes-uploaded
     /// counter, then flips the item back to `Queued` so the scheduler
-    /// picks it up. Auto-resume via persistence still applies — if a
+    /// picks it up. Auto-resume via persistence still applies; if a
     /// stored entry exists it'll be honoured on the next start.
     ///
     /// No-op when the item is currently held by a worker (use
@@ -499,14 +499,13 @@ impl TusQueueHandle {
             RetryDecision::Reset => {
                 tracing::debug!(id, "queue: retrying item from scratch")
             }
-            RetryDecision::ItemActive => tracing::warn!(
-                id,
-                "queue: retry_item ignored — item is active; abort first"
-            ),
+            RetryDecision::ItemActive => {
+                tracing::warn!(id, "queue: retry_item ignored: item is active; abort first")
+            }
             RetryDecision::ItemNotFound => {}
             RetryDecision::WrongStatus => tracing::warn!(
                 id,
-                "queue: retry_item ignored — item is not in a terminal state"
+                "queue: retry_item ignored: item is not in a terminal state"
             ),
         }
     }
@@ -520,7 +519,7 @@ impl TusQueueHandle {
 }
 
 /// Removes the localStorage entry keyed on `(endpoint, file)`. Best-effort
-/// — a failure (no localStorage, quota issues) is logged but not surfaced.
+/// a failure (no localStorage, quota issues) is logged but not surfaced.
 ///
 /// Free function so it's testable without constructing a Dioxus-runtime-
 /// scoped `TusQueueHandle`.
@@ -595,7 +594,7 @@ where
 /// One slot the scheduler wants to start on the next render cycle.
 /// Returned by [`reconcile_tick`] so the caller (the `use_future` body in
 /// [`use_tus_upload_queue`]) can call `workers[slot].start(file, options)`
-/// without the tick logic itself depending on Dioxus signals — that's
+/// without the tick logic itself depending on Dioxus signals; that's
 /// what makes the tick unit-testable.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TickStart {
@@ -609,7 +608,7 @@ pub(crate) struct TickStart {
 pub(crate) enum RetryDecision {
     /// Item was reset to `Queued` and is now schedulable.
     Reset,
-    /// Item is currently held by a worker — caller should abort first.
+    /// Item is currently held by a worker; caller should abort first.
     ItemActive,
     /// No item with this id exists in the queue.
     ItemNotFound,
@@ -621,8 +620,8 @@ pub(crate) enum RetryDecision {
 /// queue item back to `Queued` (clearing bytes_uploaded, upload_url,
 /// existing_url, error, started_at_ms, and pause accounting) so the scheduler can re-pick it.
 ///
-/// Free function so the rules — "active items can't be retried", "non-
-/// terminal items can't be retried", "missing items are silent no-ops" —
+/// Free function so the rules, "active items can't be retried", "non-
+/// terminal items can't be retried", "missing items are silent no-ops",
 /// are testable without spinning up a Dioxus runtime.
 pub(crate) fn apply_retry_item(
     queue: &mut TusQueueState,
@@ -667,7 +666,7 @@ pub(crate) fn reconcile_tick(
 ) -> Vec<TickStart> {
     // Hard assert (not debug_assert): the loop indexes `worker_snapshots[slot]`
     // unguarded, so a length mismatch would index-panic in release with no
-    // diagnostic. The cost is one length compare per tick (50ms cadence) —
+    // diagnostic. The cost is one length compare per tick (50ms cadence),
     // negligible. Construction in `use_tus_upload_queue` makes the lengths
     // equal by construction, so this only catches future refactor mistakes.
     assert_eq!(
@@ -684,13 +683,13 @@ pub(crate) fn reconcile_tick(
         let ws = &worker_snapshots[slot];
 
         let Some(item) = queue.items.iter_mut().find(|i| i.id == item_id) else {
-            // Item vanished — typically `remove_item` of a slot-held item.
+            // Item vanished: typically `remove_item` of a slot-held item.
             //
             // Don't free the slot until the worker reports terminal state.
             // Otherwise Phase 2 below would reassign this slot to the next
             // queued item BEFORE the worker has drained its still-pending
             // Abort command, and that stale Abort would then write Idle to
-            // the worker signal AFTER `start()`'s sync-stamp — fooling the
+            // the worker signal AFTER `start()`'s sync-stamp, fooling the
             // next tick's Idle arm into marking the freshly-assigned item
             // Aborted (a ghost-abort of a never-uploaded file).
             //
@@ -739,7 +738,7 @@ pub(crate) fn reconcile_tick(
                 slot_assignments[slot] = None;
             }
             UploadStatus::Idle => {
-                // Worker reverted to Idle — abort path. Mark Aborted (unless
+                // Worker reverted to Idle: abort path. Mark Aborted (unless
                 // already terminal) and free the slot.
                 if !matches!(
                     item.status,
@@ -864,7 +863,7 @@ pub fn use_tus_upload_queue(config: TusConfig) -> (ReadSignal<TusQueueState>, Tu
 }
 
 // =====================================================================
-// Scheduler tick tests — wasm-bindgen-test because TusQueueItem holds a
+// Scheduler tick tests: wasm-bindgen-test because TusQueueItem holds a
 // `web_sys::File`, which only constructs in a browser. The tests drive
 // `reconcile_tick` directly with synthetic worker snapshots so they don't
 // need a Dioxus VirtualDom or a real upload to flow through.
@@ -1141,18 +1140,18 @@ mod queue_tests {
     ///
     /// Pre-fix, Phase 1's orphan branch unconditionally freed the slot; on
     /// the same tick Phase 2 picked the next queued item and called
-    /// `start()` (sync-stamping Uploading) — but Abort was still in the
+    /// `start()` (sync-stamping Uploading), but Abort was still in the
     /// worker's channel. The engine then processed Abort (state→Idle),
     /// then Start, then awaited POST. During the Idle window between Abort
     /// and POST, the next scheduler tick observed `slot=Some(B)` with
-    /// worker Idle, hit the Idle arm, and marked B Aborted — a never-
+    /// worker Idle, hit the Idle arm, and marked B Aborted, a never-
     /// uploaded item flipped to a terminal state.
     ///
     /// Post-fix, Phase 1 only frees an orphan slot when the worker reports
     /// terminal status. With the worker still Uploading, the slot stays
-    /// assigned and Phase 2 does NOT reassign THAT slot — buying time for
+    /// assigned and Phase 2 does NOT reassign THAT slot, buying time for
     /// the engine to drain Abort. (Phase 2 may still fill OTHER free slots,
-    /// which is fine — the bug is specifically about reassigning the
+    /// which is fine; the bug is specifically about reassigning the
     /// orphan slot whose worker still has a stale Abort in flight.)
     #[wasm_bindgen_test]
     fn vanished_item_with_uploading_worker_keeps_slot() {
@@ -1163,7 +1162,7 @@ mod queue_tests {
             .push(item(2, "next.bin", b"x", QueueItemStatus::Queued));
 
         let mut slots = vec![Some(1u64), None];
-        // Worker on slot 0 hasn't processed Abort yet — still reports Uploading.
+        // Worker on slot 0 hasn't processed Abort yet, still reports Uploading.
         let snapshots = [
             TusUploadState {
                 status: UploadStatus::Uploading,
@@ -1179,7 +1178,7 @@ mod queue_tests {
             slots[0],
             Some(1u64),
             "orphan slot 0 must NOT be reassigned while its worker is \
-             still Uploading — the channel still has the stale Abort \
+             still Uploading; the channel still has the stale Abort \
              that would race the next start()",
         );
         assert!(
@@ -1419,7 +1418,7 @@ mod queue_tests {
     // Re-assignment race regression tests.
     //
     // Background: `TusUploadHandle::start()` (in src/hook.rs) only enqueues
-    // a Start command — the worker's signal stays at its previous value
+    // a Start command; the worker's signal stays at its previous value
     // until `run_upload`'s post-create state.update lands. That post-create
     // window can be 50–300ms in production (one HTTP POST round trip),
     // longer than the scheduler's 50ms tick.
@@ -1474,7 +1473,7 @@ mod queue_tests {
     /// Pre-fix failure mode: worker still reports Complete on tick N+1
     /// (run_upload hasn't reached its first state.update yet); the
     /// Complete arm fires, marks the freshly-assigned item Complete,
-    /// frees the slot — i.e. ghost-completes a never-uploaded file.
+    /// frees the slot, i.e. ghost-completes a never-uploaded file.
     #[wasm_bindgen_test]
     fn reassignment_after_complete_keeps_slot_when_uploading() {
         let mut queue = TusQueueState::default();
@@ -1588,7 +1587,7 @@ mod queue_tests {
         }
     }
 
-    /// Items currently held by a worker can't be retried — the user
+    /// Items currently held by a worker can't be retried; the user
     /// should abort_item first. Without this guard a re-Start command
     /// would race with the in-flight engine.
     #[wasm_bindgen_test]
@@ -1605,7 +1604,7 @@ mod queue_tests {
         assert_eq!(queue.items[0].status, QueueItemStatus::Uploading);
     }
 
-    /// Non-terminal items (Queued, Paused) can't be retried — there's
+    /// Non-terminal items (Queued, Paused) can't be retried; there's
     /// nothing to retry FROM. Caller gets WrongStatus and the item is
     /// left alone.
     #[wasm_bindgen_test]
@@ -1624,7 +1623,7 @@ mod queue_tests {
         }
     }
 
-    /// Missing id is a silent no-op — the caller doesn't get a panic
+    /// Missing id is a silent no-op; the caller doesn't get a panic
     /// or an error, the queue is unchanged.
     #[wasm_bindgen_test]
     fn retry_item_missing_id_is_noop() {
@@ -1704,7 +1703,7 @@ mod queue_tests {
     /// Regression for the `abort_item` queued-item persistence leak.
     ///
     /// When `add()` auto-resumes a queued item from a stored entry, calling
-    /// `abort_item` on it must also clear the entry — otherwise re-adding
+    /// `abort_item` on it must also clear the entry; otherwise re-adding
     /// the same file would re-attach the dead URL on the next session. The
     /// engine's chunk-loop Abort handler covers slot-held items; queued
     /// items never reach the engine, so the queue layer has to handle them.
@@ -1780,7 +1779,7 @@ mod queue_tests {
     /// `remove_persisted_for_file` clears the localStorage entry keyed
     /// on `(endpoint, file)`. Pins the escape hatch that
     /// `TusQueueHandle::remove_item` and `clear_finished` rely on for
-    /// items stuck in `Error` after a non-410/404 HEAD on resume — the
+    /// items stuck in `Error` after a non-410/404 HEAD on resume; the
     /// engine doesn't clear those, so the queue must.
     #[wasm_bindgen_test]
     fn remove_persisted_for_file_clears_localstorage_entry() {
@@ -1832,7 +1831,7 @@ mod queue_tests {
         // `now_ms = 10_000` → elapsed_ms = 10_000.
         // Pre-fix: speed = 4 * 1000 / 10000 = 0.4 B/s, eta = (11-4)/0.4 = 17.5s.
         // Pre-fix shape: returns Some(17.5). After 10× longer pause, eta would
-        // be 175s; after a full minute, ~6 min "ETA" — pure nonsense for a
+        // be 175s; after a full minute, ~6 min "ETA", pure nonsense for a
         // paused upload. Post-fix: returns None.
         let eta = paused_item.eta_seconds(10_000.0);
         assert!(
@@ -1898,7 +1897,7 @@ mod queue_tests {
         });
 
         // Exactly two items reported as terminal; the Error item must be
-        // among them — that's the regression.
+        // among them; that's the regression.
         assert_eq!(cleared_files.len(), 2, "got {cleared_files:?}");
         assert!(
             cleared_files.iter().any(|n| n == "error.bin"),

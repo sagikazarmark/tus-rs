@@ -5,9 +5,9 @@ Status: Accepted
 ## Context
 
 A streamed PATCH or Creation-With-Upload body with `Content-Length` is handed to
-`Storage::append` as a `ChunkStream::Stream`. Late body validation — a checksum
+`Storage::append` as a `ChunkStream::Stream`. Late body validation, a checksum
 mismatch or an exact-length shortfall discovered only after the whole body has
-drained — is surfaced to the backend as an `Err` item at the end of that stream,
+drained, is surfaced to the backend as an `Err` item at the end of that stream,
 because a checksum cannot be verified until the last byte is seen and buffering
 the whole body would defeat streaming.
 
@@ -23,7 +23,7 @@ from an append that did not succeed. The hazard is specific: a checksum failure
 on a *completing* chunk arrives at full byte count but wrong content, so a backend
 that flushes frames as they arrive and then exposes those bytes through `size()`
 would have corrupt, full-length content adopted as a completed upload. A partial
-write (fewer bytes) is safe to expose — recovery adopts the smaller offset — but a
+write (fewer bytes) is safe to expose, recovery adopts the smaller offset, but a
 full-length wrong-content chunk is not.
 
 ## Decision
@@ -40,7 +40,7 @@ full-length wrong-content chunk is not.
   fully succeeded.
 - "Report actual size for recovery" applies only to a genuine crash of a
   *partial* write (a process that died mid-append and never returned), and even
-  then only reports the smaller, partial byte count — never full-length content.
+  then only reports the smaller, partial byte count, never full-length content.
 
 This invariant is already enforced by the storage conformance suite
 (`storage::conformance`), which asserts that a failed body stream leaves the
@@ -53,15 +53,15 @@ records the contract and aligns the `Storage` trait docs with it.
 chunk in memory before handing pre-validated `Buffered` bytes to the backend
 would close the hazard purely protocol-side, with no backend cooperation. It was
 rejected because it regresses the constant-memory streaming of large checksummed
-chunks — the capability the streaming path and the OpenDAL backend exist to
-provide — penalizing a correct backend to defend against a hypothetical incorrect
+chunks, the capability the streaming path and the OpenDAL backend exist to
+provide, penalizing a correct backend to defend against a hypothetical incorrect
 one.
 
 **Persist a protocol-side "append in flight" marker (rejected).** Recording
 intent before `append` and refusing recovery-completion unless it cleared cannot
 work: the legitimate recovery case (crash *after* `append` returned `Ok`, before
 the offset persisted) and the dangerous case (crash *before* `Ok`) are
-indistinguishable from any marker written before the call — both leave "intent
+indistinguishable from any marker written before the call: both leave "intent
 set, offset not advanced, `size() == length`." Only the backend knows whether it
 accepted the bytes, so the guarantee must live in the backend.
 

@@ -53,7 +53,7 @@ cargo run -p tus-client --example upload_file -- http://127.0.0.1:8080/files ./h
 |-----|---------|
 | `Client::upload_from(source, metadata)` | Create a new upload resource and upload a source to it. |
 | `Client::upload_from_with_progress(source, metadata, progress)` | Create and upload while reporting remote offset advances. |
-| `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. Returns `(Upload, UploadInfo)` — the resource reference plus the state observed at creation. |
+| `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. Returns `(Upload, UploadInfo)`: the resource reference plus the state observed at creation. |
 | `Client::upload_at(upload_url)` | Resolve an existing upload URL reference and return an `Upload`. |
 | `Upload::info()` | Read the current remote offset, length, and metadata. |
 | `Upload::terminate()` | Terminate an upload when the server supports termination. |
@@ -91,7 +91,7 @@ Disable default features when providing a custom transport or when building for 
 runtime that should not pull in reqwest.
 
 > **Note:** `--no-default-features` also drops reqwest's default features, which
-> include TLS — plain `transport-reqwest` can then only speak `http://`. Add
+> include TLS; plain `transport-reqwest` can then only speak `http://`. Add
 > `reqwest-rustls` or `reqwest-native-tls` to restore `https://` support.
 
 ## Protocol Support
@@ -118,7 +118,7 @@ On `wasm32`, sequential upload and resume APIs work with `UploadSource`. The
 reqwest transport uses the browser `fetch` backend, so request trailers and
 manually setting `Content-Length` are not available. `ReqwestMiddlewareTransport`
 compiles for `wasm32`, but `reqwest-middleware`'s own wasm support is unmaintained
-upstream, so middleware on wasm is best-effort and untested here — use it only
+upstream, so middleware on wasm is best-effort and untested here; use it only
 when the middleware implementation itself is known to be wasm-compatible.
 
 On `wasm32` targets, trait bounds relax to non-`Send` futures automatically.

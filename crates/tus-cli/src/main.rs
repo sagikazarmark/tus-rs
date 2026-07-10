@@ -98,7 +98,7 @@ enum Command {
         no_progress: bool,
 
         /// Maximum bytes per PATCH request. Smaller values force more PATCH
-        /// boundaries, which is the unit of resume — useful for testing
+        /// boundaries, which is the unit of resume, useful for testing
         /// resumability under network faults. Defaults to the tus-client
         /// default (8 MiB) when unset.
         #[arg(

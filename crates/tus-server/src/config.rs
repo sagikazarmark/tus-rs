@@ -319,7 +319,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) header_read_timeout: Duration,
 }
 
-/// The subset of settings that maps into `tus_protocol::Config` — the
+/// The subset of settings that maps into `tus_protocol::Config`: the
 /// protocol-behavior group consumed by [`build_tus_config`].
 #[derive(Clone, Debug)]
 pub(crate) struct ProtocolConfig {

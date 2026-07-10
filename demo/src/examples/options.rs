@@ -10,11 +10,17 @@ use crate::endpoint::use_endpoint;
 #[component]
 pub fn OptionsExample() -> Element {
     let endpoint = use_endpoint();
-    // Client-level config, set once at construction.
+    // Client-level config, set once at construction. Chunk size and the retry
+    // budget/backoff are fixed here; `creation_with_upload_threshold` decides
+    // which small files POST their bytes in the creation request. A config-level
+    // `with_bearer_token` would set a default token for every upload; the
+    // per-upload `with_bearer_token` below overrides it.
     let (state, handle) = use_tus_upload(
         TusConfig::new(endpoint)
             .with_chunk_size(512 * 1024)
-            .with_max_retries(5),
+            .with_max_retries(5)
+            .with_retry_delay_ms(250)
+            .with_creation_with_upload_threshold(256 * 1024),
     );
 
     let mut token = use_signal(String::new);
@@ -82,7 +88,7 @@ pub fn OptionsExample() -> Element {
             }
 
             p { class: "text-xs text-base-content/50",
-                "Config: 512 KiB chunks · 5 retries. Token and metadata apply per upload."
+                "Config: 512 KiB chunks · 5 retries · 250 ms base backoff · 256 KiB creation-with-upload threshold. Token and metadata apply per upload."
             }
 
             if snap.bytes_total.is_some() {

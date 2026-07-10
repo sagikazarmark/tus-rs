@@ -66,7 +66,7 @@
 //!   Native targets (Dioxus desktop / fullstack) are not supported yet.
 //! - **HTTP trailers not supported.** Browser Fetch does not support HTTP
 //!   trailers. The `TusStartOptions` surface here doesn't expose trailer
-//!   checksum mode at all — use header-mode checksums on the
+//!   checksum mode at all; use header-mode checksums on the
 //!   underlying `tus_client::Client`, or omit checksums entirely.
 //! - **Mid-upload bearer-token renewal not supported.** The token is applied
 //!   once when the upload starts. Call [`TusUploadHandle::abort`] then
@@ -90,7 +90,7 @@
 //!
 //! Common server-specific causes:
 //! - **`tusd`**: pass `-cors=true` (or `-cors-allow-origin=https://app.example.com`).
-//! - **nginx in front of TUS**: `proxy_pass_header Location;` is required —
+//! - **nginx in front of TUS**: `proxy_pass_header Location;` is required;
 //!   otherwise the `Location` header is stripped and you'll see
 //!   [`TusError::MissingHeader`] for `location` instead of `Cors`.
 //! - **CloudFront/etc.**: typically needs an explicit OPTIONS-method allow
@@ -128,8 +128,8 @@
 // The hook, handle, and transport APIs are `#[cfg(target_arch = "wasm32")]`, so
 // intra-doc links to them only resolve for the wasm target. docs.rs and CI
 // build this crate for wasm (see the `package.metadata.docs.rs` table), where
-// these links are still validated under `-D warnings`. On other targets — the
-// host doc builds used by some CI checks — those items don't exist, so tolerate
+// these links are still validated under `-D warnings`. On other targets, the
+// host doc builds used by some CI checks, those items don't exist, so tolerate
 // the unresolvable links there rather than failing the build.
 #![cfg_attr(not(target_arch = "wasm32"), allow(rustdoc::broken_intra_doc_links))]
 
@@ -158,8 +158,8 @@ pub mod transport;
 ///
 /// The custom-transport use case ([`use_tus_upload_with_transport`], which is
 /// generic over [`tus_client::Transport`]) requires naming trait and types
-/// from this crate. Re-exporting it lets consumers do so without adding — and
-/// version-matching — their own direct `tus_client` dependency.
+/// from this crate. Re-exporting it lets consumers do so without adding, and
+/// version-matching, their own direct `tus_client` dependency.
 pub use tus_client;
 
 pub use config::{TusConfig, TusStartOptions};

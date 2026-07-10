@@ -21,7 +21,7 @@ use tus_client::{Client, ServerCapabilities, Transport};
 
 use crate::state::TusError;
 
-/// 60 seconds in milliseconds — per the autoplan eng review.
+/// 60 seconds in milliseconds, per the autoplan eng review.
 const TTL_MS: f64 = 60_000.0;
 
 struct Entry {
@@ -32,7 +32,7 @@ struct Entry {
 
 /// Process-global cache state. The mutex is uncontended in practice (wasm
 /// is single-threaded; the `Mutex` is for the API contract more than the
-/// concurrency model) and is only ever held synchronously — never across
+/// concurrency model) and is only ever held synchronously, never across
 /// an `await`.
 #[derive(Default)]
 struct CacheState {
@@ -56,7 +56,7 @@ enum Lookup {
     Hit(ServerCapabilities),
     /// Another caller is fetching; await on the receiver for the result.
     Wait(oneshot::Receiver<Result<ServerCapabilities, TusError>>),
-    /// No fresh entry, no in-flight fetch — *this* caller must fire OPTIONS.
+    /// No fresh entry, no in-flight fetch; *this* caller must fire OPTIONS.
     /// The state has been mutated to mark `endpoint` as in-flight.
     Fetch,
 }
@@ -66,13 +66,13 @@ enum Lookup {
 /// `get_or_fetch` matches on the result and executes accordingly.
 fn lookup_or_register(endpoint: &str, now: f64) -> Lookup {
     let Ok(mut guard) = cache_state().lock() else {
-        // Mutex poisoned (cannot happen on wasm — no panic-across-thread
-        // path) — fall through to a fresh fetch. The fetcher will
+        // Mutex poisoned (cannot happen on wasm, no panic-across-thread
+        // path); fall through to a fresh fetch. The fetcher will
         // overwrite the state on completion; data integrity is preserved.
         return Lookup::Fetch;
     };
     if let Some(entry) = guard.cached.get(endpoint) {
-        // Reject negative or non-finite age — a clock step backwards
+        // Reject negative or non-finite age; a clock step backwards
         // (NTP correction, manual change) or a future-dated insertion
         // would otherwise make a stale entry pass the TTL check and
         // serve forever.
@@ -108,7 +108,7 @@ fn finalize_fetch(
                     },
                 );
             }
-            // Always remove the in-flight marker — success or failure. On
+            // Always remove the in-flight marker, success or failure. On
             // failure we don't cache (transient blips shouldn't poison
             // subsequent calls), but we must still wake any waiters so
             // they propagate the error rather than hanging.
@@ -128,7 +128,7 @@ fn finalize_fetch(
 /// Concurrent callers for the same endpoint coalesce: the first caller
 /// fires the OPTIONS request, others `await` its result instead of
 /// duplicating the round-trip. On fetch failure nothing is cached and
-/// every waiter sees the same error — a transient network blip doesn't
+/// every waiter sees the same error; a transient network blip doesn't
 /// poison subsequent calls.
 pub(crate) async fn get_or_fetch<T: Transport>(
     endpoint: &str,
@@ -145,7 +145,7 @@ pub(crate) async fn get_or_fetch<T: Transport>(
             let endpoint = crate::persistence::redact_endpoint_for_log(endpoint);
             tracing::debug!(%endpoint, "options cache: awaiting in-flight fetch");
             // If the sender is dropped (only possible if the originator
-            // panicked before finalize_fetch — unreachable in practice)
+            // panicked before finalize_fetch, unreachable in practice)
             // surface a typed transport error rather than `.unwrap()`.
             rx.await.unwrap_or_else(|_| {
                 Err(TusError::Transport(
@@ -192,11 +192,11 @@ pub(crate) async fn get_or_fetch<T: Transport>(
 }
 
 /// Drops any cached entry for `endpoint`. Call when the server may have
-/// changed capabilities — e.g. on a 405 Method Not Allowed or 412
+/// changed capabilities, e.g. on a 405 Method Not Allowed or 412
 /// Precondition Failed response from a subsequent request that suggests the
 /// cached extension list is stale.
 ///
-/// Does not affect in-flight fetches — they will complete and notify
+/// Does not affect in-flight fetches; they will complete and notify
 /// their waiters with whatever the OPTIONS call returned.
 pub(crate) fn invalidate(endpoint: &str) {
     if let Ok(mut guard) = cache_state().lock()
@@ -209,7 +209,7 @@ pub(crate) fn invalidate(endpoint: &str) {
 
 /// Returns a fresh cached entry without touching the network. `None` when
 /// the cache has no entry, the entry has expired, or the cache state is
-/// unreachable. Cheap — just a HashMap lookup behind a mutex.
+/// unreachable. Cheap, just a HashMap lookup behind a mutex.
 ///
 /// Used to enforce `Tus-Max-Size` on the plain-create path: if an earlier
 /// upload in this session populated the cache, the limit is enforced; if
@@ -228,7 +228,7 @@ pub(crate) fn peek_fresh(endpoint: &str) -> Option<ServerCapabilities> {
 }
 
 // =====================================================================
-// Cache behaviour tests — wasm-bindgen because the implementation reads
+// Cache behaviour tests: wasm-bindgen because the implementation reads
 // `js_sys::Date::now()` for the TTL bookkeeping. The cache itself is
 // process-global so each test uses a unique endpoint to stay isolated.
 // TTL expiry is not exercised here (would require a 60s sleep or a time-
@@ -387,7 +387,7 @@ mod tests {
         );
     }
 
-    /// Distinct endpoints get distinct cache entries — the cache key is
+    /// Distinct endpoints get distinct cache entries; the cache key is
     /// the endpoint URL (not the transport instance).
     #[wasm_bindgen_test]
     async fn different_endpoints_do_not_share_cache() {
@@ -442,7 +442,7 @@ mod tests {
     /// Concurrent callers for the same endpoint coalesce: only one OPTIONS
     /// fires; the others wait on the in-flight fetch and receive the same
     /// result. Pre-fix, N concurrent uploads in the same tick all observed
-    /// a cache miss and each issued OPTIONS — wasting N-1 round-trips.
+    /// a cache miss and each issued OPTIONS, wasting N-1 round-trips.
     #[wasm_bindgen_test]
     async fn concurrent_calls_coalesce_to_one_fetch() {
         let endpoint = "http://test.local/options-cache-coalesce";
@@ -455,7 +455,7 @@ mod tests {
         let client = Client::with_transport(Url::parse(endpoint).unwrap(), transport.clone());
 
         // Kick off two concurrent fetches. Both enter `lookup_or_register`
-        // before either yields to the network — wasm is single-threaded so
+        // before either yields to the network; wasm is single-threaded so
         // the second sees an `in_flight` registration from the first and
         // takes the Wait arm. The transport delays its response one tick
         // to keep the in-flight window open across the join.
@@ -523,14 +523,14 @@ mod tests {
         );
     }
 
-    /// Fetch failure must NOT poison the cache — the next call retries.
+    /// Fetch failure must NOT poison the cache; the next call retries.
     #[wasm_bindgen_test]
     async fn fetch_error_does_not_cache() {
         let endpoint = "http://test.local/options-cache-error";
         invalidate(endpoint);
 
         let transport = CountingTransport::new();
-        // First response: 500 Internal — get_or_fetch propagates the error.
+        // First response: 500 Internal; get_or_fetch propagates the error.
         transport.push(resp(500, HeaderMap::new(), b"down".to_vec()));
         // Second response: success.
         transport.push(options_response("creation"));

@@ -404,7 +404,7 @@ where
     ///
     /// Parts are spawned as tokio tasks, so this method must run inside a
     /// tokio runtime (as must every retrying client operation on native
-    /// targets — see [`Client`]). It is not available on `wasm32`.
+    /// targets, see [`Client`]). It is not available on `wasm32`.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload_parallel<S>(
         &self,
@@ -1544,7 +1544,7 @@ mod tests {
     }
 
     /// 408 Request Timeout and 429 Too Many Requests are transient and
-    /// PATCH is idempotent under TUS, so they MUST be retried — pre-fix
+    /// PATCH is idempotent under TUS, so they MUST be retried; pre-fix
     /// the native classifier matched only `>= 500`, leaving native callers
     /// stuck on rate-limited servers while the wasm classifier in
     /// `dioxus-tus` would have retried with backoff.
@@ -1644,7 +1644,7 @@ mod tests {
     }
 
     /// 460 Checksum Mismatch (TUS checksum extension) signals that the
-    /// server detected in-transit corruption and *discarded* the chunk —
+    /// server detected in-transit corruption and *discarded* the chunk,
     /// exactly the transient failure the extension exists for. The client
     /// must re-HEAD and resend instead of aborting the upload permanently.
     #[async_test]
@@ -1912,7 +1912,7 @@ mod tests {
             other => panic!("expected oversized source chunk error, got {other:?}"),
         }
         // A misbehaving source is a deterministic bug: no retry, no
-        // recovery HEAD — the initial HEAD must be the only request.
+        // recovery HEAD; the initial HEAD must be the only request.
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests.first().unwrap().method(), Method::HEAD);

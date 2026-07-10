@@ -35,7 +35,7 @@ use crate::runtime::{MaybeSend, MaybeSendSync};
 ///
 /// # Lock lifetime
 ///
-/// The protocol holds a guard for the full duration of a request — a PATCH
+/// The protocol holds a guard for the full duration of a request: a PATCH
 /// guard lives while the request body streams, which can take minutes or
 /// longer. A backend must therefore never expire a held lock on a fixed TTL:
 /// doing so would let a second request mutate the upload concurrently and

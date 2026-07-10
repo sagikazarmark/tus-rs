@@ -28,8 +28,8 @@ pub(super) struct DeferredBodyError {
 
 impl DeferredBodyError {
     // The guarded value is a plain `Option<Error>`, always safe to touch, so a
-    // poisoned mutex (a panic while another holder — e.g. a storage backend
-    // polling the body stream — held the guard) is recovered rather than
+    // poisoned mutex (a panic while another holder, e.g. a storage backend
+    // polling the body stream, held the guard) is recovered rather than
     // re-panicked. This keeps a recoverable request failure from escalating
     // into a panic on the request path.
     pub(super) fn take(&self) -> Option<Error> {

@@ -147,7 +147,7 @@ where
     ///
     /// # Security
     ///
-    /// These headers — including any `Authorization` credential — are sent on
+    /// These headers, including any `Authorization` credential, are sent on
     /// every subsequent request to the upload URL the server returns in its
     /// creation `Location`. That URL may, per the tus spec, point at a
     /// different origin than the endpoint, so a malicious or MITM'd server can
@@ -167,8 +167,8 @@ where
     /// the endpoint, as the tus spec permits. That is a credential-leak vector:
     /// a compromised or MITM'd server can return a `Location` on an
     /// attacker-controlled host, and the client would then send its configured
-    /// headers (see [`with_headers`](Self::with_headers)) — cookies,
-    /// `Authorization` — and upload bytes there.
+    /// headers (see [`with_headers`](Self::with_headers)), cookies,
+    /// `Authorization`, and upload bytes there.
     ///
     /// Enabling this makes the client reject a cross-origin upload location
     /// with [`Error::CrossOriginLocation`](crate::Error::CrossOriginLocation)
@@ -225,7 +225,7 @@ where
     ///
     /// Provider headers *replace* any statically configured
     /// [`with_headers`](Client::with_headers) values of the same header
-    /// name — including all appended multi-values of that name — so a
+    /// name, including all appended multi-values of that name, so a
     /// refreshed credential can never be sent alongside a stale configured
     /// one. Configured headers with other names are unaffected. If the
     /// provider itself yields the same name more than once, the last value
@@ -271,7 +271,7 @@ where
             // configured values of the same name, so refreshed credentials
             // never travel next to stale configured ones. Documented on
             // `with_header_provider`. The provider returns a `HeaderMap`, so
-            // names and values are already validated — no re-parsing here.
+            // names and values are already validated; no re-parsing here.
             for (name, value) in provider.headers().await?.iter() {
                 request.headers_mut().insert(name.clone(), value.clone());
             }
@@ -428,7 +428,7 @@ pub trait RetryHook: MaybeSendSync {
     /// the retry. The hook cannot substitute its own error: a hook is a
     /// veto/observe seam, and a broken hook must never mask the failure that
     /// prompted it. This is why the return type is a plain `bool` rather than a
-    /// `Result` — there is no hook outcome the client could act on beyond
+    /// `Result`; there is no hook outcome the client could act on beyond
     /// "retry or not".
     async fn before_retry(&self, attempt: usize, error: &Error) -> bool;
 }

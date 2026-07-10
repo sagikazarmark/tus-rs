@@ -21,7 +21,7 @@ where
 /// whose recorded state does not yet mark it complete.
 ///
 /// Returns `Some(length)` when the backing object's size equals the declared
-/// `Upload-Length` — a crash-recovery completion is pending — and `None` when
+/// `Upload-Length`, a crash-recovery completion is pending, and `None` when
 /// there is nothing to recover. This is the single decision point for "are the
 /// stored bytes a completed upload"; callers layer persistence and finish hooks
 /// on top of it.
@@ -74,8 +74,8 @@ where
 }
 
 /// Completes an upload whose bytes reached the declared length before the state
-/// write landed — a crash between the durable storage append and the state
-/// update — running the same finish gate as the normal completion path.
+/// write landed, a crash between the durable storage append and the state
+/// update, running the same finish gate as the normal completion path.
 ///
 /// When stored bytes have reached the length, this runs the `PreFinish` gate
 /// against the would-be-completed state (a rejection fails the request and

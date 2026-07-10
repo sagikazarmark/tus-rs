@@ -1,4 +1,4 @@
-// NOTE: `TusUploadState` progress/state tests moved to `src/state.rs` — the
+// NOTE: `TusUploadState` progress/state tests moved to `src/state.rs`; the
 // struct is `#[non_exhaustive]`, so its struct-literal construction is only
 // possible from inside the crate.
 
@@ -42,7 +42,7 @@ fn no_token_when_both_are_none() {
 // and `build_metadata` moved to `src/config.rs`, which can reach them.
 
 // Mock transport, helpers, and the client-driven integration/error-mapping
-// tests are native-only — `tus_client::Client::with_transport` and
+// tests are native-only; `tus_client::Client::with_transport` and
 // `tokio::test` don't make sense under wasm32. Gating the helpers too keeps
 // wasm clippy from flagging them as dead code when the dependent tests are
 // gated out.
@@ -112,7 +112,7 @@ mod native_client {
     }
 
     // =================================================================
-    // upload_chunk (formerly patch_chunk) — single-request primitive
+    // upload_chunk (formerly patch_chunk): single-request primitive
     // with no internal retry.
     // =================================================================
 
@@ -322,7 +322,7 @@ mod native_client {
     // is no `InvalidDefaultHeader` variant for the client to produce.
 
     // =================================================================
-    // Retry classification — pins the predicate the engine consults on
+    // Retry classification: pins the predicate the engine consults on
     // every PATCH failure. `dioxus_tus::retry::is_retryable_error` is the
     // same function the chunk loop in src/hook.rs calls.
     // =================================================================
@@ -445,7 +445,7 @@ fn blob_slice_start_past_end_returns_empty() {
 }
 
 // =====================================================================
-// From<tus_client::Error> for TusError — transport CORS heuristic. These
+// From<tus_client::Error> for TusError: transport CORS heuristic. These
 // use the externally-constructible `Error::transport(msg)` constructor;
 // `TusError::from` inspects the transport error's `source.to_string()`,
 // which equals the string passed here, so the per-browser heuristic fires.
@@ -533,7 +533,7 @@ fn config_default_chunk_size_is_one_mib() {
 // moved to `src/config.rs`.
 
 // =====================================================================
-// Retry classification — transport errors. Uses the
+// Retry classification: transport errors. Uses the
 // externally-constructible `Error::transport` constructor, which yields a
 // retryable transport error.
 // =====================================================================

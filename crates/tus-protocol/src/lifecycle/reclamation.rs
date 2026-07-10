@@ -127,8 +127,8 @@ impl ExpiredUploadReclamationOutcome {
 ///
 /// Candidates are loaded from [`StateStore::list_expired`]. Each candidate is
 /// locked with [`Locker::try_lock`], reloaded, checked for current expiration,
-/// and then reclaimed. Per-candidate failures — whether a preparatory step
-/// (locking, loading, completion reconciliation) or a deletion — are reported
+/// and then reclaimed. Per-candidate failures, whether a preparatory step
+/// (locking, loading, completion reconciliation) or a deletion, are reported
 /// as outcomes so the scan continues to the remaining candidates instead of
 /// aborting and discarding the report. Only a failure to list candidates in the
 /// first place propagates as an error.
@@ -144,7 +144,7 @@ impl ExpiredUploadReclamationOutcome {
 /// This is a deliberate, stable stance: an expired partial is reclaimed even
 /// while a not-yet-materialized final (Concatenation) upload still references
 /// it. Once the part is gone, that final upload becomes permanently
-/// unreadable — reads of it report [`Error::Expired`] — so a concatenation
+/// unreadable, reads of it report [`Error::Expired`], so a concatenation
 /// whose parts outlive their expiry before the final is materialized is lost,
 /// not merely stale.
 ///

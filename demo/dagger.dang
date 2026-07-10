@@ -61,7 +61,7 @@ type Demo {
   Demo application service.
   """
   service(ws: Workspace!): Service! @up {
-    self.dioxus.serve(self.withAssets(ws), port: 8081)
+    self.dioxus.serve(self.withAssets(ws), port: 8080)
   }
 
   """
@@ -84,12 +84,12 @@ type Demo {
       .withExec(["apt-get", "install", "-y", "--no-install-recommends", "ca-certificates"])
       .withFile("/usr/local/bin/tus-server", binary)
       .withExec(["mkdir", "-p", "/data", "/state"])
-      .withExposedPort(8080)
+      .withExposedPort(8081)
       .asService(args: [
         "tus-server",
         "serve",
-        "--addr", "0.0.0.0:8080",
-        "--base-url", "http://localhost:8080",
+        "--addr", "0.0.0.0:8081",
+        "--base-url", "http://localhost:8081",
         "--all-extensions",
         "--cors",
         "--storage-uri", "fs:///data",

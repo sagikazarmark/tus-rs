@@ -45,7 +45,7 @@ use crate::runtime::MaybeSendSync;
 /// `size()` as the accepted offset and completes an upload once it reaches the
 /// declared length, without re-validating content. Reporting the actual size of
 /// a partial write for recovery to reconcile is permitted only for a genuine
-/// crash — a process that died mid-append and never returned — and even then only
+/// crash, a process that died mid-append and never returned, and even then only
 /// the smaller, partial byte count, never full-length content.
 ///
 /// # Upload ID safety
@@ -93,7 +93,7 @@ pub trait Storage: MaybeSendSync {
     /// element. A backend must treat a terminal stream error as a failed append:
     /// return that error and roll the write back to `expected_offset`, so
     /// [`size`](Storage::size) reports at most `expected_offset`. Leaving the
-    /// failed bytes in place is not permitted — a checksum mismatch on a
+    /// failed bytes in place is not permitted: a checksum mismatch on a
     /// completing chunk arrives at full byte count but wrong content, and
     /// recovery adopts `size()` without re-validating, so exposing those bytes
     /// would complete a corrupt upload.
@@ -103,7 +103,7 @@ pub trait Storage: MaybeSendSync {
     /// become `size()`-visible at the upload length until the append has returned
     /// `Ok`: it must stage the completing write and expose it only once the
     /// stream has terminated without an `Err`. Otherwise a clean end-of-data that
-    /// the protocol has not yet accepted — or a crash mid-finalize — would leave a
+    /// the protocol has not yet accepted, or a crash mid-finalize, would leave a
     /// corrupt or premature upload marked complete.
     async fn append(&self, request: AppendRequest) -> Result<StorageHandle>;
 

@@ -214,8 +214,8 @@ where
 /// length, so a backend that finalizes incrementally must not let the completing
 /// chunk's bytes become visible at the length until the append succeeds.
 ///
-/// The crash window — a process that dies after the completing bytes are durably
-/// flushed but before `append` returns — cannot be exercised from a conformance
+/// The crash window, a process that dies after the completing bytes are durably
+/// flushed but before `append` returns, cannot be exercised from a conformance
 /// test; a zero-window backend stages the completing write and promotes it
 /// atomically (see the OpenDAL adapter).
 async fn completing_append_stream_error_does_not_reach_length<S>(storage: &S)

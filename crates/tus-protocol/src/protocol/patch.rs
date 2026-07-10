@@ -1187,7 +1187,7 @@ mod tests {
         // Storage reached the declared length but the completing state write
         // never landed. A PATCH preflight recovers the completion, runs the
         // finish gate, then rejects the write as targeting an already-complete
-        // upload — so downstream processing wired to PostFinish still fires.
+        // upload, so downstream processing wired to PostFinish still fires.
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(5);

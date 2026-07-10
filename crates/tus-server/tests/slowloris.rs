@@ -336,12 +336,12 @@ async fn slow_body_times_out_when_request_body_read_timeout_is_set() {
 
     assert!(
         closed,
-        "server did not close the slow connection within 15 s — \
+        "server did not close the slow connection within 15 s: \
          --request-body-read-timeout=2 failed to enforce"
     );
     assert!(
         elapsed < Duration::from_secs(10),
-        "server eventually closed the connection but took {elapsed:?} — \
+        "server eventually closed the connection but took {elapsed:?}: \
          expected close within ~5 s of the timeout firing"
     );
 }
@@ -350,7 +350,7 @@ async fn slow_body_times_out_when_request_body_read_timeout_is_set() {
 /// (or never finishes) the request *headers* must be torn down by the
 /// server's header-read timeout. This is enforced by hyper's
 /// `header_read_timeout`, which only works because the serve loop
-/// installs a `TokioTimer` — without a timer hyper silently disables
+/// installs a `TokioTimer`; without a timer hyper silently disables
 /// the timeout.
 #[tokio::test]
 async fn slow_headers_time_out_when_header_read_timeout_is_set() {
@@ -396,12 +396,12 @@ async fn slow_headers_time_out_when_header_read_timeout_is_set() {
 
     assert!(
         closed,
-        "server did not close the header-trickling connection within 10 s — \
+        "server did not close the header-trickling connection within 10 s: \
          --request-header-read-timeout=1 failed to enforce"
     );
     assert!(
         elapsed < Duration::from_secs(6),
-        "server eventually closed the connection but took {elapsed:?} — \
+        "server eventually closed the connection but took {elapsed:?}: \
          expected close within a few seconds of the 1 s header timeout firing"
     );
 }
@@ -428,7 +428,7 @@ async fn slow_body_is_not_timed_out_when_timeout_is_disabled_explicitly() {
 
     assert!(
         !closed,
-        "server closed a slow connection despite --request-body-read-timeout=0 — \
+        "server closed a slow connection despite --request-body-read-timeout=0: \
          the explicit opt-out no longer disables the timeout; update operator docs"
     );
 }

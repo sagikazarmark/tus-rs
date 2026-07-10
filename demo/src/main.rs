@@ -1,4 +1,4 @@
-//! dioxus-tus demo — a docs-by-example gallery for the `dioxus-tus` hook.
+//! dioxus-tus demo: a docs-by-example gallery for the `dioxus-tus` hook.
 //!
 //! Every page mounts a real, working uploader *and* shows the exact source
 //! that produced it (via `include_str!`), so the snippet you read is the code
