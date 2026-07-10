@@ -4,12 +4,12 @@
 //! same offset, the protocol's lock-then-CAS-on-offset machinery
 //! must let exactly one win. The others see either:
 //!
-//!   - `409 Conflict` (Upload-Offset mismatch — the winner advanced
+//!   - `409 Conflict` (Upload-Offset mismatch: the winner advanced
 //!     the offset before this PATCH's own offset check), or
 //!   - `423 Locked` (the lock guard rejected the second acquirer).
 //!
-//! Anything else — two PATCHes both winning, the offset advancing
-//! by 2x the PATCH body size, a 5xx — is a race that would corrupt
+//! Anything else (two PATCHes both winning, the offset advancing
+//! by 2x the PATCH body size, a 5xx) is a race that would corrupt
 //! the upload.
 //!
 //! This test fills the in-process, single-replica race surface.
@@ -183,7 +183,7 @@ async fn concurrent_patches_at_same_offset_serialize_to_one_winner() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn many_sequential_patches_advance_offset_monotonically() {
     // Sanity: not strictly a concurrency test, but pins down the
-    // companion property — sequential PATCHes accumulate, so the
+    // companion property: sequential PATCHes accumulate, so the
     // "concurrent only one wins" outcome above is the difference
     // a lock makes, not a side effect of the storage layer.
     let router = Arc::new(build_router());

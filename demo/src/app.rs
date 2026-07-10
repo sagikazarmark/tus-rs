@@ -2,11 +2,13 @@
 //! grouped sidebar, and the routed page outlet.
 
 use dioxus::prelude::*;
+use dioxus_free_icons::Icon;
+use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 
 use crate::endpoint::{Endpoint, navigate_to_endpoint, resolve_endpoint, use_endpoint};
 use crate::pages::{
-    controls::Controls, home::Home, minimal::Minimal, options::Options, queue::Queue,
-    resume::Resume,
+    controls::Controls, errors::Errors, existing_url::ExistingUrl, headers::Headers, home::Home,
+    minimal::Minimal, options::Options, queue::Queue, resume::Resume, transport::Transport,
 };
 
 const STYLE_CSS: Asset = asset!("/assets/tailwind.css");
@@ -24,10 +26,18 @@ pub enum Route {
     Queue {},
     #[route("/controls")]
     Controls {},
-    #[route("/resume")]
-    Resume {},
     #[route("/options")]
     Options {},
+    #[route("/headers")]
+    Headers {},
+    #[route("/resume")]
+    Resume {},
+    #[route("/existing-url")]
+    ExistingUrl {},
+    #[route("/errors")]
+    Errors {},
+    #[route("/transport")]
+    Transport {},
 }
 
 /// Grouped navigation shared by the desktop sidebar and the mobile strip.
@@ -45,10 +55,24 @@ fn nav_groups() -> Vec<(&'static str, Vec<(Route, &'static str)>)> {
             ],
         ),
         (
-            "Advanced",
+            "Configuration",
+            vec![
+                (Route::Options {}, "Tokens, metadata & config"),
+                (Route::Headers {}, "Headers & file naming"),
+            ],
+        ),
+        (
+            "Resuming",
             vec![
                 (Route::Resume {}, "Resume across reload"),
-                (Route::Options {}, "Tokens, metadata & config"),
+                (Route::ExistingUrl {}, "Resume from a URL"),
+            ],
+        ),
+        (
+            "Advanced",
+            vec![
+                (Route::Errors {}, "Typed error handling"),
+                (Route::Transport {}, "Custom transport"),
             ],
         ),
     ]
@@ -99,11 +123,13 @@ fn Header() -> Element {
                 div { class: "ml-auto flex items-center gap-3",
                     EndpointSwitcher {}
                     a {
-                        class: "btn btn-sm btn-ghost",
+                        class: "btn btn-sm btn-ghost btn-circle",
                         href: "https://github.com/sagikazarmark/tus-rs",
                         target: "_blank",
                         rel: "noopener noreferrer",
-                        "GitHub ↗"
+                        "aria-label": "View tus-rs on GitHub",
+                        title: "View on GitHub",
+                        Icon { width: 20, height: 20, icon: FaGithub }
                     }
                 }
             }

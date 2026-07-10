@@ -1,7 +1,7 @@
 //! Native-vs-Worker response parity harness.
 //!
 //! The native `tus-server` and `tus-worker` are held to the same
-//! `tus-compliance-tests` suite, but that is a pass/fail gate — it
+//! `tus-compliance-tests` suite, but that is a pass/fail gate; it
 //! does not tell us whether the two implementations produce
 //! byte-identical responses for the protocol-relevant headers. This
 //! test drives a fixture of success and error requests at both and

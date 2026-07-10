@@ -50,7 +50,7 @@ fn Uploader() -> Element {
 
 **Pre-1.0 and exploratory.** Expect breaking changes between releases until
 the API stabilises. The `TusConfig` and `TusStartOptions`
-types are `#[non_exhaustive]` — adding fields is not a breaking change.
+types are `#[non_exhaustive]`; adding fields is not a breaking change.
 Consumers must use the builder API (`TusConfig::new(endpoint).with_*`)
 rather than struct literals.
 
@@ -76,7 +76,7 @@ using `creation-with-upload`.
 
 When the heuristic detects a CORS preflight failure (browser "Failed to
 fetch" string), the error surfaces as `TusError::Cors` so consumers can
-branch on it specifically — instead of an opaque "Transport(...)".
+branch on it specifically, instead of an opaque "Transport(...)".
 
 ## Logging
 
@@ -91,16 +91,16 @@ and error mapping.
 
 - **WASM only.** Hook is gated `#[cfg(target_arch = "wasm32")]`.
 - **HTTP trailers not supported** by browser Fetch. `TusStartOptions` doesn't
-  expose trailer-mode checksums — use header-mode on the underlying
+  expose trailer-mode checksums; use header-mode on the underlying
   `tus_client::Client` or omit checksums.
 - **Mid-upload bearer-token renewal not supported.** Abort and re-start
   with the new token.
 
 ## Example
 
-A complete Dioxus app — a feature-by-feature gallery covering progress UI,
+A complete Dioxus app, a feature-by-feature gallery covering progress UI,
 a concurrent upload queue, pause/resume/abort, resume-across-reload, and
-per-upload tokens/metadata, with DaisyUI styling — lives in
+per-upload tokens/metadata, with DaisyUI styling, lives in
 [`demo/`](../../demo). Each page mounts a live uploader next to the exact
 source that produced it.
 

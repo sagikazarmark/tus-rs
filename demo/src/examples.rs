@@ -2,7 +2,12 @@
 //! one of these live and quotes its source, so what you read is what runs.
 
 pub mod controls;
+pub mod errors;
+pub mod existing_url;
+pub mod headers;
 pub mod minimal;
 pub mod options;
 pub mod queue;
 pub mod resume;
+pub mod resume_persisted;
+pub mod transport;

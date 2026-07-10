@@ -2,16 +2,16 @@
 //!
 //! Two axes we care about:
 //!
-//! - **Chunk size** — the cost of a PATCH should scale linearly with the
+//! - **Chunk size**: the cost of a PATCH should scale linearly with the
 //!   body, and shouldn't degrade sharply at larger sizes.
-//! - **Adapter overhead** — `axum_patch` runs a PATCH through
+//! - **Adapter overhead**: `axum_patch` runs a PATCH through
 //!   `axum::Router` while `protocol_patch` calls the framework-neutral
 //!   [`Protocol::patch`] facade directly. The difference is the cost of the
 //!   axum adapter (extractors, router dispatch, response assembly).
 //!
 //! All benches use the in-memory storage/state backends to eliminate I/O.
 //! Each sample is wrapped in `iter_batched` so state is freshly allocated
-//! per iteration — otherwise `MemoryStorage` would accumulate gigabytes of
+//! per iteration; otherwise `MemoryStorage` would accumulate gigabytes of
 //! written bytes across the thousands of iterations criterion runs.
 
 use std::hint::black_box;
@@ -151,7 +151,7 @@ fn bench_protocol_patch(c: &mut Criterion) {
                 b.to_async(&rt).iter_batched(
                     || {
                         // `futures::executor::block_on` sidesteps the tokio
-                        // "nested runtime" panic — the memory-backed
+                        // "nested runtime" panic: the memory-backed
                         // Storage/StateStore APIs are async in signature
                         // but do purely synchronous work.
                         let s = futures::executor::block_on(direct_setup());

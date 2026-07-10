@@ -6,7 +6,7 @@
 //!
 //! ## Match key
 //!
-//! Browsers don't expose stable file identifiers — when the user re-picks
+//! Browsers don't expose stable file identifiers; when the user re-picks
 //! the "same" file after reload, we rebind via a best-effort match key:
 //! `(endpoint, filename, file_size, last_modified)`. Two distinct files
 //! with the same name + size + mtime collide; rare but the registry name is
@@ -15,12 +15,12 @@
 //! ## TTL + eviction
 //!
 //! Entries older than the storage TTL are filtered out by [`scan`]. They
-//! aren't proactively garbage-collected on every read — operationally the
+//! aren't proactively garbage-collected on every read; operationally the
 //! storage namespace is `dioxus-tus:v1:*`, distinct enough that stale
 //! entries don't leak into other consumers.
 //!
 //! Entries whose `upload_url` origin doesn't match the configured
-//! `endpoint` origin are dropped on read — a defence against same-origin
+//! `endpoint` origin are dropped on read, a defence against same-origin
 //! storage poisoning where a different page on the same domain writes a
 //! key that, on next load, would point our wasm at an attacker-controlled
 //! upload URL.
@@ -50,7 +50,7 @@ pub struct ResumableEntry {
     /// Size at upload start (bytes).
     pub file_size: u64,
     /// `web_sys::File::last_modified()` value (ms since epoch). Best-effort
-    /// match component — unreliable on some browser/OS combos.
+    /// match component, unreliable on some browser/OS combos.
     pub last_modified: f64,
     /// The TUS resource URL the partial upload lives at.
     pub upload_url: String,
@@ -66,7 +66,7 @@ pub struct ResumableEntry {
 /// The key is opaque; consumers should treat it as a string identifier rather
 /// than parsing it.
 ///
-/// Pure function — no I/O, callable from native tests without wasm.
+/// Pure function: no I/O, callable from native tests without wasm.
 ///
 /// `pub(crate)`: the key-derivation scheme is an internal detail. Consumers
 /// read the derived value via [`ResumableEntry::match_key`]; they don't
@@ -144,7 +144,7 @@ fn parse_origin(s: &str) -> Option<(String, String, u16)> {
         return None;
     }
     let (host, explicit_port) = if let Some(colon) = host_port.rfind(':') {
-        // Watch out for IPv6 brackets — but we don't support those here;
+        // Watch out for IPv6 brackets, but we don't support those here;
         // tus URLs are typically named hosts. Conservative: take the last
         // colon as the port separator only if everything after parses as u16.
         let after = &host_port[colon + 1..];
@@ -268,14 +268,14 @@ mod wasm {
     /// Lists every stored entry not older than [`STORAGE_TTL_MS`], filtering
     /// any whose `upload_url` origin doesn't match the supplied endpoint.
     ///
-    /// Diagnostics emit at `tracing::debug!` — set `RUST_LOG=dioxus_tus=debug`
+    /// Diagnostics emit at `tracing::debug!`; set `RUST_LOG=dioxus_tus=debug`
     /// (or wire up `tracing-wasm`) to inspect why entries are being filtered.
     ///
     /// Public so consumers can inspect persisted entries via
     /// [`crate::TusUploadHandle::scan_resumable`] /
     /// [`crate::TusQueueHandle::scan_resumable`]; the read-only filter
     /// surface is safe to expose. The mutating counterparts (`put`,
-    /// `remove`, `get`) are crate-internal — see their visibility.
+    /// `remove`, `get`) are crate-internal; see their visibility.
     pub fn scan(endpoint: &str) -> Vec<ResumableEntry> {
         let Some(storage) = local_storage() else {
             tracing::debug!("scan: localStorage unavailable");
@@ -285,7 +285,7 @@ mod wasm {
 
         // Collect matching key names *first*, then read values by name.
         // The Web Storage spec doesn't guarantee index stability under
-        // concurrent modification by other same-origin pages — `key(i)`
+        // concurrent modification by other same-origin pages; `key(i)`
         // can shift if another tab inserts/removes a key mid-loop, which
         // would make us skip or double-visit entries. Iterating by name
         // is benign under that race (a vanished key just yields None).
@@ -340,7 +340,7 @@ mod wasm {
             // Endpoint exact-match: two endpoints sharing the same origin
             // (e.g. /api/files-eu vs /api/files-us, or /api/v1 vs /api/v2)
             // would otherwise cross-contaminate each other's resume offers.
-            // The origin check below stays — it defends against a stored
+            // The origin check below stays; it defends against a stored
             // upload_url pointing at a different host than the configured
             // endpoint, which the endpoint check alone wouldn't catch.
             if entry.endpoint != endpoint {
@@ -373,7 +373,7 @@ mod wasm {
     }
 
     /// Loads the entry for `match_key` if present, fresh, and origin-valid.
-    /// Crate-internal — consumers go through `TusUploadHandle::resume_persisted`
+    /// Crate-internal; consumers go through `TusUploadHandle::resume_persisted`
     /// or `TusQueueHandle::add` (which calls this internally).
     pub(crate) fn get(endpoint: &str, match_key: &str) -> Option<ResumableEntry> {
         let storage = local_storage()?;
@@ -420,7 +420,7 @@ mod wasm {
         // Quota likely exhausted. Sweep the namespace for stale and
         // malformed entries (which `scan` filters but never deletes) and
         // try once more. Without this, a quota-full localStorage stays
-        // wedged for the full 24h TTL — the `scan`-side filter prevents
+        // wedged for the full 24h TTL; the `scan`-side filter prevents
         // them from being served but cannot reclaim the quota they
         // occupy, so every future `put` silently fails.
         evict_stale_entries(&storage);
@@ -468,7 +468,7 @@ mod wasm {
     }
 
     /// Removes the entry for `match_key`. No-op when missing.
-    /// Crate-internal — see `put` for the rationale.
+    /// Crate-internal; see `put` for the rationale.
     pub(crate) fn remove(match_key: &str) {
         if let Some(storage) = local_storage() {
             let _ = storage.remove_item(&storage_key(match_key));
@@ -498,7 +498,7 @@ mod wasm_tests {
 
     /// `scan` returns only entries that are (a) fresh per TTL, (b) origin-
     /// matching, and (c) under the right namespace key prefix. Seeds three
-    /// entries — fresh-matching / stale / origin-mismatch — and asserts
+    /// entries, fresh-matching / stale / origin-mismatch, and asserts
     /// only the first surfaces. Closes the largest blind spot in the
     /// persistence layer's tests: pre-this, no test ever drove `scan`
     /// against seeded entries, so a refactor that dropped the TTL or
@@ -593,7 +593,7 @@ mod wasm_tests {
     }
 
     /// Two distinct endpoints sharing the same origin must not see each
-    /// other's resume entries. Pre-fix, `scan` only filtered on origin —
+    /// other's resume entries. Pre-fix, `scan` only filtered on origin;
     /// `/api/files-eu` and `/api/files-us` would surface each other's
     /// uploads, and a downstream `resume_persisted` call would HEAD the
     /// wrong URL or silently drop the resume hint.
@@ -665,7 +665,7 @@ mod wasm_tests {
     }
 
     /// `put` followed by `get` round-trips through JSON serialisation.
-    /// Also verifies `get` honours the origin filter — an origin-mismatched
+    /// Also verifies `get` honours the origin filter; an origin-mismatched
     /// entry returns None even when the localStorage key is present.
     #[wasm_bindgen_test]
     fn put_then_get_round_trips_and_filters_origin() {
@@ -775,7 +775,7 @@ mod wasm_tests {
     /// `scan` and `get` must reject entries with a future-dated
     /// `stored_at_ms`. Pre-fix, `now - stored_at_ms` produced a negative
     /// `f64`, which is `< STORAGE_TTL_MS`, so the entry passed the TTL
-    /// filter and lived until the wall clock caught up — possibly never.
+    /// filter and lived until the wall clock caught up, possibly never.
     /// Repros: NTP step-back, manual clock change, multi-tab clock skew.
     #[wasm_bindgen_test]
     fn scan_rejects_future_dated_entry() {
@@ -792,7 +792,7 @@ mod wasm_tests {
             last_modified: 1.0,
             upload_url: format!("{endpoint}/future-id"),
             bytes_uploaded: 0,
-            // Stored "1 hour from now" — clock skew scenario.
+            // Stored "1 hour from now", clock skew scenario.
             stored_at_ms: now + 3_600_000.0,
         };
         put(&entry).expect("seed future-dated");
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn origin_does_not_match_https_with_explicit_http_port() {
-        // 443 alias is scheme-specific — explicit 80 on https is still
+        // 443 alias is scheme-specific; explicit 80 on https is still
         // a different origin.
         assert!(!origin_matches(
             "https://tus.example.com/files",

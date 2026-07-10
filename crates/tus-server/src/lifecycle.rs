@@ -400,7 +400,7 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(500);
 /// already-pending network errors (ENETDOWN, ENOBUFS, EHOSTUNREACH, ...)
 /// surface through `accept` and should be treated like EAGAIN, and axum's
 /// own serve loop likewise retries everything. Connection-level errors
-/// (the peer vanished between arrival and accept — attacker-inducible)
+/// (the peer vanished between arrival and accept, attacker-inducible)
 /// are retried immediately; anything else, including fd or memory
 /// exhaustion, backs off briefly so an error storm cannot spin the loop
 /// hot.
@@ -464,8 +464,8 @@ mod tests {
             Duration::ZERO
         );
 
-        // Everything else — resource exhaustion, pending network errors,
-        // unknown kinds — retries after a backoff; accept errors never
+        // Everything else, resource exhaustion, pending network errors,
+        // unknown kinds, retries after a backoff; accept errors never
         // stop the server.
         #[cfg(unix)]
         {

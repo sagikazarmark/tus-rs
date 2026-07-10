@@ -68,7 +68,7 @@ use tus_protocol::{
 
 /// Wraps `MemoryStorage` and inserts a configurable sleep inside
 /// `append`. The sleep widens the window in which the handler is
-/// observably in-flight — large enough that `drop(stream)` from the
+/// observably in-flight: large enough that `drop(stream)` from the
 /// test thread reaches the server's reactor before the handler
 /// finishes. Without it, the in-memory operation completes in
 /// microseconds and the cancellation race never resolves
@@ -190,7 +190,7 @@ async fn client_disconnect_mid_patch_leaves_upload_in_consistent_state() {
 
     // Hand-roll the PATCH on raw TCP so we can drop the connection
     // partway through processing. reqwest doesn't expose a "fire and
-    // forget — don't read response" API.
+    // forget, don't read response" API.
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let request = format!(
         "PATCH {path} HTTP/1.1\r\n\
@@ -208,7 +208,7 @@ async fn client_disconnect_mid_patch_leaves_upload_in_consistent_state() {
     stream.flush().await.unwrap();
     drop(stream);
 
-    // Wait long enough for any in-flight handler work to settle —
+    // Wait long enough for any in-flight handler work to settle:
     // either it completed past the SleepyStorage sleep or it was
     // cancelled and unwound.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -222,8 +222,8 @@ async fn client_disconnect_mid_patch_leaves_upload_in_consistent_state() {
     let after_disconnect = head_offset(&location).await;
     assert!(
         after_disconnect == 0 || after_disconnect == body_size as u64,
-        "offset after disconnect must be 0 or {body_size}, got {after_disconnect} \
-         — partial commit detected, per-PATCH atomicity broken"
+        "offset after disconnect must be 0 or {body_size}, got {after_disconnect}\
+         : partial commit detected, per-PATCH atomicity broken"
     );
 
     // Property 2: a clean PATCH from whatever offset HEAD reported

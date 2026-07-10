@@ -104,7 +104,7 @@ pub(crate) enum NewUploadContent {
 }
 
 // Manual `Debug` so a `NewUpload` (which derives `Debug`) never dumps the
-// initial POST body bytes — potentially multi-megabyte or sensitive — into
+// initial POST body bytes, potentially multi-megabyte or sensitive, into
 // logs. Only the byte length is reported.
 impl std::fmt::Debug for NewUploadContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -169,7 +169,7 @@ impl ServerCapabilities {
 
     /// Reports whether the server advertises the named TUS extension.
     ///
-    /// Names are case-insensitive and match the TUS spec — e.g. `creation`,
+    /// Names are case-insensitive and match the TUS spec: e.g. `creation`,
     /// `creation-with-upload`, `termination`, `concatenation`, `expiration`.
     ///
     /// For the known [`Extension`] variants, prefer the typed
@@ -212,8 +212,8 @@ where
     /// `creation-with-upload` over `creation` for small files.
     ///
     /// The first successful probe is cached per client (clones share the
-    /// cache), so repeated calls — including the implicit probes made by
-    /// `upload_from` and `upload_parallel` — cost a single OPTIONS
+    /// cache), so repeated calls, including the implicit probes made by
+    /// `upload_from` and `upload_parallel`, cost a single OPTIONS
     /// roundtrip. Failed probes are not cached.
     pub async fn server_capabilities(&self) -> Result<ServerCapabilities> {
         if let Some(capabilities) = self.known_capabilities() {
@@ -1112,7 +1112,7 @@ mod tests {
         let transport = MockTransport::default();
         {
             let mut responses = transport.responses.lock().unwrap();
-            // 200 OK but no Tus-Version header — nginx default page.
+            // 200 OK but no Tus-Version header, nginx default page.
             responses.push_back(Ok(transport_response(
                 200,
                 HeaderMap::new(),

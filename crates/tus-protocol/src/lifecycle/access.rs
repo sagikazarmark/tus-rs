@@ -135,7 +135,7 @@ where
     // a recovered completion here: doing so would finalize the upload while
     // permanently skipping its `PreFinish`/`PostFinish` hooks. Detecting the
     // completion is enough to know the upload is completed content rather than
-    // an abandoned resource — and therefore not reclaimable. The next client
+    // an abandoned resource, and therefore not reclaimable. The next client
     // HEAD/PATCH/GET runs the finish gate and persists the completion.
     if stored_bytes_complete_upload(storage, state).await? {
         return Ok(false);

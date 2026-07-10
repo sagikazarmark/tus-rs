@@ -537,7 +537,7 @@ where
         // fallback: a POST on the item resource is rewritten to PATCH or
         // DELETE according to the override header. (Implemented as a POST
         // handler rather than routing middleware because axum's
-        // `Router::layer` wraps per-endpoint, including the 405 fallback —
+        // `Router::layer` wraps per-endpoint, including the 405 fallback,
         // so rewriting `req.method()` from middleware does not re-dispatch
         // to a different method handler.)
         .route(
@@ -569,8 +569,8 @@ where
     //
     // Unlike `tower_http::cors::CorsLayer`, this middleware answers a request
     // as a CORS preflight ONLY when it is an `OPTIONS` carrying
-    // `Access-Control-Request-Method`. A bare `OPTIONS` — the TUS
-    // capability-discovery request — falls through to `handle_options`, which
+    // `Access-Control-Request-Method`. A bare `OPTIONS`, the TUS
+    // capability-discovery request, falls through to `handle_options`, which
     // returns `Tus-Version`/`Tus-Extension`/`Tus-Max-Size` (TUS 1.0.0 §3.1);
     // the CORS response headers are then appended. `CorsLayer` short-circuits
     // *every* `OPTIONS`, which would shadow discovery for browser clients.
@@ -693,7 +693,7 @@ fn join_header_names(names: &[HeaderName]) -> HeaderValue {
 
 /// CORS middleware that preserves TUS `OPTIONS` capability discovery.
 ///
-/// A CORS *preflight* — an `OPTIONS` carrying `Access-Control-Request-Method` —
+/// A CORS *preflight*, an `OPTIONS` carrying `Access-Control-Request-Method`,
 /// is answered directly. Every other request (including a bare `OPTIONS`
 /// discovery request) is passed to the inner router and then decorated with
 /// the CORS response headers, so `handle_options` runs and its `Tus-Version`

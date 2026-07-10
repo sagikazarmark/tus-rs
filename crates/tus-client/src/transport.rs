@@ -163,8 +163,8 @@ pub enum TransportBody {
     },
 }
 
-// Manual `Debug` so request bodies — potentially multi-megabyte or sensitive,
-// and reachable through `TransportRequest = http::Request<TransportBody>` —
+// Manual `Debug` so request bodies, potentially multi-megabyte or sensitive,
+// and reachable through `TransportRequest = http::Request<TransportBody>`,
 // are never dumped into logs. Only the byte length is reported.
 impl std::fmt::Debug for TransportBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

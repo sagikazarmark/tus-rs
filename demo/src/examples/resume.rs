@@ -87,7 +87,7 @@ pub fn ResumeExample() -> Element {
                         }
                     }
                     p { class: "mt-2 text-xs text-base-content/50",
-                        "Pause, then reload the tab — the entry above lets you continue."
+                        "Pause, then reload the tab, the entry above lets you continue."
                     }
                 }
             }
@@ -101,7 +101,7 @@ pub fn ResumeExample() -> Element {
 fn resume_row(entry: &ResumableEntry, handle: TusUploadHandle) -> Element {
     let entry = entry.clone();
     let label = format!(
-        "{} — {} / {}",
+        "{}: {} / {}",
         entry.filename,
         format_size(entry.bytes_uploaded),
         format_size(entry.file_size),

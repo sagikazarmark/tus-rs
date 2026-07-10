@@ -57,6 +57,6 @@ pub use reqwest;
 
 /// Re-export of the `reqwest-middleware` crate, so consumers can build a
 /// [`ClientWithMiddleware`](reqwest_middleware::ClientWithMiddleware) against
-/// the exact version [`ReqwestMiddlewareTransport`] wraps — never a skewed one.
+/// the exact version [`ReqwestMiddlewareTransport`] wraps, never a skewed one.
 #[cfg(feature = "transport-reqwest-middleware")]
 pub use reqwest_middleware;

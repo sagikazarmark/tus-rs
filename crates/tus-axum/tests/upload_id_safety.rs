@@ -61,7 +61,7 @@ async fn build_sandbox() -> Sandbox {
 
     // Sentinels live in the root, ABOVE state/ and upload/. A
     // traversal from `state/<id>.json` of the form `../sentinel-state.txt`
-    // lands on the sentinel — proof that the traversal escaped the
+    // lands on the sentinel: proof that the traversal escaped the
     // configured state dir.
     let sentinel_outside_state = root.path().join("sentinel-state.txt");
     let sentinel_outside_upload = root.path().join("sentinel-upload.bin");
@@ -94,7 +94,7 @@ impl Sandbox {
     /// would land on or near them. If the sentinels survive, no
     /// traversal write reached outside the sandbox.
     ///
-    /// (We don't scan the parent dir for unexpected files — that
+    /// (We don't scan the parent dir for unexpected files; that
     /// turns into a fight with concurrent tests' tempdirs and
     /// system-tempdir noise. The sentinel check is the actual
     /// property: nothing wrote where we said "don't write here".)
@@ -103,13 +103,13 @@ impl Sandbox {
             std::fs::read(&self.sentinel_outside_state).expect("state sentinel must still exist");
         assert_eq!(
             state_sentinel, b"do not touch (state)",
-            "state sentinel was overwritten — traversal write succeeded"
+            "state sentinel was overwritten; traversal write succeeded"
         );
         let upload_sentinel =
             std::fs::read(&self.sentinel_outside_upload).expect("upload sentinel must still exist");
         assert_eq!(
             upload_sentinel, b"do not touch (upload)",
-            "upload sentinel was overwritten — traversal write succeeded"
+            "upload sentinel was overwritten; traversal write succeeded"
         );
     }
 }
@@ -216,7 +216,7 @@ async fn head_with_dotjson_id_does_not_collide_with_state_file_format() {
 }
 
 // ---------------------------------------------------------------------------
-// DELETE with malicious ids — same surface, different verb. DELETE is the
+// DELETE with malicious ids: same surface, different verb. DELETE is the
 // scariest because a successful traversal would actually unlink a file.
 // ---------------------------------------------------------------------------
 
@@ -242,7 +242,7 @@ async fn delete_with_encoded_slash_id_does_not_unlink_anything() {
 }
 
 // ---------------------------------------------------------------------------
-// PATCH (the worst case — a successful traversal here would WRITE)
+// PATCH (the worst case: a successful traversal here would WRITE)
 // ---------------------------------------------------------------------------
 
 fn patch(uri: &str) -> Request<Body> {
@@ -278,8 +278,8 @@ async fn patch_with_encoded_slash_id_does_not_write_anywhere() {
 
 // ---------------------------------------------------------------------------
 // X-HTTP-Method-Override POST path: a malformed upload id must be rejected the
-// same way as the equivalent direct PATCH/DELETE — a tus-compliant 400 that
-// still carries the `Tus-Resumable` header — rather than axum's default
+// same way as the equivalent direct PATCH/DELETE, a tus-compliant 400 that
+// still carries the `Tus-Resumable` header, rather than axum's default
 // plain-text 400 with no such header.
 // ---------------------------------------------------------------------------
 

@@ -762,8 +762,8 @@ mod tests {
     #[tokio::test]
     async fn head_recovery_completion_pre_finish_rejection_preserves_state() {
         // A PreFinish rejection during recovery completion must fail the request
-        // and leave the upload untouched — the completion is not persisted and
-        // PostFinish does not fire — mirroring the normal completion path.
+        // and leave the upload untouched, the completion is not persisted and
+        // PostFinish does not fire, mirroring the normal completion path.
         let storage = MemoryStorage::new();
         let store = MemoryStateStore::new();
         let mut state = UploadState::new("test-id").with_length(5);

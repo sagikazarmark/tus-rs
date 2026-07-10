@@ -15,7 +15,7 @@ pub struct TusConfig {
     pub bearer_token: Option<String>,
     /// Maximum bytes per PATCH request. Defaults to 1 MiB.
     ///
-    /// Sized for main-thread `web_sys::Blob` reads — larger chunks can stall
+    /// Sized for main-thread `web_sys::Blob` reads: larger chunks can stall
     /// the UI while the slice is read into wasm linear memory. Bump for
     /// throughput-bound LAN uploads if jank isn't observable.
     pub chunk_size: usize,
@@ -27,7 +27,7 @@ pub struct TusConfig {
     /// in one request) when supported by the server. Defaults to 256 KiB.
     ///
     /// The full body is read into wasm linear memory before POSTing, so don't
-    /// raise this past a few MiB without measuring main-thread jank — the
+    /// raise this past a few MiB without measuring main-thread jank; the
     /// chunked path's amortised reads scale better. The chunked path's
     /// per-chunk size is controlled separately by [`Self::chunk_size`].
     pub creation_with_upload_threshold: usize,
@@ -58,7 +58,7 @@ impl TusConfig {
     ///
     /// Endpoint typically ends in `/files`; the exact path is
     /// server-determined. The hook does not validate the URL until the first
-    /// `start()` — invalid URLs surface as [`crate::TusError::InvalidUrl`] at
+    /// `start()`; invalid URLs surface as [`crate::TusError::InvalidUrl`] at
     /// upload time.
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
@@ -107,11 +107,11 @@ impl TusConfig {
     /// this config.
     ///
     /// Compares in `u64` space rather than truncating `file_size` to
-    /// `usize` — on `wasm32-unknown-unknown` `usize` is 32-bit, so casting
+    /// `usize`: on `wasm32-unknown-unknown` `usize` is 32-bit, so casting
     /// a `u64` file size to `usize` truncates to the low 32 bits. A file of
     /// e.g. `4 GiB + 100 KiB` would truncate to `100 KiB`, falsely match a
     /// 256 KiB threshold, and route the entire 4 GiB payload through the
-    /// load-whole-body path — OOMing wasm linear memory.
+    /// load-whole-body path, OOMing wasm linear memory.
     ///
     /// Consulted only by the wasm upload engine; `allow(dead_code)` off-wasm.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -318,7 +318,7 @@ mod tests {
     }
 
     // =================================================================
-    // creation-with-upload predicate — regression tests for the wasm32
+    // creation-with-upload predicate: regression tests for the wasm32
     // 32-bit `usize` truncation bug. With the fix the predicate compares
     // in `u64` space, so files larger than `u32::MAX` no longer alias into
     // the "small enough for cwu" range.
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn cwu_predicate_excludes_zero_size_files() {
-        // Empty files don't take the cwu fast path — the create_upload branch
+        // Empty files don't take the cwu fast path; the create_upload branch
         // handles them and short-circuits the chunk loop.
         let c =
             TusConfig::new("https://x.test/files").with_creation_with_upload_threshold(256 * 1024);
@@ -355,7 +355,7 @@ mod tests {
         // Pre-fix this used `(file_size as usize) <= threshold`. On wasm32 (32-bit
         // usize) a 4 GiB + 100 KiB file truncates to 100 KiB, falsely matches a
         // 256 KiB threshold, and routes the entire >4 GiB payload through the
-        // load-whole-body POST — OOMing wasm linear memory. The predicate now
+        // load-whole-body POST, OOMing wasm linear memory. The predicate now
         // compares in u64 space so the truncation can't happen.
         let c =
             TusConfig::new("https://x.test/files").with_creation_with_upload_threshold(256 * 1024);

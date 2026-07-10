@@ -104,8 +104,8 @@ where
 ///
 /// This is a deliberate public seam: [`create_router`](crate::create_router)
 /// and [`TusRouter`](crate::TusRouter) cover the standard route table, but if
-/// you need a custom route — a different URL layout, an extra auth layer, or a
-/// bespoke `GET` — you can write your own axum handler against the public
+/// you need a custom route, a different URL layout, an extra auth layer, or a
+/// bespoke `GET`, you can write your own axum handler against the public
 /// extractors ([`TusHeaders`](crate::TusHeaders),
 /// [`TusBody`](crate::TusBody), [`TusUploadId`](crate::TusUploadId)) and reach
 /// the protocol through `State<TusProtocol<..>>`, calling

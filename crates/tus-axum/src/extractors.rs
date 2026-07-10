@@ -1,8 +1,8 @@
 //! Axum extractors for TUS protocol handling.
 //!
-//! - [`TusHeaders`] — newtype around [`tus_protocol::Headers`]
+//! - [`TusHeaders`]: newtype around [`tus_protocol::Headers`]
 //!   with the `Tus-Resumable` validation
-//! - [`TusBody`] — body extractor for protocol body frames
+//! - [`TusBody`]: body extractor for protocol body frames
 
 mod body;
 mod headers;

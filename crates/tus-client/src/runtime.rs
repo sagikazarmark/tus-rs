@@ -3,7 +3,7 @@
 //! Everything runtime-specific the client core needs lives here: the
 //! `MaybeSend`/`MaybeSync` bounds that relax `Send + Sync` on `wasm32`, and
 //! the timer used between retries. On native targets the timer is backed by
-//! tokio — this module (plus the tokio `JoinSet` used by
+//! tokio; this module (plus the tokio `JoinSet` used by
 //! `Client::upload_parallel`) is why client operations must run inside a
 //! tokio runtime on native targets. On `wasm32` the browser event loop is
 //! used instead and no runtime is required.

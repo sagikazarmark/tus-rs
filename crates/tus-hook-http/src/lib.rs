@@ -39,8 +39,8 @@
 //! - **Optional Header**: `X-Tus-Signature-256` carrying an HMAC-SHA256
 //!   signature with replay protection, formatted `t=<unix_secs>,v1=<hex-hmac>`
 //!   (Stripe/GitHub style). The signature is computed over the byte string
-//!   `<unix_secs>.<body>` — the Unix send timestamp in seconds, a literal `.`,
-//!   then the raw request body — keyed by the configured signing secret. To
+//!   `<unix_secs>.<body>` (the Unix send timestamp in seconds, a literal `.`,
+//!   then the raw request body), keyed by the configured signing secret. To
 //!   verify: parse `t` and `v1` from the header, recompute
 //!   `hex(HMAC_SHA256(secret, "{t}.{body}"))`, compare it to `v1` in constant
 //!   time, and reject deliveries whose `t` is too far from the current time.
@@ -97,7 +97,7 @@
 /// Re-export of the `reqwest` crate used by this executor.
 ///
 /// Types from `reqwest` (such as [`reqwest::Client`]) appear in this crate's
-/// public API — for example in [`HttpHookExecutor::with_client`] — so this
+/// public API, for example in [`HttpHookExecutor::with_client`], so this
 /// re-export lets downstream crates name the exact `reqwest` version without
 /// adding their own, possibly mismatched, dependency.
 pub use reqwest;
@@ -299,7 +299,7 @@ impl HttpHookConfig {
     /// Sets whether an undeliverable pre-hook fails open (allows the operation
     /// to proceed) or fails closed (blocks it).
     ///
-    /// By default the executor fails closed — a pre-hook webhook that is
+    /// By default the executor fails closed: a pre-hook webhook that is
     /// unreachable, times out, or does not return a successful, parseable
     /// decision blocks the operation. Pass `true` for deployments that prefer
     /// to keep accepting uploads when the webhook endpoint is unavailable. A

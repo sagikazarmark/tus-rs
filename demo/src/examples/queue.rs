@@ -115,7 +115,7 @@ pub fn QueueExample() -> Element {
             // Queue list.
             if items.is_empty() {
                 p { class: "py-6 text-center text-sm text-base-content/50",
-                    "No uploads yet — drop files above to get started."
+                    "No uploads yet; drop files above to get started."
                 }
             } else {
                 div { class: "divide-y divide-base-300 overflow-hidden rounded-2xl border border-base-300",

@@ -16,7 +16,7 @@ pub enum UploadStatus {
 pub enum TusError {
     /// Network request failed before getting a response (DNS, connection refused,
     /// TLS, abrupt disconnect). On the browser side this is the catch-all "Failed
-    /// to fetch" — see also [`TusError::Cors`] for the cross-origin specialisation.
+    /// to fetch"; see also [`TusError::Cors`] for the cross-origin specialisation.
     #[error("network request failed: {0}")]
     Transport(String),
 
@@ -31,7 +31,7 @@ pub enum TusError {
     MissingHeader(String),
 
     /// The server sent a required header, but its value could not be parsed.
-    /// Distinct from [`TusError::MissingHeader`] — the header was *present*,
+    /// Distinct from [`TusError::MissingHeader`]: the header was *present*,
     /// just malformed (e.g. `Upload-Offset: not-a-number`). Useful for
     /// distinguishing CORS / proxy header-stripping from a misbehaving server.
     #[error("invalid header `{header}` value `{value}`")]
@@ -124,7 +124,7 @@ impl From<tus_client::Error> for TusError {
                 // - Chromium / Edge: "TypeError: Failed to fetch"
                 // - Firefox:        "TypeError: NetworkError when attempting to fetch resource."
                 // - Safari (WebKit): "TypeError: Load failed"
-                // Best-effort hint, not a guarantee — DNS/cert/server-down
+                // Best-effort hint, not a guarantee: DNS/cert/server-down
                 // can produce these strings too. Consumers should treat
                 // Cors as a strong hint, not a definitive classification.
                 let s = source.to_string();
@@ -229,7 +229,7 @@ pub(crate) trait StateSink {
 #[cfg(test)]
 mod tests {
     // `TusUploadState` is `#[non_exhaustive]`, so it can only be constructed
-    // with a struct literal from inside this crate — hence these live here
+    // with a struct literal from inside this crate; hence these live here
     // rather than in the `tests/` integration suite.
     use super::*;
 

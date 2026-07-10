@@ -15,7 +15,7 @@ transport silently began wrapping every client in a no-op
 
 Separately, `impl From<reqwest_middleware::ClientWithMiddleware> for
 ReqwestTransport` put a `reqwest_middleware` (0.x) type in the public API while
-only `reqwest` was re-exported — leaving consumers to add their own
+only `reqwest` was re-exported, leaving consumers to add their own
 `reqwest-middleware` dependency with no re-exported version to pin against, the
 version-skew footgun the `reqwest` re-export exists to avoid.
 
@@ -29,7 +29,7 @@ Split the middleware path into its own type.
   `ReqwestTransport::new()` or `From<reqwest::Client>` produce.
 - A separate, feature-gated `ReqwestMiddlewareTransport` wraps
   `ClientWithMiddleware`. It is constructed **only** via
-  `From<ClientWithMiddleware>` — no `Default` / no-arg `new()`, because a
+  `From<ClientWithMiddleware>`: no `Default` / no-arg `new()`, because a
   middleware transport with no middleware is just the plain transport, and the
   absence of a no-arg constructor enforces that invariant structurally.
 - `reqwest_middleware` is re-exported under the feature (`pub use
@@ -40,7 +40,7 @@ Both transports' `send` bodies stay identical: request assembly, response body
 capping, response assembly, and error mapping are written once. The two `reqwest`
 builder types (plain and middleware) expose the same inherent methods but share
 no common trait, so a small private adapter trait (`ReqwestRequestBuilder`)
-bridges them — its two impls differ only in how a failed `send` is classified.
+bridges them; its two impls differ only in how a failed `send` is classified.
 The split removes the feature-unification footgun without duplicating transport
 logic.
 
@@ -55,7 +55,7 @@ logic.
   middleware surface from the plain path.
 - **Hide `reqwest_middleware` behind a constructor.** Rejected as a mirage: to add
   middleware at all, a user must name `reqwest_middleware::Middleware`, so the
-  type is unavoidably in the middleware transport's public surface — hence the
+  type is unavoidably in the middleware transport's public surface; hence the
   re-export is the honest fix, not concealment.
 
 ## Consequences

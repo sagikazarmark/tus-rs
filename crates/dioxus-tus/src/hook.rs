@@ -69,7 +69,7 @@ impl TusUploadHandle {
         self.send(UploadCommand::Start { file, options });
     }
 
-    /// Begin uploading `file` against an existing TUS resource URL — typically
+    /// Begin uploading `file` against an existing TUS resource URL, typically
     /// one created server-side and handed to the client, or persisted from a
     /// prior session. Issues a HEAD against `url` to learn the server-side
     /// offset rather than POSTing to create a new upload.
@@ -117,8 +117,8 @@ impl TusUploadHandle {
     /// treat this as a fresh upload and call [`Self::start`] instead).
     ///
     /// Match key derives from `(endpoint, filename, file_size, last_modified)`.
-    /// If the file the user re-picks doesn't match — different name, edited,
-    /// or browser reports a different `last_modified` — `resume_persisted`
+    /// If the file the user re-picks doesn't match, different name, edited,
+    /// or browser reports a different `last_modified`, `resume_persisted`
     /// returns `false` and the caller falls back to `start`.
     ///
     /// Distinct from [`Self::resume`], which un-pauses an *active* upload.
@@ -225,7 +225,7 @@ fn validate_patch_offset(previous: u64, next: u64, file_size: u64) -> Result<(),
 /// Outcome of a pre-chunk-loop network call (HEAD / OPTIONS / create-upload).
 ///
 /// The chunk loop's `try_next` polls the command channel between PATCH attempts,
-/// but the pre-loop network round trip can take 1-5 seconds on a slow link —
+/// but the pre-loop network round trip can take 1-5 seconds on a slow link,
 /// during which an `Abort` or `Start` would otherwise be ignored until the
 /// chunk loop began. Wrapping each pre-loop request in [`race_pre_loop_request`]
 /// keeps Abort/Start responsive in that window.
@@ -307,20 +307,20 @@ async fn wait_retry_backoff(
 /// branches are Ready in the same poll. With a synchronous mock transport
 /// (e.g. tests where the response is queued before the request) the
 /// network future is Ready on first poll; without bias, an unbiased
-/// `select!` would pseudo-randomly take either branch — making `[Start{A},
+/// `select!` would pseudo-randomly take either branch, making `[Start{A},
 /// Start{B}]`-style tests flaky because the engine could either complete
 /// A's create-upload or restart on B mid-create. The bias makes the
 /// pre-loop race semantically equivalent to the existing chunk-loop
 /// `try_next` (which only fires when the network is genuinely pending).
 ///
-/// A closed command channel (`cmd = None`) is NOT treated as Abort —
+/// A closed command channel (`cmd = None`) is NOT treated as Abort;
 /// closure means "no more commands can interrupt", not "user wants to
 /// stop". Just await the network future to completion.
 ///
 /// `Pause` and `Resume` arriving during the pre-loop window are consumed
 /// from the channel and applied to `*paused` so the chunk loop sees the
 /// right value once it begins. State updates for those transitions are
-/// the caller's responsibility post-return — the chunk-loop's first
+/// the caller's responsibility post-return; the chunk-loop's first
 /// iteration will set `Paused` if `*paused` is true.
 async fn race_pre_loop_request<T, F>(
     fut: F,
@@ -404,7 +404,7 @@ pub fn use_tus_upload(config: TusConfig) -> (ReadSignal<TusUploadState>, TusUplo
 /// integration, or any case where the default browser fetch via
 /// [`crate::transport::GlooNetTransport`] isn't the right plumbing.
 ///
-/// `T: Clone + 'static` — each upload run clones the transport so the
+/// `T: Clone + 'static`: each upload run clones the transport so the
 /// chunk loop owns one.
 pub fn use_tus_upload_with_transport<T>(
     config: TusConfig,
@@ -468,7 +468,7 @@ where
 ///
 /// `Start` opts into resume only when `options.existing_url` is set. There's
 /// deliberately no implicit fallback to a previously-completed-or-failed
-/// upload's URL — that footgun caused the same shape of bug twice (once for
+/// upload's URL; that footgun caused the same shape of bug twice (once for
 /// the Complete path, once for the Err path) and the contract on
 /// [`TusUploadHandle::start`] documents it as starting a new upload.
 pub(crate) async fn run_command_loop<T, S>(
@@ -512,7 +512,7 @@ pub(crate) async fn run_command_loop<T, S>(
             UploadCommand::Start { file, options } => {
                 // `paused` is scoped per-Start: declared inside this arm, it
                 // CANNOT survive across separate Start commands. This is
-                // load-bearing — every error/Done exit from run_upload drops
+                // load-bearing; every error/Done exit from run_upload drops
                 // this local, so a stuck `paused=true` from a failed run
                 // can't leak into the next user-initiated upload.
                 //
@@ -571,7 +571,7 @@ pub(crate) async fn run_command_loop<T, S>(
 /// it for each entry without nesting Dioxus hook scopes.
 ///
 /// Returns [`RunOutcome::Restart`] when a `Start` command arrives mid-upload
-/// — the outer command loop is responsible for re-invoking with the new file.
+///; the outer command loop is responsible for re-invoking with the new file.
 #[allow(deprecated)]
 // dioxus 0.7 re-exports futures' UnboundedReceiver and deprecates
 // try_next in favour of a not-yet-stable try_recv. Switch when
@@ -615,7 +615,7 @@ where
         .or(config.bearer_token.as_deref());
     let mut header_map = http::HeaderMap::new();
     if let Some(tok) = token {
-        // Never echo the token back in the error — only that it was invalid.
+        // Never echo the token back in the error, only that it was invalid.
         let value = http::HeaderValue::from_str(&format!("Bearer {tok}"))
             .map_err(|_| TusError::Transport("invalid bearer token".into()))?;
         header_map.insert(http::header::AUTHORIZATION, value);
@@ -639,7 +639,7 @@ where
     // Match key is needed both inside the pre-loop (HEAD 400/404/410 path)
     // and after (initial persist + chunk-loop throttled rewrites). Compute
     // it once up front so the Aborted/Restart pre-loop arms can also clear
-    // the prior-session entry — without that, an Abort during the HEAD of
+    // the prior-session entry; without that, an Abort during the HEAD of
     // a resumed upload silently leaks the stale persistence row, and the
     // next add() of the same file re-attaches the same dead URL.
     let mk = crate::persistence::match_key(
@@ -670,7 +670,7 @@ where
     // Each branch is wrapped in `race_pre_loop_request` so an Abort / Start
     // arriving during the round trip is honoured immediately rather than
     // held until the chunk loop's first `try_next`. On a slow connection a
-    // POST round trip is several seconds — long enough that without this
+    // POST round trip is several seconds, long enough that without this
     // race the user's Abort click would feel ignored.
     let create_outcome: PreLoop<Result<(String, u64), TusError>> = if let Some(existing) =
         existing_url
@@ -689,7 +689,7 @@ where
                 // forgotten the resource. Drop the persisted entry so the user
                 // isn't stuck in a "resume → fail" loop until the 24h TTL expires.
                 //
-                // 401/403 are NOT cleared here — those are commonly transient
+                // 401/403 are NOT cleared here; those are commonly transient
                 // (token refresh, role propagation) and the bytes are still on
                 // the server. Forcing a re-upload from zero is worse than
                 // surfacing the auth error. Callers wanting to discard the
@@ -730,7 +730,7 @@ where
             // Enforce Tus-Max-Size before any network call. Without this
             // an oversized file POSTs successfully (server allocates the
             // resource at the declared length), then the first PATCH
-            // returns 413 — leaving a dangling resource and surfacing a
+            // returns 413, leaving a dangling resource and surfacing a
             // confusing "unexpected response 413" instead of a clear
             // "file too large".
             if let Ok(opts) = &opts_result
@@ -799,7 +799,7 @@ where
             // in this session populated the OPTIONS cache, refuse files
             // that exceed it. Authenticated request contexts skip this
             // endpoint-only cache because capabilities may vary by token.
-            // We deliberately don't fire an OPTIONS probe here — that would
+            // We deliberately don't fire an OPTIONS probe here; that would
             // add a round trip to every plain create. Servers that want
             // guaranteed enforcement should either lower the cwu threshold
             // (which always probes) or call client.options() once at app
@@ -829,7 +829,7 @@ where
     // Translate a pre-loop interrupt into the corresponding RunOutcome,
     // resetting state to Idle first so the queue scheduler observes a clean
     // transition (the worker signal was sync-stamped Uploading by `start()`
-    // — without resetting, an aborted-pre-POST upload would leak that
+    //; without resetting, an aborted-pre-POST upload would leak that
     // stamp into the next upload).
     let (url, mut offset) = match create_outcome {
         PreLoop::Done(Ok(pair)) => pair,
@@ -876,7 +876,7 @@ where
     let upload = client.upload_at(&url).map_err(TusError::from)?;
 
     // If a Pause arrived during the pre-loop network call, `race_pre_loop_request`
-    // captured it into `*paused` but did not update state — the chunk-loop's first
+    // captured it into `*paused` but did not update state; the chunk-loop's first
     // iteration enters the `if *paused` branch and `rx.next().await`s without
     // touching state. Without this branch the UI sits at the previous sync-stamped
     // `Uploading` for the entire paused window despite the engine being parked.
@@ -907,7 +907,7 @@ where
     // entry every 2s) would extend the entry's lifetime indefinitely. If a
     // prior session already persisted this match key, prefer that entry's
     // original timestamp so a Resume across reload doesn't restart the TTL
-    // clock either. Only the wasm `get` is gated on target_arch — fall through
+    // clock either. Only the wasm `get` is gated on target_arch; fall through
     // to "now" on the never-reached native build.
     let upload_started_at_ms = {
         #[cfg(target_arch = "wasm32")]
@@ -956,7 +956,7 @@ where
                 }
                 UploadCommand::Start { file, options } => {
                     // The doc on `start()` is "if an upload is already in
-                    // progress, it is aborted first" — surface the new
+                    // progress, it is aborted first"; surface the new
                     // (file, options) up to the outer command loop so the
                     // restart actually happens. Reset state for the new run.
                     tracing::debug!("Start mid-upload received; restarting");
@@ -987,7 +987,7 @@ where
                 return Ok(RunOutcome::Aborted);
             }
             Err(_) => {
-                // No command pending — fall through to PATCH the next chunk.
+                // No command pending; fall through to PATCH the next chunk.
             }
         }
 
@@ -1057,7 +1057,7 @@ where
         // through tus-client's Vec parameter.
         //
         // The retry backoff races against the command channel so Abort,
-        // Start, and Pause aren't held until the next sleep elapses —
+        // Start, and Pause aren't held until the next sleep elapses;
         // worst-case delay at attempt=8 with default config is ~51s.
         let new_offset: Option<u64> = {
             let mut attempt = 0usize;
@@ -1267,7 +1267,7 @@ where
 
 /// Persists the in-flight upload's match-key entry.
 ///
-/// Errors are logged but never surfaced — a localStorage failure (quota,
+/// Errors are logged but never surfaced; a localStorage failure (quota,
 /// sandbox) shouldn't abort the upload itself, just disable resume across
 /// reload for this file. Both call sites previously discarded the return
 /// value with `let _ =`; collapsing to `()` avoids the misleading
@@ -1297,7 +1297,7 @@ fn persist_entry(
 }
 
 // =====================================================================
-// Engine tests — Layer 2 wasm-bindgen-test, run via `wasm-pack test`.
+// Engine tests: Layer 2 wasm-bindgen-test, run via `wasm-pack test`.
 //
 // These cover the bug-prone command-handling and persistence paths that
 // can't be exercised on native (web_sys::File, gloo_timers, localStorage).
@@ -1554,7 +1554,7 @@ mod engine_tests {
     /// the fix, the second Start does a fresh POST.
     ///
     /// Sends Start{B} via a delayed `spawn_local` so it lands AFTER A's
-    /// chunk loop has begun (and thus after its first `try_next`) — same
+    /// chunk loop has begun (and thus after its first `try_next`), same
     /// pattern as `restart_via_pause_uploads_new_file`. Without this, the
     /// chunk loop's first try_next would consume Start{B} mid-flight and
     /// the engine would Restart instead of letting A run to its 403
@@ -1623,7 +1623,7 @@ mod engine_tests {
         assert_eq!(
             reqs[2].method(),
             Method::POST,
-            "3rd: POST(B), NOT HEAD — second Start must not resume from A's failed URL"
+            "3rd: POST(B), NOT HEAD; second Start must not resume from A's failed URL"
         );
         assert_eq!(reqs[3].method(), Method::PATCH, "4th: PATCH(B)");
         assert!(
@@ -1645,7 +1645,7 @@ mod engine_tests {
         clear_persistence();
         let transport = MockTransport::new();
         transport.push_response(ok_201_create("http://test.local/files/a-id"));
-        // No PATCH(A) is expected — Pause arrives first.
+        // No PATCH(A) is expected; Pause arrives first.
         transport.push_response(ok_201_create("http://test.local/files/b-id"));
         transport.push_response(ok_204_patch(5));
 
@@ -1985,7 +1985,7 @@ mod engine_tests {
             file.size() as u64,
             file.last_modified(),
         );
-        // Seed a prior-session entry — this is what auto-resume would
+        // Seed a prior-session entry; this is what auto-resume would
         // surface via TusStartOptions.existing_url.
         let entry = crate::persistence::ResumableEntry {
             match_key: mk.clone(),
@@ -2086,7 +2086,7 @@ mod engine_tests {
         // Capture stored_at_ms RIGHT AFTER the initial persist_entry
         // (which happens just after the HEAD), before Complete deletes
         // the entry. The timing window is narrow but deterministic on
-        // wasm — each PATCH in the mock is synchronous-ish and we use
+        // wasm; each PATCH in the mock is synchronous-ish and we use
         // a small delay-loop check below.
         //
         // Easier approach: prevent Complete by holding tx open and
@@ -2117,19 +2117,19 @@ mod engine_tests {
             );
         } else {
             // The snapshot raced past Complete, which already cleared
-            // the entry. That is acceptable — the test still asserts
+            // the entry. That is acceptable; the test still asserts
             // correctness when the snapshot lands during the upload.
         }
     }
 
-    /// Successful Complete drops the persisted entry — without this the
+    /// Successful Complete drops the persisted entry; without this the
     /// resume banner would offer a finished upload on the next reload.
     ///
     /// Holds `tx` alive past the chunk loop's first `try_next` via a
     /// delayed `spawn_local` (same pattern as
     /// `restart_via_pause_uploads_new_file`). Without that, `try_next` on
     /// an empty closed channel returns `Ok(None)` and the engine returns
-    /// `Aborted` before the first PATCH — the upload never actually
+    /// `Aborted` before the first PATCH; the upload never actually
     /// completes and the test fails on `status == Complete`.
     #[wasm_bindgen_test]
     async fn complete_clears_persisted_entry() {
@@ -2344,7 +2344,7 @@ mod engine_tests {
             .with_max_retries(5)
             .with_retry_delay_ms(2_000_000_000);
 
-        // Send Abort 50ms after kick-off — the chunk loop should be in
+        // Send Abort 50ms after kick-off; the chunk loop should be in
         // backoff by then.
         let tx_for_abort = tx.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -2665,7 +2665,7 @@ mod engine_tests {
             "Complete reports full file size"
         );
 
-        // Two requests: HEAD then PATCH. No POST — we resumed.
+        // Two requests: HEAD then PATCH. No POST; we resumed.
         let reqs = transport.requests();
         assert_eq!(reqs.len(), 2, "expected HEAD + PATCH on resume path");
         assert_eq!(reqs[0].method(), http::Method::HEAD);
@@ -2744,7 +2744,7 @@ mod engine_tests {
         crate::persistence::get(endpoint, &mk).is_some()
     }
 
-    /// 404 Not Found on resume HEAD also clears the persisted entry —
+    /// 404 Not Found on resume HEAD also clears the persisted entry;
     /// the server has definitively forgotten the resource, same as 410.
     /// Without this, every re-pick of the file in the next 24 hours
     /// re-attaches the dead URL and re-fails.
@@ -2778,7 +2778,7 @@ mod engine_tests {
     }
 
     /// Pause arriving during a retry-backoff sleep flips the engine to
-    /// `Paused`, breaks the retry loop, and waits for Resume — without
+    /// `Paused`, breaks the retry loop, and waits for Resume; without
     /// burning the retry budget. A subsequent Resume retries the chunk
     /// from the same offset and the upload completes.
     ///
@@ -2903,7 +2903,7 @@ mod engine_tests {
     ///
     /// This test isolates that invariant: it sends Start{B} via a delayed
     /// task (so tx outlives B's chunk loop), and asserts B reaches
-    /// `Complete` on its own — no Resume, no Abort, no Start arrives after
+    /// `Complete` on its own: no Resume, no Abort, no Start arrives after
     /// Start{B}. If the paused flag leaked, B would hang and the test
     /// would time out instead of completing.
     #[wasm_bindgen_test]
@@ -2949,7 +2949,7 @@ mod engine_tests {
         assert_eq!(
             sink.current().status,
             UploadStatus::Complete,
-            "B must complete without any Resume — Pause from A should not \
+            "B must complete without any Resume; Pause from A should not \
              carry into B's chunk loop",
         );
         let reqs = transport.requests();
@@ -2966,7 +2966,7 @@ mod engine_tests {
     /// Abort arriving DURING the pre-chunk-loop POST short-circuits the
     /// upload before any chunks are PATCHed. Pre-fix the engine awaited
     /// the entire POST round trip before its first `try_next` could see
-    /// the Abort — on a slow connection the user's click felt ignored
+    /// the Abort; on a slow connection the user's click felt ignored
     /// for several seconds. Post-fix, `race_pre_loop_request` polls the
     /// command channel concurrently with the network future, so the
     /// Abort is honoured promptly.
@@ -2979,7 +2979,7 @@ mod engine_tests {
         // to land while the network future is pending.
         let transport = MockTransport::new().with_delay_ms(500);
         transport.push_response(ok_201_create("http://test.local/preloop-abort-test/x-id"));
-        // No PATCH response queued — if the pre-loop short-circuit didn't
+        // No PATCH response queued; if the pre-loop short-circuit didn't
         // fire, the engine would proceed past POST and try to PATCH,
         // hitting the "no mock response" error.
 
@@ -2991,7 +2991,7 @@ mod engine_tests {
         })
         .unwrap();
 
-        // Send Abort 50ms after kickoff — the POST's mock delay (500ms)
+        // Send Abort 50ms after kickoff; the POST's mock delay (500ms)
         // is still in flight, so race_pre_loop_request sees Abort first.
         let tx_for_abort = tx.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -3023,7 +3023,7 @@ mod engine_tests {
         assert!(final_state.bytes_total.is_none());
     }
 
-    /// Resume HEAD reports an offset equal to the file size — the upload
+    /// Resume HEAD reports an offset equal to the file size; the upload
     /// is already complete on the server. The engine must skip the chunk
     /// loop, mark Complete, and clear the persisted entry. Without this
     /// guarantee a misconfigured / mid-shutdown server (or a re-resume of
@@ -3042,7 +3042,7 @@ mod engine_tests {
         let transport = MockTransport::new();
         // HEAD reports offset == file_size: server has every byte.
         transport.push_response(ok_200_head(content.len() as u64, content.len() as u64));
-        // No PATCH response queued — if the chunk loop fired, the mock
+        // No PATCH response queued; if the chunk loop fired, the mock
         // would error with "no mock response".
 
         let options = TusStartOptions {
@@ -3126,7 +3126,7 @@ mod engine_tests {
             .with_max_retries(0)
             .with_retry_delay_ms(50);
         // Pre-flight options cache pollution from prior tests would skip
-        // the OPTIONS request — invalidate to be sure we exercise the
+        // the OPTIONS request; invalidate to be sure we exercise the
         // OPTIONS-then-POST path.
         crate::options_cache::invalidate(endpoint);
 
@@ -3169,7 +3169,7 @@ mod engine_tests {
             Method::POST,
             "second request is POST-with-body"
         );
-        // The POST body should contain the file bytes — that's the whole point.
+        // The POST body should contain the file bytes; that's the whole point.
         match reqs[1].body() {
             TransportBody::Bytes(b) => {
                 assert_eq!(
@@ -3337,7 +3337,7 @@ mod engine_tests {
     /// `Start{B}` arriving during the retry-backoff `select!` returns
     /// `RunOutcome::Restart` cleanly: A's persistence is cleared, state
     /// resets to Idle, and the second run posts to the base endpoint
-    /// (NOT to A's URL). Closes the gap noted in the pre-merge audit —
+    /// (NOT to A's URL). Closes the gap noted in the pre-merge audit:
     /// the Pause and Abort arms of the retry-backoff select! had tests,
     /// but the Start arm did not.
     #[wasm_bindgen_test]
@@ -3471,7 +3471,7 @@ mod engine_tests {
         // `bytes_total = Some(file_size)` was set (which only happens after
         // the post-create state.update). Pre-fix the post-create stamp was
         // unconditionally `Uploading` and Paused never appeared until a
-        // subsequent Pause arrived after Resume — which never happens here.
+        // subsequent Pause arrived after Resume, which never happens here.
         let history = sink.0.borrow().history.clone();
         let post_create_paused = history
             .iter()
@@ -3492,7 +3492,7 @@ mod engine_tests {
     /// Regression for the channel-closed reset path: when every clone of
     /// the upload command sender is dropped while the chunk loop is
     /// running (e.g. parent unmount), `try_next` returns `Ok(None)` and
-    /// the engine MUST reset state to `Idle` — symmetric with the
+    /// the engine MUST reset state to `Idle`, symmetric with the
     /// explicit `Abort` arm. Pre-fix to commit 2505945 the state was
     /// left at `Uploading`, so a downstream observer (queue scheduler,
     /// UI) saw a dangling worker forever.
@@ -3510,7 +3510,7 @@ mod engine_tests {
         // been sent but before PATCH is dispatched.
         let transport = MockTransport::new().with_delay_ms(100);
         transport.push_response(ok_201_create("http://test.local/chan-closed-resets/x-id"));
-        // PATCH response is queued but should never be sent — the engine
+        // PATCH response is queued but should never be sent; the engine
         // resets to Idle before reaching the PATCH.
         transport.push_response(ok_204_patch(5));
 
@@ -3540,7 +3540,7 @@ mod engine_tests {
         assert_eq!(final_state.bytes_total, None);
         assert_eq!(final_state.upload_url, None);
 
-        // Also verify no PATCH ran — the engine bailed at the channel-
+        // Also verify no PATCH ran; the engine bailed at the channel-
         // closed branch before reaching the PATCH dispatch.
         let reqs = transport.requests();
         let patch_count = reqs.iter().filter(|r| r.method() == Method::PATCH).count();
