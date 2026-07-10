@@ -32,7 +32,7 @@ The process of turning a final upload's ordered partial uploads into deliverable
 
 ### Header provider
 
-A client-side hook that supplies dynamic per-request headers, typically freshly refreshed credentials, recomputed before each request attempt. A header provider failure is a distinct error category from malformed header bytes, and unlike an upload source failure it may be retryable.
+A client-side hook that supplies dynamic per-request headers, typically freshly refreshed credentials, recomputed before each request attempt. A header provider failure is a distinct error category from malformed header bytes, and, unlike an upload source failure, it may be retryable.
 _Avoid_: auth hook, interceptor, middleware.
 
 ### Planned final upload
@@ -79,5 +79,5 @@ The optional operational view that enumerates all known upload IDs for administr
 
 ### Upload source
 
-The client-side origin of the bytes being uploaded, read chunk-by-chunk by offset. It is a user-pluggable seam (an in-memory buffer, a file, or a custom implementation); a source that misbehaves, a short or oversized read, or content that changed underneath the client, is a permanent failure, never retried, because the local source is treated as authoritative.
+The client-side origin of the bytes being uploaded, read chunk-by-chunk by offset. It is a user-pluggable seam (an in-memory buffer, a file, or a custom implementation); a source that misbehaves, a short or oversized read, or content that changed underneath the client is a permanent failure, never retried, because the local source is treated as authoritative.
 _Avoid_: file, input, stream, data source.

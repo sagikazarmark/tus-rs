@@ -139,6 +139,12 @@ pub struct TusStartOptions {
     /// Existing TUS upload URL to resume from. When present, `start` issues a
     /// HEAD against this URL to learn the server-side offset rather than
     /// creating a fresh upload via POST.
+    ///
+    /// This value is trusted as-is: any configured `bearer_token`/`Authorization`
+    /// and [`extra_headers`](Self::extra_headers) are sent to it, even if it is
+    /// cross-origin (a spec-compliant TUS `Location` may point to another origin).
+    /// Set it only to URLs you trust. Untrusted, persisted resume URLs are a
+    /// separate concern and are already filtered by origin before reaching here.
     pub existing_url: Option<String>,
 }
 

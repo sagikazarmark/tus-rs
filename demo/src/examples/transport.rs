@@ -1,7 +1,10 @@
 use dioxus::prelude::*;
-use dioxus_tus::tus_client::{Result, Transport, TransportRequest, TransportResponse};
-use dioxus_tus::transport::GlooNetTransport;
-use dioxus_tus::{TusConfig, TusStartOptions, file_from_event, use_tus_upload_with_transport};
+use dioxus_tus::{
+    TusConfig, TusStartOptions, file_from_event,
+    transport::GlooNetTransport,
+    tus_client::{Result, Transport, TransportRequest, TransportResponse},
+    use_tus_upload_with_transport,
+};
 
 use crate::endpoint::use_endpoint;
 

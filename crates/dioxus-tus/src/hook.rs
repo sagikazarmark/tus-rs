@@ -75,6 +75,12 @@ impl TusUploadHandle {
     /// offset rather than POSTing to create a new upload.
     ///
     /// Equivalent to setting `options.existing_url` before calling [`Self::start`].
+    ///
+    /// `url` is trusted caller input: any configured bearer token and
+    /// [`extra_headers`](TusStartOptions::extra_headers) are sent to it, even if
+    /// it is cross-origin (a TUS `Location` may spec-compliantly point to another
+    /// origin). Pass only URLs you trust. Untrusted resume URLs read back from
+    /// persistence are filtered by origin before they ever reach this method.
     pub fn start_with_url(&self, file: File, url: impl Into<String>, mut options: TusStartOptions) {
         options.existing_url = Some(url.into());
         self.start(file, options);

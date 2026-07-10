@@ -19,14 +19,19 @@ pub fn ExistingUrlExample() -> Element {
 
     // Prefill the resume field from the live upload's URL as soon as the server
     // hands one back, so the two panels connect without copy-paste. Runs in an
-    // effect (not during render) and only fills an empty field, so it doesn't
-    // fight the user once they edit it.
+    // effect (not during render). `auto_filled` tracks the value we injected so a
+    // second upload's URL replaces the first, while a value the user typed or
+    // edited is left untouched.
     let mut resume_url = use_signal(String::new);
+    let mut auto_filled = use_signal(String::new);
     use_effect(move || {
-        if let Some(url) = state.read().upload_url.clone()
-            && resume_url.peek().is_empty()
-        {
-            resume_url.set(url);
+        let Some(url) = state.read().upload_url.clone() else {
+            return;
+        };
+        let current = resume_url.peek().clone();
+        if current.is_empty() || current == *auto_filled.peek() {
+            resume_url.set(url.clone());
+            auto_filled.set(url);
         }
     });
 
@@ -132,7 +137,7 @@ pub fn ExistingUrlExample() -> Element {
                     },
                 }
                 p { class: "mt-1 text-xs text-base-content/50",
-                    "Re-pick the same file, the client HEADs the URL and resumes from the server's offset."
+                    "Re-pick the same file; the client sends a HEAD request to the URL and resumes from the server's offset."
                 }
             }
 

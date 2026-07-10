@@ -23,7 +23,7 @@ pub fn Minimal() -> Element {
         ExampleSection {
             title: "use_tus_upload",
             intro: rsx! {
-                "The state signal drives the progress bar and the completion / error messages, no manual event wiring."
+                "The state signal drives the progress bar and the completion / error messages; there is no manual event wiring."
             },
             demo: rsx! {
                 MinimalExample {}

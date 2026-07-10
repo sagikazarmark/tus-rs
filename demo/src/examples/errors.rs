@@ -133,7 +133,7 @@ fn classify(err: &TusError) -> (&'static str, &'static str) {
         ),
         TusError::Cors => (
             "Cors",
-            "The browser blocked the request. Configure the server's Access-Control-Allow-* / Expose-Headers (see the README's CORS section).",
+            "A possible CORS rejection or an opaque browser fetch failure (the browser reports a blocked cross-origin request and a refused/dropped connection the same way). If it is CORS, configure the server's Access-Control-Allow-* / Expose-Headers (see the README's CORS section).",
         ),
         TusError::MissingHeader(_) => (
             "MissingHeader",

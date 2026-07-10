@@ -2,8 +2,7 @@
 //! grouped sidebar, and the routed page outlet.
 
 use dioxus::prelude::*;
-use dioxus_free_icons::Icon;
-use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
+use dioxus_free_icons::{Icon, icons::fa_brands_icons::FaGithub};
 
 use crate::endpoint::{Endpoint, navigate_to_endpoint, resolve_endpoint, use_endpoint};
 use crate::pages::{

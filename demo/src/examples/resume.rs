@@ -87,7 +87,7 @@ pub fn ResumeExample() -> Element {
                         }
                     }
                     p { class: "mt-2 text-xs text-base-content/50",
-                        "Pause, then reload the tab, the entry above lets you continue."
+                        "Pause, then reload the tab; the entry above lets you continue."
                     }
                 }
             }

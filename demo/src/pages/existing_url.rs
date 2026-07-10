@@ -24,7 +24,7 @@ pub fn ExistingUrl() -> Element {
             intro: rsx! {
                 "Start an upload on the left and its URL appears from "
                 InlineCode { "state.upload_url" }
-                " (prefilled into the field on the right). Re-pick the same file below to continue against that URL, the client HEADs it for the offset instead of creating a new upload."
+                " (prefilled into the field on the right). Re-pick the same file below to continue against that URL; the client sends a HEAD request to read the offset instead of creating a new upload."
             },
             demo: rsx! {
                 ExistingUrlExample {}
