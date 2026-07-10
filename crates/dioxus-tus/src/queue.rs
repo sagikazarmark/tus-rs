@@ -499,10 +499,9 @@ impl TusQueueHandle {
             RetryDecision::Reset => {
                 tracing::debug!(id, "queue: retrying item from scratch")
             }
-            RetryDecision::ItemActive => tracing::warn!(
-                id,
-                "queue: retry_item ignored: item is active; abort first"
-            ),
+            RetryDecision::ItemActive => {
+                tracing::warn!(id, "queue: retry_item ignored: item is active; abort first")
+            }
             RetryDecision::ItemNotFound => {}
             RetryDecision::WrongStatus => tracing::warn!(
                 id,
