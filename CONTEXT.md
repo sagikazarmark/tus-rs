@@ -10,6 +10,16 @@ The protocol responsibility of turning request body bytes plus body-related meta
 
 The protocol act of accepting request body bytes for an upload, regardless of whether the bytes arrive through `PATCH` or Creation-With-Upload.
 
+### Chunk-atomic offset
+
+The offset-advancement rule the R2 backend uses because R2 grows an object only
+through multipart parts: an upload's accepted offset advances only when a whole
+PATCH chunk is committed as one part, never by a partial count. A torn PATCH
+commits no part and leaves the offset unchanged, so the client resumes on a part
+boundary. This is a backend-specific narrowing of the general TUS rule that a
+server may accept fewer bytes than were sent, and it is distinct from Byte
+receive, which describes accepting bytes in general.
+
 ### Completed-upload retention
 
 An operational policy for deleting or hiding completed deliverable upload content after completion. This is distinct from TUS protocol expiration and is not implied by an upload expiration deadline.
@@ -64,6 +74,16 @@ The locator and backend-specific bookkeeping needed by a Storage adapter to find
 
 The client-side seam that executes an already-prepared HTTP request and returns the response, with no knowledge of TUS protocol rules. The default transport is backed by `reqwest`; a middleware transport is a separate type so the default path is never reshaped by an unrelated crate enabling the middleware feature.
 _Avoid_: HTTP client, backend, adapter.
+
+### Upload id source
+
+The pluggable policy that decides a new upload's id at creation, held on
+`Config` and defaulting to a random UUID. It exists so a deployment can make the
+upload id equal an external addressing key, notably a Cloudflare Durable Object's
+own id, instead of a server-minted UUID. The protocol validates whatever it
+returns through `UploadId` parsing before use. It is distinct from the
+`StorageHandle` locator, which addresses bytes within a Storage backend, not the
+upload itself.
 
 ### Upload access preparation
 
