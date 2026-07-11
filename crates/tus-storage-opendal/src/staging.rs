@@ -768,8 +768,7 @@ mod tests {
 
     fn create_test_operator() -> TestOperator {
         let tempdir = tempfile::tempdir().unwrap();
-        let operator =
-            Operator::new(Fs::default().root(tempdir.path().to_str().unwrap())).unwrap();
+        let operator = Operator::new(Fs::default().root(tempdir.path().to_str().unwrap())).unwrap();
 
         TestOperator {
             operator,

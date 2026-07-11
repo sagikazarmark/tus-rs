@@ -354,8 +354,7 @@ mod tests {
 
     fn create_test_storage() -> TestStorage {
         let tempdir = tempfile::tempdir().unwrap();
-        let operator =
-            Operator::new(Fs::default().root(tempdir.path().to_str().unwrap())).unwrap();
+        let operator = Operator::new(Fs::default().root(tempdir.path().to_str().unwrap())).unwrap();
 
         TestStorage {
             storage: OpendalStorage::new(operator),
