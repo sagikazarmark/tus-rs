@@ -638,7 +638,7 @@ impl<'a> UploadObjects<'a> {
     /// without rename. Used both to promote a materialized main object and to
     /// stage the completing part atomically.
     async fn promote_object(&self, from_key: &str, to_key: &str) -> Result<()> {
-        let capability = self.operator.info().full_capability();
+        let capability = self.operator.info().capability();
 
         if capability.rename {
             return self
@@ -768,9 +768,7 @@ mod tests {
 
     fn create_test_operator() -> TestOperator {
         let tempdir = tempfile::tempdir().unwrap();
-        let operator = Operator::new(Fs::default().root(tempdir.path().to_str().unwrap()))
-            .unwrap()
-            .finish();
+        let operator = Operator::new(Fs::default().root(tempdir.path().to_str().unwrap())).unwrap();
 
         TestOperator {
             operator,

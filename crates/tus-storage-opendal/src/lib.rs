@@ -354,9 +354,7 @@ mod tests {
 
     fn create_test_storage() -> TestStorage {
         let tempdir = tempfile::tempdir().unwrap();
-        let operator = Operator::new(Fs::default().root(tempdir.path().to_str().unwrap()))
-            .unwrap()
-            .finish();
+        let operator = Operator::new(Fs::default().root(tempdir.path().to_str().unwrap())).unwrap();
 
         TestStorage {
             storage: OpendalStorage::new(operator),
@@ -589,7 +587,7 @@ mod tests {
         // The memory service's listings do not include content lengths, so
         // size() must fall back to stat-ing the parts it cannot size from the
         // listing alone.
-        let operator = Operator::new(Memory::default()).unwrap().finish();
+        let operator = Operator::new(Memory::default()).unwrap();
         let storage = OpendalStorage::new(operator);
 
         let handle = storage.create("memory-upload").await.unwrap();
