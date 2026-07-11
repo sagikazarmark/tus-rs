@@ -690,10 +690,8 @@ fn storage_handles(parts: &[UploadState]) -> Result<Vec<crate::storage::StorageH
 /// Extracts an upload ID from a URL present in `Upload-Concat: final;<parts>`.
 fn extract_partial_id(url: &str, base_path: &str) -> Option<UploadId> {
     let path = if let Some(rest) = url.split_once("://") {
-        match rest.1.find('/') {
-            Some(idx) => &rest.1[idx..],
-            None => return None,
-        }
+        let idx = rest.1.find('/')?;
+        &rest.1[idx..]
     } else {
         url
     };
