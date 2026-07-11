@@ -2,9 +2,7 @@ type Demo {
   let jsEnv: JavascriptEnvironment!
   let dioxus: Dioxus!
 
-  new {
-    let rustVersion = "1.96-trixie"
-
+  new(rustVersion: String!) {
     # Shared base container: the official Rust image plus clang. clang is needed
     # to cross-compile the C sysroot pulled in by the `dioxus-code` snippet
     # highlighter (arborium/tree-sitter) for the wasm32 target. Both the Dioxus

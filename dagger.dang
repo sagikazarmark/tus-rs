@@ -2,7 +2,7 @@ type Tus {
   let rust: Rust!
 
   new {
-    self.rust = Dagger.rust(version: "1.96-trixie")
+    self.rust = Dagger.rust(version: "1.97-trixie")
 
     self
   }
