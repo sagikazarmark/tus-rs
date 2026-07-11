@@ -14,11 +14,12 @@ The protocol act of accepting request body bytes for an upload, regardless of wh
 
 The offset-advancement rule the R2 backend uses because R2 grows an object only
 through multipart parts: an upload's accepted offset advances only when a whole
-PATCH chunk is committed as one part, never by a partial count. A torn PATCH
-commits no part and leaves the offset unchanged, so the client resumes on a part
-boundary. This is a backend-specific narrowing of the general TUS rule that a
-server may accept fewer bytes than were sent, and it is distinct from Byte
-receive, which describes accepting bytes in general.
+byte-receive chunk (a `PATCH` body, or the initial Creation-With-Upload body,
+which becomes the first part) is committed as one part, never by a partial count.
+A torn request commits no part and leaves the offset unchanged, so the client
+resumes on a part boundary. This is a backend-specific narrowing of the general
+TUS rule that a server may accept fewer bytes than were sent, and it is distinct
+from Byte receive, which describes accepting bytes in general.
 
 ### Completed-upload retention
 

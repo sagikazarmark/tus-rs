@@ -20,7 +20,8 @@ would normally accept as a partial-offset advance.
 
 ## Decision
 
-Each fully-received PATCH becomes exactly one R2 multipart part (1:1 mapping),
+Each fully-received PATCH (and the initial Creation-With-Upload body, which
+becomes the first part) becomes exactly one R2 multipart part (1:1 mapping),
 streamed directly into `uploadPart`. Offset advancement is **chunk-atomic**: a
 part is committed only if its whole body arrives; a torn body commits no part and
 leaves the offset unchanged, so the client resumes and resends that chunk. The
