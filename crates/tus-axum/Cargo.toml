@@ -1,14 +1,17 @@
 [package]
 name = "tus-axum"
-description = "axum integration for the tus-protocol TUS resumable upload implementation"
 version.workspace = true
+description = "axum integration for the tus-protocol TUS resumable upload implementation"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "resumable", "axum", "http"]
+categories = ["web-programming::http-server", "asynchronous"]
+
+[features]
+default = []
 
 [dependencies]
 tus-protocol = { workspace = true }
@@ -42,9 +45,6 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 tower = { workspace = true, features = ["util"] }
-
-[features]
-default = []
 
 [[bench]]
 name = "hot_path"

@@ -1,14 +1,26 @@
 [package]
 name = "tus-hook-http"
-description = "HTTP hook for the TUS protocol"
 version.workspace = true
+description = "HTTP hook for the TUS protocol"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "webhook", "hook", "http"]
+categories = ["web-programming", "asynchronous"]
+
+[features]
+# Default to the rustls TLS stack only, rather than reqwest's `default`
+# umbrella (which also drags in charset, http2, and system-proxy config the
+# webhook client does not need). HTTPS webhooks work out of the box; opt into
+# extras or native-tls explicitly.
+default = ["reqwest-rustls"]
+# TLS passthrough for builds that disable default features (which drops the
+# rustls TLS stack above): re-add rustls, or opt into native-tls (OpenSSL /
+# system TLS) instead.
+reqwest-native-tls = ["reqwest/native-tls"]
+reqwest-rustls = ["reqwest/rustls"]
 
 [dependencies]
 tus-protocol = { workspace = true }
@@ -26,18 +38,6 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread"] }
-
-[features]
-# Default to the rustls TLS stack only, rather than reqwest's `default`
-# umbrella (which also drags in charset, http2, and system-proxy config the
-# webhook client does not need). HTTPS webhooks work out of the box; opt into
-# extras or native-tls explicitly.
-default = ["reqwest-rustls"]
-# TLS passthrough for builds that disable default features (which drops the
-# rustls TLS stack above): re-add rustls, or opt into native-tls (OpenSSL /
-# system TLS) instead.
-reqwest-native-tls = ["reqwest/native-tls"]
-reqwest-rustls = ["reqwest/rustls"]
 
 [package.metadata.docs.rs]
 all-features = true

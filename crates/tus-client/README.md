@@ -14,6 +14,13 @@ The default transport is backed by [`reqwest`](https://crates.io/crates/reqwest)
 The client core is transport-agnostic and can also be used with platform-specific
 transports or single-threaded runtimes.
 
+## Install
+
+```toml
+[dependencies]
+tus-client = "0.0.1"
+```
+
 ## Quick Start
 
 ```rust,no_run

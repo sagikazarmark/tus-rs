@@ -1,11 +1,20 @@
 # tus-server
 
+[![crates.io](https://img.shields.io/crates/v/tus-server?style=flat-square)](https://crates.io/crates/tus-server)
+[![docs.rs](https://img.shields.io/docsrs/tus-server?style=flat-square)](https://docs.rs/tus-server)
+
 **Standalone server for the [tus resumable upload protocol](https://tus.io/).**
 
 `tus-server` provides the `tus-server` binary: an HTTP server implementing the
 TUS protocol on top of [`tus-protocol`](https://crates.io/crates/tus-protocol)
 and [`tus-axum`](https://crates.io/crates/tus-axum), with OpenDAL-backed
 storage, file-based upload state, optional webhooks, and expiration cleanup.
+
+## Install
+
+```bash
+cargo install tus-server
+```
 
 ## Quick Start
 

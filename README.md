@@ -1,11 +1,11 @@
 # tus-rs
 
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/sagikazarmark/tus-rs/ci.yaml?style=flat-square)](https://github.com/sagikazarmark/tus-rs/actions/workflows/ci.yaml)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/sagikazarmark/tus-rs/dagger.yaml?style=flat-square)](https://github.com/sagikazarmark/tus-rs/actions/workflows/dagger.yaml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/tus-rs/badge?style=flat-square)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/tus-rs)
 [![crates.io](https://img.shields.io/crates/v/tus-protocol?style=flat-square)](https://crates.io/crates/tus-protocol)
 [![docs.rs](https://img.shields.io/docsrs/tus-protocol?style=flat-square)](https://docs.rs/tus-protocol)
 
-**A Rust implementation of the [TUS resumable upload protocol](https://tus.io/).**
+**Rust implementation of the [TUS resumable upload protocol](https://tus.io/).**
 
 ## Features
 
@@ -125,6 +125,18 @@ Feature flags enable optional built-in backends and checksum support:
 
 On `wasm32` targets (such as Cloudflare Workers), trait bounds relax to
 non-`Send` futures automatically; no feature flag is needed.
+
+## Development
+
+Minimum verification:
+
+- `cargo fmt --check`
+- `cargo clippy --all-targets --all-features --workspace`
+- `cargo test --all-targets --all-features --workspace`
+
+Or run the same checks (fmt, clippy, test, doc, build) in a container with [Dagger](https://dagger.io), exactly as CI does:
+
+- `dagger check`: from the repo root for the workspace (including the CLI end-to-end suites against `tusd` and `rustus`), or from `demo/` for the demo app
 
 ## License
 
