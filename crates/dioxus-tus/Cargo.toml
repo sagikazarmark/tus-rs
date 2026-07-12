@@ -1,23 +1,17 @@
 [package]
 name = "dioxus-tus"
-description = "Headless TUS resumable-upload hook for Dioxus web apps"
 version.workspace = true
+description = "Headless TUS resumable-upload hook for Dioxus web apps"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "resumable", "dioxus", "wasm"]
+categories = ["web-programming", "wasm", "gui"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-
-# The hook, transport, and handle APIs are wasm-only, so docs must be built for
-# wasm32 to resolve their intra-doc links.
-[package.metadata.docs.rs]
-default-target = "wasm32-unknown-unknown"
-targets = ["wasm32-unknown-unknown"]
 
 [dependencies]
 # Referenced by path rather than through the workspace table: this crate is the
@@ -47,3 +41,9 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+# The hook, transport, and handle APIs are wasm-only, so docs must be built for
+# wasm32 to resolve their intra-doc links.
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+targets = ["wasm32-unknown-unknown"]

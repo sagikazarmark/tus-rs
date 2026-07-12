@@ -1,18 +1,19 @@
 [package]
 name = "tus-storage-opendal"
-description = "OpenDAL storage backend for TUS resumable uploads"
 version.workspace = true
+description = "OpenDAL storage backend for TUS resumable uploads"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "resumable", "storage", "opendal"]
+categories = ["web-programming::http-server", "asynchronous"]
 
 # Passthrough features enabling the same-named `opendal` service backends, so
 # downstream crates do not need their own version-locked `opendal` dependency.
 [features]
+default = []
 services-azblob = ["opendal/services-azblob"]
 services-fs = ["opendal/services-fs"]
 services-gcs = ["opendal/services-gcs"]
@@ -20,20 +21,22 @@ services-memory = ["opendal/services-memory"]
 services-s3 = ["opendal/services-s3"]
 
 [dependencies]
+tus-protocol = { workspace = true }
+
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 opendal = { workspace = true }
 tracing = { workspace = true }
-tus-protocol = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+tus-protocol = { workspace = true, features = ["conformance-storage"] }
+
 bytes = { workspace = true }
 futures = { workspace = true }
 opendal = { workspace = true, features = ["services-fs", "services-memory"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-tus-protocol = { workspace = true, features = ["conformance-storage"] }
 
 [package.metadata.docs.rs]
 all-features = true

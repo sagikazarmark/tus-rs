@@ -115,3 +115,12 @@ Access-Control-Allow-Methods: POST, PATCH, HEAD, DELETE, OPTIONS
 ```
 
 The built-in `tus-server` (this repo) handles CORS automatically with `--cors`.
+
+## Verify
+
+Build-only checks, without serving anything:
+
+```sh
+cargo check --target wasm32-unknown-unknown   # the wasm client
+dagger check                                  # release bundle in a container, as CI does
+```

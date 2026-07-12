@@ -1,9 +1,22 @@
 # dioxus-tus
 
-A headless TUS resumable-upload hook for [Dioxus](https://dioxuslabs.com)
-0.7 web apps. Type-safe state via Dioxus `Signal`, chunked PATCH with retry,
-pause / resume / abort controls, and resume-from-existing-URL for
-server-orchestrated uploads.
+[![crates.io](https://img.shields.io/crates/v/dioxus-tus?style=flat-square)](https://crates.io/crates/dioxus-tus)
+[![docs.rs](https://img.shields.io/docsrs/dioxus-tus?style=flat-square)](https://docs.rs/dioxus-tus)
+
+**Headless TUS resumable-upload hook for [Dioxus](https://dioxuslabs.com) web apps.**
+
+`dioxus-tus` targets Dioxus 0.7 web apps: type-safe state via Dioxus `Signal`,
+chunked PATCH with retry, pause / resume / abort controls, and
+resume-from-existing-URL for server-orchestrated uploads.
+
+## Install
+
+```toml
+[dependencies]
+dioxus-tus = "0.0.1"
+```
+
+## Quick Start
 
 ```rust,ignore
 use dioxus::prelude::*;

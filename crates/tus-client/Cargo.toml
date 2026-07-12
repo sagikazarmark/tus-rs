@@ -1,14 +1,28 @@
 [package]
 name = "tus-client"
-description = "Async TUS client for resumable uploads"
 version.workspace = true
+description = "Async TUS client for resumable uploads"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "resumable", "http", "client"]
+categories = ["web-programming::http-client", "asynchronous"]
+
+[features]
+# `reqwest?/default` pulls reqwest's default TLS stack, which on reqwest 0.13
+# is rustls (aws-lc-rs) with the platform certificate verifier.
+default = ["checksum", "transport-reqwest", "reqwest?/default"]
+checksum = ["tus-protocol/checksum"]
+# TLS passthrough for builds that disable default features (which drops the
+# rustls TLS stack above): re-add rustls, or opt into native-tls (OpenSSL /
+# system TLS) instead.
+reqwest-native-tls = ["reqwest?/native-tls"]
+reqwest-rustls = ["reqwest?/rustls"]
+source-file = ["tokio/fs", "tokio/io-util"]
+transport-reqwest = ["dep:bytes", "dep:http-body-util", "dep:reqwest"]
+transport-reqwest-middleware = ["transport-reqwest", "dep:reqwest-middleware"]
 
 [dependencies]
 tus-protocol = { workspace = true }
@@ -31,6 +45,10 @@ fastrand = { workspace = true }
 http-body-util = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.4", features = ["futures"] }
+js-sys = "0.3"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tus-axum = { workspace = true }
 tus-protocol = { workspace = true, features = ["lock-memory", "state-memory", "storage-memory"] }
@@ -39,26 +57,8 @@ axum = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread"] }
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo-timers = { version = "0.4", features = ["futures"] }
-js-sys = "0.3"
-
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
-
-[features]
-# `reqwest?/default` pulls reqwest's default TLS stack, which on reqwest 0.13
-# is rustls (aws-lc-rs) with the platform certificate verifier.
-default = ["checksum", "transport-reqwest", "reqwest?/default"]
-checksum = ["tus-protocol/checksum"]
-# TLS passthrough for builds that disable default features (which drops the
-# rustls TLS stack above): re-add rustls, or opt into native-tls (OpenSSL /
-# system TLS) instead.
-reqwest-native-tls = ["reqwest?/native-tls"]
-reqwest-rustls = ["reqwest?/rustls"]
-source-file = ["tokio/fs", "tokio/io-util"]
-transport-reqwest = ["dep:bytes", "dep:http-body-util", "dep:reqwest"]
-transport-reqwest-middleware = ["transport-reqwest", "dep:reqwest-middleware"]
 
 [[example]]
 name = "upload_file"

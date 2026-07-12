@@ -1,14 +1,14 @@
 [package]
 name = "tus-server"
-description = "TUS resumable upload server"
 version.workspace = true
+description = "TUS resumable upload server"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "resumable", "http", "server"]
+categories = ["web-programming::http-server", "asynchronous"]
 
 [[bin]]
 name = "tus-server"
@@ -42,8 +42,9 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
+tus-client = { workspace = true }
+
 reqwest = { workspace = true, default-features = false, features = ["rustls"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tus-client = { workspace = true }
 url = { workspace = true }

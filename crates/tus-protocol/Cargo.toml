@@ -1,14 +1,47 @@
 [package]
 name = "tus-protocol"
-description.workspace = true
 version.workspace = true
+description = "Rust implementation of the TUS resumable upload protocol"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["tus", "upload", "resumable", "http", "protocol"]
+categories = ["web-programming::http-server", "network-programming", "asynchronous"]
+
+[features]
+default = []
+
+# Platform features.
+#
+# `native` is an internal building block bundling the native async runtime for
+# the file-backed backends below; the `dep:` form keeps the optional
+# dependencies from leaking implicit public features.
+native = ["dep:tokio", "dep:tokio-util"]
+
+# Conformance suites
+conformance-lock = ["tokio/time"]
+conformance-state = []
+conformance-storage = []
+
+# Storage implementations
+storage-file = ["native", "tokio/fs", "tokio/io-util"]
+storage-memory = []
+
+# State storage implementations
+state-file = ["native", "dep:serde_json", "tokio/fs", "tokio/io-util"]
+state-memory = []
+
+# Locking implementations
+lock-file = ["native", "dep:fs2", "tokio/fs", "tokio/rt", "tokio/time"]
+lock-memory = ["native", "tokio/sync", "tokio/time"]
+
+# Checksum implementations
+checksum = ["dep:crc32fast", "dep:md5", "dep:sha1", "dep:sha2"]
+
+# Internal-only hooks for fuzz harnesses.
+fuzzing = []
 
 [dependencies]
 async-trait = { workspace = true }
@@ -49,39 +82,6 @@ futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
-
-[features]
-default = []
-
-# Platform features.
-#
-# `native` is an internal building block bundling the native async runtime for
-# the file-backed backends below; the `dep:` form keeps the optional
-# dependencies from leaking implicit public features.
-native = ["dep:tokio", "dep:tokio-util"]
-
-# Conformance suites
-conformance-lock = ["tokio/time"]
-conformance-state = []
-conformance-storage = []
-
-# Storage implementations
-storage-file = ["native", "tokio/fs", "tokio/io-util"]
-storage-memory = []
-
-# State storage implementations
-state-file = ["native", "dep:serde_json", "tokio/fs", "tokio/io-util"]
-state-memory = []
-
-# Locking implementations
-lock-file = ["native", "dep:fs2", "tokio/fs", "tokio/rt", "tokio/time"]
-lock-memory = ["native", "tokio/sync", "tokio/time"]
-
-# Checksum implementations
-checksum = ["dep:crc32fast", "dep:md5", "dep:sha1", "dep:sha2"]
-
-# Internal-only hooks for fuzz harnesses.
-fuzzing = []
 
 # docs.rs builds the public backend surface, excluding the internal-only
 # `fuzzing` and `conformance-*` features.

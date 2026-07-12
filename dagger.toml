@@ -5,7 +5,9 @@ source = ".dagger/modules/tests"
 
 [modules.rust]
 source = "github.com/sagikazarmark/daggerverse-beta/rust"
-settings.version = "1.97-trixie"
+
+[modules.rust.settings]
+version = "1.97-slim-trixie"
 
 [modules.dagger-gha]
 source = "github.com/sagikazarmark/daggerverse-beta/dagger-gha"
