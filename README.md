@@ -139,7 +139,8 @@ Minimum verification:
 
 Or run the same checks (fmt, clippy, test, doc, build) in a container with [Dagger](https://dagger.io), exactly as CI does:
 
-- `dagger check`: from the repo root for the workspace (including the CLI end-to-end suites against `tusd` and `rustus`), or from `demo/` for the demo app
+- `dagger check`: from the repo root for the workspace (including the CLI end-to-end suites against `tusd` and `rustus` and the `tus-server` protocol conformance suite), or from `demo/` for the demo app
+- `dagger check tests:server:conformance`: run only the `tus-server` protocol conformance suite
 
 ## License
 

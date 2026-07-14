@@ -13,6 +13,52 @@ type Tests {
   cli(tusdVersion: String! = "latest", rustusVersion: String! = "latest"): CliTests! {
     CliTests(tusdVersion, rustusVersion)
   }
+
+  """
+  The tus server tests.
+  """
+  server: ServerTests! {
+    ServerTests
+  }
+}
+
+type ServerTests {
+  """
+  Run the tus protocol conformance suite against tus-server.
+  """
+  conformance: Directory! @check @cache(policy: FunctionCachePolicy.Never) {
+    let server = Dagger
+      .container
+      .from("debian:trixie")
+      .withExec(["mkdir", "-p", "/data", "/state"])
+      .withMountedFile("/usr/local/bin/tus-server", Dagger.tus.server)
+      .withExposedPort(8080)
+      .asService([
+        "/usr/local/bin/tus-server",
+        "serve",
+        "--addr", "0.0.0.0:8080",
+        "--base-url", "http://tus:8080",
+        "--all-extensions",
+        "--disable-concatenation-unfinished",
+        "--expiration", "1h",
+        "--storage-uri", "fs:///data",
+        "--state-dir", "/state",
+      ])
+      .withHostname("tus")
+
+    let result = Dagger
+      .tusConformanceTests
+      .test(
+        service: server,
+        extensions: TusConformanceTestsExtension.values.reject { _ == TusConformanceTestsExtension.CONCATENATION_UNFINISHED },
+      )
+
+    if (result.exitCode > 0) {
+      raise result.output.file("stderr.log").contents
+    }
+
+    result.output
+  }
 }
 
 type CliTests {
