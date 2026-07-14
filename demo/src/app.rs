@@ -4,7 +4,10 @@
 use dioxus::prelude::*;
 
 use crate::components::{DemoFooter, DemoHeader, Sidebar, SidebarNavLink, SidebarNavSection};
-use crate::endpoint::{Endpoint, navigate_to_endpoint, resolve_endpoint, use_endpoint};
+use crate::endpoint::{
+    Endpoint, is_browser_endpoint, navigate_to_endpoint, prepare_browser_endpoint,
+    resolve_endpoint, use_endpoint,
+};
 use crate::pages::{
     controls::Controls, errors::Errors, existing_url::ExistingUrl, headers::Headers, home::Home,
     minimal::Minimal, options::Options, queue::Queue, resume::Resume, transport::Transport,
@@ -41,12 +44,74 @@ pub enum Route {
 
 #[component]
 pub fn App() -> Element {
+    let endpoint = resolve_endpoint();
+    let needs_worker = is_browser_endpoint(&endpoint);
+    let mut endpoint_status = use_signal(|| {
+        if needs_worker {
+            EndpointStatus::Starting
+        } else {
+            EndpointStatus::Ready
+        }
+    });
+
     // Resolve the endpoint once and share it with every example.
-    use_context_provider(|| Endpoint(resolve_endpoint()));
+    use_context_provider({
+        let endpoint = endpoint.clone();
+        move || Endpoint(endpoint)
+    });
+
+    use_effect(move || {
+        if needs_worker {
+            spawn(async move {
+                endpoint_status.set(match prepare_browser_endpoint().await {
+                    Ok(()) => EndpointStatus::Ready,
+                    Err(error) => EndpointStatus::Failed(error),
+                });
+            });
+        }
+    });
+
+    let body = match endpoint_status.read().clone() {
+        EndpointStatus::Starting => rsx! {
+            EndpointStartup {
+                title: "Starting the browser-local TUS endpoint",
+                detail: "The upload examples will appear after the Rust service worker is ready.",
+            }
+        },
+        EndpointStatus::Failed(error) => rsx! {
+            EndpointStartup {
+                title: "The browser-local endpoint could not start",
+                detail: "{error}. Serve the demo from localhost or HTTPS, or add ?endpoint=https%3A%2F%2Fyour-server%2Ffiles to use another TUS server.",
+            }
+        },
+        EndpointStatus::Ready => rsx! { Router::<Route> {} },
+    };
 
     rsx! {
         document::Stylesheet { href: STYLE }
-        Router::<Route> {}
+        {body}
+    }
+}
+
+#[derive(Clone)]
+enum EndpointStatus {
+    Starting,
+    Ready,
+    Failed(String),
+}
+
+#[component]
+fn EndpointStartup(title: &'static str, detail: String) -> Element {
+    rsx! {
+        main { class: "grid min-h-screen place-items-center bg-base-100 px-6 text-base-content",
+            div { class: "max-w-lg rounded-3xl border border-base-300 bg-base-200/40 p-8 shadow-sm",
+                div { class: "mb-5 grid h-11 w-11 place-items-center rounded-2xl bg-primary font-bold text-primary-content",
+                    "tu"
+                }
+                h1 { class: "text-2xl font-bold tracking-tight", "{title}" }
+                p { class: "mt-3 leading-7 text-base-content/65", "{detail}" }
+            }
+        }
     }
 }
 
@@ -117,6 +182,7 @@ fn DemoLayout() -> Element {
 #[component]
 fn EndpointSwitcher() -> Element {
     let current = use_endpoint();
+    let browser_local = is_browser_endpoint(&current);
     let mut value = use_signal(|| current.clone());
 
     let submit = move |evt: FormEvent| {
@@ -130,6 +196,13 @@ fn EndpointSwitcher() -> Element {
     };
 
     rsx! {
+        if browser_local {
+            span {
+                class: "badge badge-success badge-outline hidden whitespace-nowrap lg:inline-flex",
+                title: "Upload bytes stay in this browser and are discarded after processing",
+                "Browser-local"
+            }
+        }
         form {
             class: "join hidden sm:flex",
             onsubmit: submit,

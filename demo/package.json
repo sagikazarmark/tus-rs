@@ -2,7 +2,9 @@
   "name": "demo",
   "private": true,
   "scripts": {
-    "build": "tailwindcss -i ./src/style.css -o ./build/style.css --minify",
+    "build": "bun run build:css && bun run build:service-worker",
+    "build:css": "tailwindcss -i ./src/style.css -o ./build/style.css --minify",
+    "build:service-worker": "wasm-pack build ./service-worker --target web --release --no-typescript --no-pack --out-dir ../public/service-worker --out-name service_worker",
     "watch": "tailwindcss -i ./src/style.css -o ./build/style.css --watch"
   },
   "devDependencies": {

@@ -7,6 +7,9 @@
 //! single build works against any TUS server without rebuilding.
 
 use dioxus::prelude::*;
+use gloo_timers::future::TimeoutFuture;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{RegistrationOptions, ServiceWorkerUpdateViaCache, Url};
 
 /// Endpoint shared with every example via context.
 #[derive(Clone, PartialEq)]
@@ -14,7 +17,7 @@ pub struct Endpoint(pub String);
 
 /// Compile-time fallback, overridable at runtime via `?endpoint=`.
 const COMPILE_TIME_ENDPOINT: Option<&str> = option_env!("TUS_ENDPOINT");
-const DEFAULT_ENDPOINT: &str = "http://localhost:8081/files";
+const SERVICE_WORKER_VERSION: &str = env!("DEMO_SERVICE_WORKER_VERSION");
 
 /// Reads the effective endpoint: `?endpoint=` query string, then the
 /// build-time `TUS_ENDPOINT`, then the localhost default.
@@ -26,7 +29,69 @@ pub fn resolve_endpoint() -> String {
     }
     COMPILE_TIME_ENDPOINT
         .map(str::to_string)
-        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string())
+        .or_else(browser_endpoint)
+        .unwrap_or_else(|| "http://localhost:8081/files".to_string())
+}
+
+/// Returns whether this URL is the same-origin endpoint owned by the demo's
+/// service worker.
+pub fn is_browser_endpoint(endpoint: &str) -> bool {
+    let Some(local) = browser_endpoint() else {
+        return false;
+    };
+    let (Ok(endpoint), Ok(local)) = (Url::new(endpoint), Url::new(&local)) else {
+        return false;
+    };
+    endpoint.origin() == local.origin()
+        && endpoint.pathname().trim_end_matches('/') == local.pathname().trim_end_matches('/')
+}
+
+/// Registers the Rust service worker and waits until it controls this page.
+pub async fn prepare_browser_endpoint() -> Result<(), String> {
+    let window = web_sys::window().ok_or_else(|| "browser window is unavailable".to_string())?;
+    let base = document_base_url().ok_or_else(|| "document base URL is unavailable".to_string())?;
+    let script = Url::new_with_base(
+        &format!("service-worker.js?v={SERVICE_WORKER_VERSION}"),
+        &base,
+    )
+    .map_err(js_message)?;
+    let workers = window.navigator().service_worker();
+    let options = RegistrationOptions::new();
+    options.set_type("module");
+    options.set_update_via_cache(ServiceWorkerUpdateViaCache::None);
+    JsFuture::from(workers.register_with_options(&script.href(), &options))
+        .await
+        .map_err(js_message)?;
+
+    // `clients.claim()` runs in the worker's activate event. Waiting for this
+    // exact version avoids accepting an unrelated or stale controller.
+    for _ in 0..200 {
+        if workers
+            .controller()
+            .is_some_and(|controller| controller.script_url() == script.href())
+        {
+            return Ok(());
+        }
+        TimeoutFuture::new(50).await;
+    }
+    Err("service worker did not take control within 10 seconds".to_string())
+}
+
+fn browser_endpoint() -> Option<String> {
+    let base = document_base_url()?;
+    Url::new_with_base("files", &base)
+        .ok()
+        .map(|url| url.href())
+}
+
+fn document_base_url() -> Option<String> {
+    web_sys::window()?.document()?.base_uri().ok().flatten()
+}
+
+fn js_message(value: wasm_bindgen::JsValue) -> String {
+    value
+        .as_string()
+        .unwrap_or_else(|| "browser rejected service-worker registration".to_string())
 }
 
 fn endpoint_from_query() -> Option<String> {
