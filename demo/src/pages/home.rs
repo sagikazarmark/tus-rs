@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_code::{Code, code};
 
 use crate::app::Route;
-use crate::ui::{PageHeader, SourcePanel, snippet_theme};
+use crate::components::{DocsCallout, ExternalAction, PageHeader, snippet_theme};
 
 struct Feature {
     title: &'static str,
@@ -70,9 +70,7 @@ pub fn Home() -> Element {
         PageHeader {
             eyebrow: "dioxus-tus",
             title: "Resumable uploads for Dioxus web apps",
-            intro: rsx! {
-                "A headless TUS upload hook: type-safe reactive state, chunked PATCH with retry, pause / resume / abort, and resume-from-existing-URL, no stringly-typed events, no runtime to fight."
-            },
+            intro: "A headless TUS upload hook: type-safe reactive state, chunked PATCH with retry, pause / resume / abort, and resume-from-existing-URL, no stringly-typed events, no runtime to fight.",
         }
 
         div { class: "mt-8 flex flex-wrap gap-3",
@@ -100,12 +98,16 @@ pub fn Home() -> Element {
                 "The whole surface is one hook returning reactive state and a handle. Point it at your TUS endpoint (use the switcher in the header to try a live server):"
             }
             div { class: "mt-4 max-w-2xl",
-                SourcePanel {
-                    code: rsx! {
-                        Code { src: code!("/snippets/quickstart.rs"), theme: snippet_theme() }
-                    },
+                div { class: "overflow-x-auto rounded-2xl border border-base-300 bg-base-200/60 p-4 text-sm [&_pre]:!bg-transparent",
+                    Code { src: code!("/snippets/quickstart.rs"), theme: snippet_theme() }
                 }
             }
+        }
+
+        DocsCallout {
+            title: "Build on the TUS protocol",
+            action: Some(ExternalAction::new("Read the protocol", "https://tus.io/protocols/resumable-upload")),
+            "The hook handles resumable upload mechanics while keeping progress, controls, and error presentation in your Dioxus component."
         }
     }
 }

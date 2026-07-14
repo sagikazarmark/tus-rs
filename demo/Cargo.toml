@@ -1,16 +1,14 @@
 [package]
-name = "dioxus-tus-demo"
-version = "0.1.0"
+name = "demo"
+version = "0.0.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-dioxus-tus = { path = "../crates/dioxus-tus" }
-
 async-trait = "0.1"
 dioxus = { version = "0.7", features = ["router", "web"] }
 dioxus-code = "0.1"
-dioxus-free-icons = { version = "0.10", features = ["font-awesome-brands"] }
+dioxus-tus = { path = "../crates/dioxus-tus" }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Event", "EventTarget", "File", "FileList", "HtmlInputElement", "Location", "Window"] }

@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use dioxus_code::{Code, code};
 
+use crate::components::{ExampleSection, PageHeader, snippet_theme};
 use crate::examples::controls::ControlsExample;
-use crate::ui::{ExampleSection, InlineCode, PageHeader, snippet_theme};
 
 #[component]
 pub fn Controls() -> Element {
@@ -10,15 +10,7 @@ pub fn Controls() -> Element {
         PageHeader {
             eyebrow: "Uploading",
             title: "Pause, resume & abort",
-            intro: rsx! {
-                "The handle exposes "
-                InlineCode { "pause()" }
-                ", "
-                InlineCode { "resume()" }
-                ", and "
-                InlineCode { "abort()" }
-                ". Pause and resume take effect at the next chunk boundary; abort resets the upload to idle (the server resource is left intact)."
-            },
+            intro: "The handle exposes pause(), resume(), and abort(). Pause and resume take effect at the next chunk boundary; abort resets the upload to idle (the server resource is left intact).",
         }
         ExampleSection {
             title: "Chunk-boundary controls",

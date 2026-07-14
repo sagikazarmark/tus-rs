@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_tus::{TusConfig, TusStartOptions, file_from_event, use_tus_upload};
 
 use crate::endpoint::use_endpoint;
-use crate::ui::format_size;
+use crate::examples::format_size;
 
 /// A single upload driven by explicit pause / resume / abort controls. Pause
 /// and resume act at the next chunk boundary; abort resets to idle.

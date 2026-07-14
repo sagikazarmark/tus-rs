@@ -2,7 +2,7 @@
 
 A single Dioxus web app that showcases [`dioxus-tus`](../crates/dioxus-tus)
 **feature by feature** and doubles as a docs-by-example gallery. Every page
-mounts a real, working uploader next to the exact source that produced it, so
+mounts a real, working uploader with the exact source that produced it, so
 the snippet you read is the code that runs. All pages share one router layout,
 one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
 
@@ -11,10 +11,12 @@ one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
 | Path | Role |
 | --- | --- |
 | `src/examples/` | Small, pure uploader components, one per feature. Mounted live *and* quoted as the on-page source. |
+| `src/examples/presentation.rs` | Upload-specific display helpers such as byte counts, speed, and ETA formatting. |
 | `src/pages/` | Route components: prose plus the example's live render and its source. |
 | `src/app.rs` | Router (`Route`), the shared shell (header, endpoint switcher, grouped sidebar). |
-| `src/ui.rs` | Presentation-only helpers (`PageHeader`, `ExampleSection`, `InlineCode`, `SourcePanel`, formatters). |
+| `src/components{.rs,/...}` | Project-agnostic docs-gallery presentation grouped by responsibility. |
 | `src/endpoint.rs` | Resolves the TUS endpoint and shares it through context. |
+| `src/style.css` | Tailwind/DaisyUI source compiled to the ignored `build/style.css` asset. |
 
 ## Pages
 
@@ -31,7 +33,7 @@ one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
 | `/errors` | Advanced | Branching on the typed `TusError` surface (CORS, server status, oversize, …) |
 | `/transport` | Advanced | `use_tus_upload_with_transport()`: a custom `tus_client::Transport` that logs requests |
 
-Snippets are highlighted at compile time with [`dioxus-code`](https://crates.io/crates/dioxus-code)'s `code!` macro (its tree-sitter parser cross-compiles a C sysroot for wasm, so the build needs `clang`, the devenv shell and the Dagger container both provide it). Styled with [Tailwind CSS](https://tailwindcss.com) + [DaisyUI](https://daisyui.com) using a custom light-default theme (`style.css`).
+Snippets are highlighted at compile time with [`dioxus-code`](https://crates.io/crates/dioxus-code)'s `code!` macro (its tree-sitter parser cross-compiles a C sysroot for wasm, so the build needs `clang`, the devenv shell and the Dagger container both provide it). Styled with [Tailwind CSS](https://tailwindcss.com) + [DaisyUI](https://daisyui.com) using a custom light-default theme (`src/style.css`).
 
 ## The TUS endpoint
 
@@ -70,6 +72,10 @@ bun install
 bun run build           # or `bun run watch` in a second terminal
 dx serve --port 8080
 ```
+
+`build/style.css` is generated from `src/style.css` and is git-ignored, so run
+`bun run build` before the first `dx serve` and after changing RSX utility
+classes. `bun run watch` rebuilds it continuously during development.
 
 Open `http://localhost:8080`. Set the upload endpoint from the header switcher,
 or bake a default in with `TUS_ENDPOINT=http://localhost:8081/files dx serve`.
@@ -122,5 +128,6 @@ Build-only checks, without serving anything:
 
 ```sh
 cargo check --target wasm32-unknown-unknown   # the wasm client
+bun run build                                 # the generated stylesheet
 dagger check                                  # release bundle in a container, as CI does
 ```

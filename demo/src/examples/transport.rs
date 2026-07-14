@@ -6,6 +6,7 @@ use dioxus_tus::{
     use_tus_upload_with_transport,
 };
 
+use crate::components::{DemoPane, DemoSurface};
 use crate::endpoint::use_endpoint;
 
 /// `use_tus_upload_with_transport` lets you swap the HTTP layer for any
@@ -36,50 +37,53 @@ pub fn TransportExample() -> Element {
     let lines = log.read().clone();
 
     rsx! {
-        div { class: "space-y-4",
-            input {
-                r#type: "file",
-                class: "file-input file-input-bordered file-input-sm w-full",
-                aria_label: "Choose a file to upload",
-                onchange: move |evt| {
-                    if let Some(file) = file_from_event(&evt) {
-                        handle.start(file, TusStartOptions::default());
-                    }
-                },
-            }
+        DemoSurface {
+            primary: rsx! {
+                DemoPane { label: "Uploader",
+                    div { class: "space-y-4",
+                        input {
+                            r#type: "file",
+                            class: "file-input file-input-bordered file-input-sm w-full",
+                            aria_label: "Choose a file to upload",
+                            onchange: move |evt| {
+                                if let Some(file) = file_from_event(&evt) {
+                                    handle.start(file, TusStartOptions::default());
+                                }
+                            },
+                        }
 
-            if snap.bytes_total.is_some() {
-                div {
-                    progress {
-                        class: "progress progress-primary w-full",
-                        value: pct,
-                        max: 100,
-                    }
-                    p { class: "mt-1 text-sm text-base-content/60", "{pct}%" }
-                }
-            }
+                        if snap.bytes_total.is_some() {
+                            div {
+                                progress {
+                                    class: "progress progress-primary w-full",
+                                    value: pct,
+                                    max: 100,
+                                }
+                                p { class: "mt-1 text-sm text-base-content/60", "{pct}%" }
+                            }
+                        }
 
-            // The transport's live request log.
-            div {
-                p { class: "mb-2 text-xs font-semibold uppercase tracking-wider text-base-content/45",
-                    "Transport log"
-                }
-                if lines.is_empty() {
-                    p { class: "text-sm text-base-content/50",
-                        "Pick a file: every HTTP request the transport makes appears here."
-                    }
-                } else {
-                    div { class: "max-h-56 overflow-y-auto rounded-xl border border-base-300 bg-base-200/60 p-3 font-mono text-xs leading-relaxed",
-                        for (i , line) in lines.iter().enumerate() {
-                            div { key: "{i}", class: "whitespace-pre-wrap break-all", "{line}" }
+                        if let Some(error) = &snap.error {
+                            p { class: "text-sm text-error", "Error: {error}" }
                         }
                     }
                 }
-            }
-
-            if let Some(error) = &snap.error {
-                p { class: "text-sm text-error", "Error: {error}" }
-            }
+            },
+            secondary: rsx! {
+                DemoPane { label: "Transport log",
+                    if lines.is_empty() {
+                        p { class: "rounded-xl border border-dashed border-base-300 p-4 text-sm text-base-content/50",
+                            "Pick a file: every HTTP request the transport makes appears here."
+                        }
+                    } else {
+                        div { class: "max-h-56 overflow-y-auto rounded-xl border border-base-300 bg-base-200/60 p-3 font-mono text-xs leading-relaxed",
+                            for (i , line) in lines.iter().enumerate() {
+                                div { key: "{i}", class: "whitespace-pre-wrap break-all", "{line}" }
+                            }
+                        }
+                    }
+                }
+            },
         }
     }
 }
