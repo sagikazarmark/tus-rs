@@ -4,14 +4,14 @@
 //! that produced it (via `include_str!`), so the snippet you read is the code
 //! that runs. The UI lives in [`app`] (router + shell), [`pages`] (one route
 //! each), and [`examples`] (the small, pure components the pages mount and
-//! quote). Shared chrome is in [`ui`]; the TUS endpoint plumbing is in
+//! quote). Shared chrome is in [`components`]; the TUS endpoint plumbing is in
 //! [`endpoint`].
 
 mod app;
+mod components;
 mod endpoint;
 mod examples;
 mod pages;
-mod ui;
 
 fn main() {
     dioxus::launch(app::App);

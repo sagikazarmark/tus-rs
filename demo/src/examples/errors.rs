@@ -1,6 +1,7 @@
 use dioxus::prelude::*;
 use dioxus_tus::{TusConfig, TusError, TusStartOptions, file_from_event, use_tus_upload};
 
+use crate::components::{DemoPane, DemoSurface};
 use crate::endpoint::use_endpoint;
 
 /// `state.error` is a typed [`TusError`], not a string, so the UI can branch on
@@ -20,83 +21,95 @@ pub fn ErrorsExample() -> Element {
     let snap = state.read();
 
     rsx! {
-        div { class: "space-y-4",
-            input {
-                r#type: "file",
-                class: "file-input file-input-bordered file-input-sm w-full",
-                aria_label: "Choose a file",
-                onchange: move |evt| {
-                    file.set(file_from_event(&evt));
-                },
-            }
+        DemoSurface {
+            primary: rsx! {
+                DemoPane { label: "Error scenarios",
+                    div { class: "space-y-4",
+                        input {
+                            r#type: "file",
+                            class: "file-input file-input-bordered file-input-sm w-full",
+                            aria_label: "Choose a file",
+                            onchange: move |evt| {
+                                file.set(file_from_event(&evt));
+                            },
+                        }
 
-            div { class: "flex flex-wrap gap-2",
-                button {
-                    class: "btn btn-sm btn-primary",
-                    disabled: !has_file,
-                    onclick: {
-                        let handle = handle.clone();
-                        move |_| {
-                            if let Some(f) = file.read().clone() {
-                                handle.start(f, TusStartOptions::default());
+                        div { class: "flex flex-wrap gap-2",
+                            button {
+                                class: "btn btn-sm btn-primary",
+                                disabled: !has_file,
+                                onclick: {
+                                    let handle = handle.clone();
+                                    move |_| {
+                                        if let Some(f) = file.read().clone() {
+                                            handle.start(f, TusStartOptions::default());
+                                        }
+                                    }
+                                },
+                                "Upload normally"
+                            }
+                            button {
+                                class: "btn btn-sm btn-outline btn-error",
+                                disabled: !has_file,
+                                title: "HEAD a non-existent upload URL",
+                                onclick: {
+                                    let handle = handle.clone();
+                                    let endpoint = endpoint.clone();
+                                    move |_| {
+                                        if let Some(f) = file.read().clone() {
+                                            let url = format!("{}/does-not-exist-0000", endpoint.trim_end_matches('/'));
+                                            handle.start_with_url(f, url, TusStartOptions::default());
+                                        }
+                                    }
+                                },
+                                "Trigger a 404"
+                            }
+                            button {
+                                class: "btn btn-sm btn-outline btn-error",
+                                disabled: !has_file,
+                                title: "HEAD an unreachable host",
+                                onclick: {
+                                    let handle = handle.clone();
+                                    move |_| {
+                                        if let Some(f) = file.read().clone() {
+                                            handle
+                                                .start_with_url(
+                                                    f,
+                                                    "http://127.0.0.1:9/blocked",
+                                                    TusStartOptions::default(),
+                                                );
+                                        }
+                                    }
+                                },
+                                "Trigger a network failure"
                             }
                         }
-                    },
-                    "Upload normally"
-                }
-                button {
-                    class: "btn btn-sm btn-outline btn-error",
-                    disabled: !has_file,
-                    title: "HEAD a non-existent upload URL",
-                    onclick: {
-                        let handle = handle.clone();
-                        let endpoint = endpoint.clone();
-                        move |_| {
-                            if let Some(f) = file.read().clone() {
-                                let url = format!("{}/does-not-exist-0000", endpoint.trim_end_matches('/'));
-                                handle.start_with_url(f, url, TusStartOptions::default());
-                            }
-                        }
-                    },
-                    "Trigger a 404"
-                }
-                button {
-                    class: "btn btn-sm btn-outline btn-error",
-                    disabled: !has_file,
-                    title: "HEAD an unreachable host",
-                    onclick: {
-                        let handle = handle.clone();
-                        move |_| {
-                            if let Some(f) = file.read().clone() {
-                                handle
-                                    .start_with_url(
-                                        f,
-                                        "http://127.0.0.1:9/blocked",
-                                        TusStartOptions::default(),
-                                    );
-                            }
-                        }
-                    },
-                    "Trigger a network failure"
-                }
-            }
 
-            p { class: "text-xs text-base-content/50",
-                "Tip: point the header's endpoint switcher at a server without CORS to see the "
-                code { class: "font-mono", "Cors" }
-                " variant on a normal upload."
-            }
-
-            // Typed error breakdown.
-            match &snap.error {
-                Some(err) => error_card(err),
-                None if snap.is_complete() => rsx! {
-                    p { class: "text-sm font-medium text-success", "✓ Upload complete, no errors" }
-                },
-                None if snap.is_uploading() => rsx! {
-                    p { class: "text-sm text-base-content/60", "Uploading…" }
-                },
-                None => rsx! {},
+                        p { class: "text-xs text-base-content/50",
+                            "Tip: point the header's endpoint switcher at a server without CORS to see the "
+                            code { class: "font-mono", "Cors" }
+                            " variant on a normal upload."
+                        }
+                    }
+                }
+            },
+            secondary: rsx! {
+                DemoPane { label: "Typed result",
+                    match &snap.error {
+                        Some(err) => error_card(err),
+                        None if snap.is_complete() => rsx! {
+                            p { class: "text-sm font-medium text-success", "✓ Upload complete, no errors" }
+                        },
+                        None if snap.is_uploading() => rsx! {
+                            p { class: "text-sm text-base-content/60", "Uploading…" }
+                        },
+                        None => rsx! {
+                            p { class: "rounded-xl border border-dashed border-base-300 p-4 text-sm text-base-content/50",
+                                "Choose a file and run a scenario to inspect the typed result."
+                            }
+                        },
+                    }
+                }
             }
         }
     }

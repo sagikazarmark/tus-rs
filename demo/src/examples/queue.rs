@@ -4,8 +4,9 @@ use dioxus_tus::{
     files_from_drag_event, files_from_event, use_tus_upload_queue,
 };
 
+use crate::components::{DemoPane, DemoSurface};
 use crate::endpoint::use_endpoint;
-use crate::ui::{format_bytes_per_sec, format_eta, format_size};
+use crate::examples::{format_bytes_per_sec, format_eta, format_size};
 
 /// A concurrent, drag-and-drop upload queue built on `use_tus_upload_queue`:
 /// multiple files upload in parallel with per-file and queue-wide controls.
@@ -30,98 +31,104 @@ pub fn QueueExample() -> Element {
     });
 
     rsx! {
-        div { class: "space-y-4",
-            // Drag-and-drop + multi-file picker zone.
-            div {
-                class: format!(
-                    "rounded-2xl border-2 border-dashed p-6 text-center transition-colors {}",
-                    if drag_active() { "border-primary bg-primary/5" } else { "border-base-300" },
-                ),
-                aria_label: "Drop files or click to browse",
-                ondragover: move |evt| {
-                    evt.prevent_default();
-                    drag_active.set(true);
-                },
-                ondragleave: move |_| drag_active.set(false),
-                ondrop: {
-                    let handle = handle.clone();
-                    move |evt| {
-                        evt.prevent_default();
-                        drag_active.set(false);
-                        let files = files_from_drag_event(&evt);
-                        if !files.is_empty() {
-                            handle.add_all(files, TusStartOptions::default());
-                        }
-                    }
-                },
-                p { class: "mb-3 text-sm text-base-content/60", "Drop files here, or:" }
-                input {
-                    r#type: "file",
-                    class: "file-input file-input-bordered file-input-sm w-full max-w-xs",
-                    aria_label: "Choose files to upload",
-                    multiple: true,
-                    onchange: {
-                        let handle = handle.clone();
-                        move |evt| {
-                            let files = files_from_event(&evt);
-                            if !files.is_empty() {
-                                handle.add_all(files, TusStartOptions::default());
+        DemoSurface {
+            primary: rsx! {
+                DemoPane { label: "Add uploads",
+                    div { class: "space-y-4",
+                        div {
+                            class: format!(
+                                "rounded-2xl border-2 border-dashed p-6 text-center transition-colors {}",
+                                if drag_active() { "border-primary bg-primary/5" } else { "border-base-300" },
+                            ),
+                            aria_label: "Drop files or click to browse",
+                            ondragover: move |evt| {
+                                evt.prevent_default();
+                                drag_active.set(true);
+                            },
+                            ondragleave: move |_| drag_active.set(false),
+                            ondrop: {
+                                let handle = handle.clone();
+                                move |evt| {
+                                    evt.prevent_default();
+                                    drag_active.set(false);
+                                    let files = files_from_drag_event(&evt);
+                                    if !files.is_empty() {
+                                        handle.add_all(files, TusStartOptions::default());
+                                    }
+                                }
+                            },
+                            p { class: "mb-3 text-sm text-base-content/60", "Drop files here, or:" }
+                            input {
+                                r#type: "file",
+                                class: "file-input file-input-bordered file-input-sm w-full max-w-xs",
+                                aria_label: "Choose files to upload",
+                                multiple: true,
+                                onchange: {
+                                    let handle = handle.clone();
+                                    move |evt| {
+                                        let files = files_from_event(&evt);
+                                        if !files.is_empty() {
+                                            handle.add_all(files, TusStartOptions::default());
+                                        }
+                                    }
+                                },
                             }
                         }
-                    },
-                }
-            }
 
-            // Queue-wide controls.
-            div { class: "flex flex-wrap justify-end gap-2",
-                button {
-                    class: "btn btn-xs btn-warning",
-                    disabled: !any_active,
-                    onclick: {
-                        let handle = handle.clone();
-                        move |_| handle.pause_all()
-                    },
-                    "Pause all"
+                        div { class: "flex flex-wrap justify-end gap-2",
+                            button {
+                                class: "btn btn-xs btn-warning",
+                                disabled: !any_active,
+                                onclick: {
+                                    let handle = handle.clone();
+                                    move |_| handle.pause_all()
+                                },
+                                "Pause all"
+                            }
+                            button {
+                                class: "btn btn-xs btn-success",
+                                disabled: !any_paused,
+                                onclick: {
+                                    let handle = handle.clone();
+                                    move |_| handle.resume_all()
+                                },
+                                "Resume all"
+                            }
+                            button {
+                                class: "btn btn-xs btn-error btn-outline",
+                                disabled: !(any_active || any_paused),
+                                onclick: {
+                                    let handle = handle.clone();
+                                    move |_| handle.abort_all()
+                                },
+                                "Abort all"
+                            }
+                            button {
+                                class: "btn btn-xs btn-ghost",
+                                disabled: !any_finished,
+                                onclick: {
+                                    let handle = handle.clone();
+                                    move |_| handle.clear_finished()
+                                },
+                                "Clear finished"
+                            }
+                        }
+                    }
                 }
-                button {
-                    class: "btn btn-xs btn-success",
-                    disabled: !any_paused,
-                    onclick: {
-                        let handle = handle.clone();
-                        move |_| handle.resume_all()
-                    },
-                    "Resume all"
-                }
-                button {
-                    class: "btn btn-xs btn-error btn-outline",
-                    disabled: !(any_active || any_paused),
-                    onclick: {
-                        let handle = handle.clone();
-                        move |_| handle.abort_all()
-                    },
-                    "Abort all"
-                }
-                button {
-                    class: "btn btn-xs btn-ghost",
-                    disabled: !any_finished,
-                    onclick: {
-                        let handle = handle.clone();
-                        move |_| handle.clear_finished()
-                    },
-                    "Clear finished"
-                }
-            }
-
-            // Queue list.
-            if items.is_empty() {
-                p { class: "py-6 text-center text-sm text-base-content/50",
-                    "No uploads yet; drop files above to get started."
-                }
-            } else {
-                div { class: "divide-y divide-base-300 overflow-hidden rounded-2xl border border-base-300",
-                    role: "list",
-                    for item in items.iter() {
-                        {queue_row(item, handle.clone())}
+            },
+            secondary: rsx! {
+                DemoPane { label: "Queue",
+                    if items.is_empty() {
+                        p { class: "rounded-xl border border-dashed border-base-300 py-6 text-center text-sm text-base-content/50",
+                            "No uploads yet; drop files above to get started."
+                        }
+                    } else {
+                        div { class: "divide-y divide-base-300 overflow-hidden rounded-2xl border border-base-300",
+                            role: "list",
+                            for item in items.iter() {
+                                {queue_row(item, handle.clone())}
+                            }
+                        }
                     }
                 }
             }

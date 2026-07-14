@@ -1,8 +1,9 @@
 use dioxus::prelude::*;
 use dioxus_tus::{TusConfig, TusStartOptions, file_from_event, use_tus_upload};
 
+use crate::components::{DemoPane, DemoSurface};
 use crate::endpoint::use_endpoint;
-use crate::ui::format_size;
+use crate::examples::format_size;
 
 /// Two halves of the same story. On the left, a normal upload whose
 /// server-issued URL is surfaced from `state.upload_url`, that's the handle
@@ -43,102 +44,94 @@ pub fn ExistingUrlExample() -> Element {
 
     rsx! {
         div { class: "space-y-6",
-            // ── Left: start a fresh upload and reveal its URL. ──────────────
-            div {
-                p { class: "mb-1 text-xs font-semibold uppercase tracking-wider text-base-content/45",
-                    "1 · Start an upload"
-                }
-                input {
-                    r#type: "file",
-                    class: "file-input file-input-bordered file-input-sm w-full",
-                    aria_label: "Choose a file to upload",
-                    onchange: {
-                        let handle = handle.clone();
-                        move |evt| {
-                            if let Some(file) = file_from_event(&evt) {
-                                handle.start(file, TusStartOptions::default());
-                            }
+            DemoSurface {
+                primary: rsx! {
+                    DemoPane { label: "1 · Start an upload",
+                        input {
+                            r#type: "file",
+                            class: "file-input file-input-bordered file-input-sm w-full",
+                            aria_label: "Choose a file to upload",
+                            onchange: {
+                                let handle = handle.clone();
+                                move |evt| {
+                                    if let Some(file) = file_from_event(&evt) {
+                                        handle.start(file, TusStartOptions::default());
+                                    }
+                                }
+                            },
                         }
-                    },
-                }
 
-                if snap.bytes_total.is_some() {
-                    div { class: "mt-3",
-                        progress {
-                            class: "progress progress-primary w-full",
-                            value: pct,
-                            max: 100,
-                        }
-                        div { class: "mt-2 flex gap-2",
-                            button {
-                                class: "btn btn-xs btn-warning",
-                                disabled: !snap.is_uploading(),
-                                onclick: {
-                                    let handle = handle.clone();
-                                    move |_| handle.pause()
-                                },
-                                "⏸ Pause"
+                        if snap.bytes_total.is_some() {
+                            div { class: "mt-3",
+                                progress {
+                                    class: "progress progress-primary w-full",
+                                    value: pct,
+                                    max: 100,
+                                }
+                                div { class: "mt-2 flex gap-2",
+                                    button {
+                                        class: "btn btn-xs btn-warning",
+                                        disabled: !snap.is_uploading(),
+                                        onclick: {
+                                            let handle = handle.clone();
+                                            move |_| handle.pause()
+                                        },
+                                        "⏸ Pause"
+                                    }
+                                    button {
+                                        class: "btn btn-xs btn-success",
+                                        disabled: !snap.is_paused(),
+                                        onclick: {
+                                            let handle = handle.clone();
+                                            move |_| handle.resume()
+                                        },
+                                        "▶ Resume"
+                                    }
+                                }
                             }
-                            button {
-                                class: "btn btn-xs btn-success",
-                                disabled: !snap.is_paused(),
-                                onclick: {
-                                    let handle = handle.clone();
-                                    move |_| handle.resume()
-                                },
-                                "▶ Resume"
+                        }
+
+                        if let Some(url) = &snap.upload_url {
+                            div { class: "mt-3 rounded-xl border border-base-300 bg-base-200/60 p-3",
+                                p { class: "text-xs font-semibold uppercase tracking-wider text-base-content/45",
+                                    "state.upload_url"
+                                }
+                                code { class: "mt-1 block break-all font-mono text-xs text-primary", "{url}" }
                             }
                         }
                     }
-                }
-
-                // The server-issued upload URL, straight off the state.
-                if let Some(url) = &snap.upload_url {
-                    div { class: "mt-3 rounded-xl border border-base-300 bg-base-200/60 p-3",
-                        p { class: "text-xs font-semibold uppercase tracking-wider text-base-content/45",
-                            "state.upload_url"
+                },
+                secondary: rsx! {
+                    DemoPane { label: "2 · Continue from a URL",
+                        label { class: "form-control",
+                            span { class: "label-text mb-1 text-xs font-medium", "Existing upload URL" }
+                            input {
+                                r#type: "text",
+                                class: "input input-bordered input-sm w-full font-mono text-xs",
+                                placeholder: "https://your-tus-server/files/abc123…",
+                                value: "{resume_url}",
+                                oninput: move |e| resume_url.set(e.value()),
+                            }
                         }
-                        code { class: "mt-1 block break-all font-mono text-xs text-primary", "{url}" }
+                        input {
+                            r#type: "file",
+                            class: "file-input file-input-bordered file-input-sm mt-2 w-full",
+                            aria_label: "Re-pick the file to continue",
+                            onchange: move |evt| {
+                                let url = resume_url.read().trim().to_string();
+                                if url.is_empty() {
+                                    return;
+                                }
+                                if let Some(file) = file_from_event(&evt) {
+                                    handle.start_with_url(file, url, TusStartOptions::default());
+                                }
+                            },
+                        }
+                        p { class: "mt-1 text-xs text-base-content/50",
+                            "Re-pick the same file; the client sends a HEAD request to the URL and resumes from the server's offset."
+                        }
                     }
-                }
-            }
-
-            div { class: "divider my-0 text-xs uppercase tracking-wider text-base-content/40",
-                "then, in another session"
-            }
-
-            // ── Right: resume against a known URL. ──────────────────────────
-            div {
-                p { class: "mb-1 text-xs font-semibold uppercase tracking-wider text-base-content/45",
-                    "2 · Continue from a URL"
-                }
-                label { class: "form-control",
-                    span { class: "label-text mb-1 text-xs font-medium", "Existing upload URL" }
-                    input {
-                        r#type: "text",
-                        class: "input input-bordered input-sm w-full font-mono text-xs",
-                        placeholder: "https://your-tus-server/files/abc123…",
-                        value: "{resume_url}",
-                        oninput: move |e| resume_url.set(e.value()),
-                    }
-                }
-                input {
-                    r#type: "file",
-                    class: "file-input file-input-bordered file-input-sm mt-2 w-full",
-                    aria_label: "Re-pick the file to continue",
-                    onchange: move |evt| {
-                        let url = resume_url.read().trim().to_string();
-                        if url.is_empty() {
-                            return;
-                        }
-                        if let Some(file) = file_from_event(&evt) {
-                            handle.start_with_url(file, url, TusStartOptions::default());
-                        }
-                    },
-                }
-                p { class: "mt-1 text-xs text-base-content/50",
-                    "Re-pick the same file; the client sends a HEAD request to the URL and resumes from the server's offset."
-                }
+                },
             }
 
             if snap.is_complete() {

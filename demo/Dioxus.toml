@@ -1,22 +1,16 @@
 [application]
-name = "dioxus-tus-demo"
+name = "demo"
 default_platform = "web"
 
 [web.app]
 title = "dioxus-tus demo"
 
-# Size-tuned release wasm, mirroring the dioxus-clerk demo. Pairs with the
-# `opt-level = "z"` release profile in Cargo.toml.
-[web.wasm_opt]
-level = "z"
-debug = false
-
 [web.watcher]
 reload_html = true
-watch_path = ["src", "assets"]
+watch_path = ["src"]
 
 # Stylesheets are loaded from the component tree via
-# `document::Stylesheet { href: asset!("/assets/tailwind.css") }` in
+# `document::Stylesheet { href: asset!("/build/style.css") }` in
 # src/app.rs, so the content-hashed asset is the single source of truth.
 # Listing the same file here as well would inject a second, unhashed
 # <link> tag for the same CSS.

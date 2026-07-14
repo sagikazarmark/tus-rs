@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use dioxus_code::{Code, code};
 
+use crate::components::{ExampleSection, PageHeader, snippet_theme};
 use crate::examples::headers::HeadersExample;
-use crate::ui::{ExampleSection, InlineCode, PageHeader, snippet_theme};
 
 #[component]
 pub fn Headers() -> Element {
@@ -10,22 +10,7 @@ pub fn Headers() -> Element {
         PageHeader {
             eyebrow: "Configuration",
             title: "Headers & file naming",
-            intro: rsx! {
-                InlineCode { "TusStartOptions" }
-                " shapes each upload's requests. "
-                InlineCode { "with_header" }
-                " attaches an arbitrary header to every request (auth proxies, tenant routing, tracing); "
-                InlineCode { "with_filename" }
-                " and "
-                InlineCode { "with_content_type" }
-                " override the "
-                InlineCode { "filename" }
-                " / "
-                InlineCode { "filetype" }
-                " the hook otherwise derives from the browser "
-                InlineCode { "File" }
-                "."
-            },
+            intro: "TusStartOptions shapes each upload's requests. with_header attaches an arbitrary header to every request; with_filename and with_content_type override the filename and filetype the hook otherwise derives from the browser File.",
         }
         ExampleSection {
             title: "with_header · with_filename · with_content_type",

@@ -1,9 +1,9 @@
 use dioxus::prelude::*;
 use dioxus_code::{Code, code};
 
+use crate::components::{ExampleSection, InlineCode, PageHeader, snippet_theme};
 use crate::examples::resume::ResumeExample;
 use crate::examples::resume_persisted::ResumePersistedExample;
-use crate::ui::{ExampleSection, InlineCode, PageHeader, snippet_theme};
 
 #[component]
 pub fn Resume() -> Element {
@@ -11,13 +11,7 @@ pub fn Resume() -> Element {
         PageHeader {
             eyebrow: "Resuming",
             title: "Resume across a reload",
-            intro: rsx! {
-                "In-flight uploads persist to "
-                InlineCode { "localStorage" }
-                ". On mount, "
-                InlineCode { "scan_resumable()" }
-                " lists any partial upload; re-picking the same file resumes it from the server's stored offset instead of starting over."
-            },
+            intro: "In-flight uploads persist to localStorage. On mount, scan_resumable() lists any partial upload; re-picking the same file resumes it from the server's stored offset instead of starting over.",
         }
         ExampleSection {
             title: "scan_resumable + resume_entry",

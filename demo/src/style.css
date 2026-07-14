@@ -1,7 +1,7 @@
 @import "tailwindcss" source(none);
 
 /* The Rust component tree is the only place utility classes appear. */
-@source "./src/**/*.rs";
+@source "./**/*.rs";
 
 @plugin "daisyui" {
   themes: false;
@@ -54,14 +54,4 @@ body {
   font-family:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
-}
-
-/* Monospace snippet blocks: keep long lines scrollable, never wrap. */
-.source-block {
-  font-family:
-    ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
-    monospace;
-  font-size: 0.8125rem;
-  line-height: 1.55;
-  tab-size: 4;
 }

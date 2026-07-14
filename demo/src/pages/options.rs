@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 use dioxus_code::{Code, code};
 
+use crate::components::{ExampleSection, PageHeader, snippet_theme};
 use crate::examples::options::OptionsExample;
-use crate::ui::{ExampleSection, InlineCode, PageHeader, snippet_theme};
 
 #[component]
 pub fn Options() -> Element {
@@ -10,14 +10,7 @@ pub fn Options() -> Element {
         PageHeader {
             eyebrow: "Advanced",
             title: "Tokens, metadata & config",
-            intro: rsx! {
-                InlineCode { "TusConfig" }
-                " tunes client-level behaviour once at construction: chunk size, retry count, retry backoff, a default bearer token, and the creation-with-upload threshold (small files that POST their bytes in one request). "
-                InlineCode { "TusStartOptions" }
-                " carries per-upload concerns: a bearer token override and custom "
-                InlineCode { "Upload-Metadata" }
-                "."
-            },
+            intro: "TusConfig tunes client-level behaviour once at construction: chunk size, retry count, retry backoff, a default bearer token, and the creation-with-upload threshold. TusStartOptions carries per-upload concerns: a bearer token override and custom Upload-Metadata.",
         }
         ExampleSection {
             title: "TusConfig + TusStartOptions",

@@ -3,7 +3,7 @@ use dioxus_tus::persistence::ResumableEntry;
 use dioxus_tus::{TusConfig, TusStartOptions, TusUploadHandle, file_from_event, use_tus_upload};
 
 use crate::endpoint::use_endpoint;
-use crate::ui::format_size;
+use crate::examples::format_size;
 
 /// Resume an upload after a tab reload. In-flight progress is persisted to
 /// `localStorage`; on mount, `scan_resumable()` surfaces any partial upload so
