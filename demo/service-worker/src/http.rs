@@ -1,15 +1,14 @@
-use std::{io, str::FromStr};
+use std::str::FromStr;
 
-use futures_util::StreamExt;
 use js_sys::{Uint8Array, decode_uri_component};
 use tus_protocol::{
-    BodyFrame, Error, Headers as TusHeaders, NoopHookExecutor, NoopLocker, ProtocolHandle,
-    RequestBody, Response as TusResponse, UploadId,
+    Error, Headers as TusHeaders, NoopHookExecutor, NoopLocker, ProtocolHandle, RequestBody,
+    Response as TusResponse, UploadId,
     bytes::Bytes,
     http::{HeaderMap, HeaderName, HeaderValue, Method},
 };
 use wasm_bindgen::JsValue;
-use wasm_streams::ReadableStream;
+use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, Response, ResponseInit, Url};
 
 use crate::database::BrowserDatabase;
@@ -39,6 +38,7 @@ pub(crate) async fn dispatch(
     protocol: &BrowserProtocol,
     base_path: &str,
     request: Request,
+    max_chunk_size: u64,
 ) -> Result<Response, JsValue> {
     let method = effective_method(&request)?;
     let route = route(&Url::new(&request.url())?.pathname(), base_path);
@@ -49,7 +49,7 @@ pub(crate) async fn dispatch(
         Route::NotFound => None,
     };
 
-    let result = dispatch_protocol(protocol, method.clone(), route, &request).await;
+    let result = dispatch_protocol(protocol, method.clone(), route, &request, max_chunk_size).await;
 
     match result {
         Ok(response) => success_response(response, suppress_body),
@@ -62,12 +62,13 @@ async fn dispatch_protocol(
     method: Method,
     route: Route,
     request: &Request,
+    max_chunk_size: u64,
 ) -> tus_protocol::Result<TusResponse> {
     match (method.clone(), route) {
         (Method::OPTIONS, Route::Collection | Route::Upload(_)) => Ok(protocol.options()),
         (Method::POST, Route::Collection) => {
             let headers = tus_headers(&request.headers())?;
-            let body = request_body(request);
+            let body = request_body(request, max_chunk_size).await?;
             protocol.post(headers, body).await
         }
         (Method::HEAD, Route::Upload(id)) => {
@@ -76,7 +77,7 @@ async fn dispatch_protocol(
         }
         (Method::PATCH, Route::Upload(id)) => {
             let headers = tus_headers(&request.headers())?;
-            let body = request_body(request);
+            let body = request_body(request, max_chunk_size).await?;
             protocol.patch(headers, &id, body).await
         }
         (Method::DELETE, Route::Upload(id)) => {
@@ -141,16 +142,27 @@ fn tus_headers(headers: &Headers) -> Result<TusHeaders, Error> {
     TusHeaders::from_headers(&values)
 }
 
-fn request_body(request: &Request) -> RequestBody {
-    let Some(body) = request.body() else {
-        return RequestBody::absent();
-    };
-    let stream = ReadableStream::from_raw(body).into_stream().map(|chunk| {
-        chunk
-            .map(|value| BodyFrame::Data(Bytes::from(Uint8Array::new(&value).to_vec())))
-            .map_err(|_| io::Error::other("could not read browser request body"))
-    });
-    RequestBody::from_stream(Box::pin(stream))
+async fn request_body(request: &Request, max_chunk_size: u64) -> Result<RequestBody, Error> {
+    // Firefox does not reliably expose intercepted fetch request bodies through
+    // Request.body. The Body mixin's arrayBuffer() method works across targets.
+    let promise = request
+        .array_buffer()
+        .map_err(|_| Error::Internal("could not access browser request body".to_string()))?;
+    let value = JsFuture::from(promise)
+        .await
+        .map_err(|_| Error::Internal("could not read browser request body".to_string()))?;
+    let bytes = Uint8Array::new(&value).to_vec();
+    if bytes.is_empty() {
+        return Ok(RequestBody::absent());
+    }
+    let size = bytes.len() as u64;
+    if size > max_chunk_size {
+        return Err(Error::SizeExceeded {
+            size,
+            max: max_chunk_size,
+        });
+    }
+    Ok(RequestBody::from_bytes(Bytes::from(bytes)))
 }
 
 fn success_response(response: TusResponse, suppress_body: bool) -> Result<Response, JsValue> {

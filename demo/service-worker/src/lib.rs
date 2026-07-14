@@ -77,7 +77,7 @@ impl BrowserTusServer {
         // single gate makes NoopLocker sound while keeping the demo backend
         // deliberately small; client-side queues still interleave by chunk.
         let _guard = self.gate.lock().await;
-        http::dispatch(&self.protocol, &self.base_path, request).await
+        http::dispatch(&self.protocol, &self.base_path, request, MAX_CHUNK_SIZE).await
     }
 }
 

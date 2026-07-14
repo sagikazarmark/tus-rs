@@ -19,5 +19,4 @@ thiserror = "2"
 tus-protocol = { path = "../../crates/tus-protocol" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-wasm-streams = "0.6"
-web-sys = { version = "0.3", features = ["Headers", "ReadableStream", "Request", "Response", "ResponseInit", "ServiceWorkerGlobalScope", "ServiceWorkerRegistration", "Url", "WorkerGlobalScope"] }
+web-sys = { version = "0.3", features = ["Headers", "Request", "Response", "ResponseInit", "ServiceWorkerGlobalScope", "ServiceWorkerRegistration", "Url", "WorkerGlobalScope"] }
