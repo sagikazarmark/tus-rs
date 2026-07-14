@@ -1,10 +1,10 @@
 //! Shared TUS endpoint plumbing.
 //!
 //! The endpoint is resolved once at startup, preferring `?endpoint=...` in the
-//! URL, then the `TUS_ENDPOINT` env var baked in at build time, then a
-//! localhost default, and provided through context so every example reads the
-//! same value. Changing it navigates with a fresh `?endpoint=` query so a
-//! single build works against any TUS server without rebuilding.
+//! URL, then the `TUS_ENDPOINT` env var baked in at build time. Otherwise the
+//! `DEMO_BROWSER_LOCAL` build setting chooses between the same-origin worker
+//! and the localhost server. Changing it navigates with a fresh `?endpoint=`
+//! query so a single build works against any TUS server without rebuilding.
 
 use dioxus::prelude::*;
 use gloo_timers::future::TimeoutFuture;
@@ -17,20 +17,46 @@ pub struct Endpoint(pub String);
 
 /// Compile-time fallback, overridable at runtime via `?endpoint=`.
 const COMPILE_TIME_ENDPOINT: Option<&str> = option_env!("TUS_ENDPOINT");
+const BROWSER_LOCAL_DEFAULT: Option<&str> = option_env!("DEMO_BROWSER_LOCAL");
+const LOCAL_SERVER_ENDPOINT: &str = "http://localhost:8081/files";
 const SERVICE_WORKER_VERSION: &str = env!("DEMO_SERVICE_WORKER_VERSION");
 
 /// Reads the effective endpoint: `?endpoint=` query string, then the
-/// build-time `TUS_ENDPOINT`, then the localhost default.
+/// build-time `TUS_ENDPOINT`, then the build's browser-local preference.
 pub fn resolve_endpoint() -> String {
     if let Some(value) = endpoint_from_query()
         && !value.is_empty()
     {
         return value;
     }
+    if let Some(endpoint) = COMPILE_TIME_ENDPOINT.filter(|endpoint| !endpoint.is_empty()) {
+        return endpoint.to_string();
+    }
+    if BROWSER_LOCAL_DEFAULT == Some("true")
+        && let Some(endpoint) = browser_endpoint()
+    {
+        return endpoint;
+    }
+    LOCAL_SERVER_ENDPOINT.to_string()
+}
+
+/// Returns the server endpoint used when browser-local mode is disabled.
+pub fn server_endpoint() -> String {
+    if let Some(endpoint) = remembered_server_endpoint().filter(|endpoint| !endpoint.is_empty()) {
+        return endpoint;
+    }
     COMPILE_TIME_ENDPOINT
-        .map(str::to_string)
-        .or_else(browser_endpoint)
-        .unwrap_or_else(|| "http://localhost:8081/files".to_string())
+        .filter(|endpoint| !endpoint.is_empty())
+        .unwrap_or(LOCAL_SERVER_ENDPOINT)
+        .to_string()
+}
+
+/// Returns the same-origin endpoint owned by the demo's service worker.
+pub fn browser_endpoint() -> Option<String> {
+    let base = document_base_url()?;
+    Url::new_with_base("files", &base)
+        .ok()
+        .map(|url| url.href())
 }
 
 /// Returns whether this URL is the same-origin endpoint owned by the demo's
@@ -77,11 +103,23 @@ pub async fn prepare_browser_endpoint() -> Result<(), String> {
     Err("service worker did not take control within 10 seconds".to_string())
 }
 
-fn browser_endpoint() -> Option<String> {
-    let base = document_base_url()?;
-    Url::new_with_base("files", &base)
-        .ok()
-        .map(|url| url.href())
+/// Reloads the app pointed at `endpoint`, encoding it into the `?endpoint=`
+/// query string. Because the hook reads the endpoint once at construction, a
+/// full navigation is the clean way to re-point every example at a new server.
+pub fn navigate_to_endpoint(endpoint: &str) {
+    navigate_to_endpoint_with_server(endpoint, None);
+}
+
+/// Enables browser-local mode while remembering the current server endpoint.
+pub fn navigate_to_browser_endpoint(server_endpoint: &str) {
+    if let Some(endpoint) = browser_endpoint() {
+        navigate_to_endpoint_with_server(&endpoint, Some(server_endpoint));
+    }
+}
+
+/// Convenience: read the current endpoint from context.
+pub fn use_endpoint() -> String {
+    use_context::<Endpoint>().0
 }
 
 fn document_base_url() -> Option<String> {
@@ -94,10 +132,11 @@ fn js_message(value: wasm_bindgen::JsValue) -> String {
         .unwrap_or_else(|| "browser rejected service-worker registration".to_string())
 }
 
-fn endpoint_from_query() -> Option<String> {
+fn query_parameter(name: &str) -> Option<String> {
     let search = web_sys::window()?.location().search().ok()?;
     for pair in search.trim_start_matches('?').split('&') {
-        if let Some(value) = pair.strip_prefix("endpoint=")
+        if let Some((key, value)) = pair.split_once('=')
+            && key == name
             && let Ok(decoded) = js_sys::decode_uri_component(value)
             && let Some(s) = decoded.as_string()
         {
@@ -107,15 +146,20 @@ fn endpoint_from_query() -> Option<String> {
     None
 }
 
-/// Reloads the app pointed at `endpoint`, encoding it into the `?endpoint=`
-/// query string. Because the hook reads the endpoint once at construction, a
-/// full navigation is the clean way to re-point every example at a new server.
-pub fn navigate_to_endpoint(endpoint: &str) {
+fn endpoint_from_query() -> Option<String> {
+    query_parameter("endpoint")
+}
+
+fn remembered_server_endpoint() -> Option<String> {
+    query_parameter("server-endpoint")
+}
+
+fn navigate_to_endpoint_with_server(endpoint: &str, server_endpoint: Option<&str>) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let encoded = js_sys::encode_uri_component(endpoint);
-    let target = format!(
+    let mut target = format!(
         "{}?endpoint={}",
         window
             .location()
@@ -123,10 +167,13 @@ pub fn navigate_to_endpoint(endpoint: &str) {
             .unwrap_or_else(|_| "/".to_string()),
         encoded.as_string().unwrap_or_default(),
     );
+    if let Some(server_endpoint) = server_endpoint {
+        target.push_str("&server-endpoint=");
+        target.push_str(
+            &js_sys::encode_uri_component(server_endpoint)
+                .as_string()
+                .unwrap_or_default(),
+        );
+    }
     let _ = window.location().assign(&target);
-}
-
-/// Convenience: read the current endpoint from context.
-pub fn use_endpoint() -> String {
-    use_context::<Endpoint>().0
 }

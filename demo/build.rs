@@ -8,6 +8,7 @@ fn main() {
     // directive, changing (or first setting) TUS_ENDPOINT wouldn't invalidate
     // the cached build, so the baked-in fallback endpoint would go stale.
     println!("cargo:rerun-if-env-changed=TUS_ENDPOINT");
+    println!("cargo:rerun-if-env-changed=DEMO_BROWSER_LOCAL");
 
     // The worker artifacts have stable filenames. Varying the registration URL
     // with their contents forces browsers to run the update algorithm whenever

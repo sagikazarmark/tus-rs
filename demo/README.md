@@ -18,6 +18,7 @@ one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
 | `src/endpoint.rs` | Resolves the TUS endpoint, starts the browser-local worker, and shares the endpoint through context. |
 | `service-worker/` | Private Rust/WASM TUS endpoint used by the static demo. Runs `tus-protocol`, persists offsets in IndexedDB, and discards uploaded bytes. |
 | `public/service-worker.js` | Small JavaScript lifecycle shell that loads the Rust worker and synchronously intercepts fetch events. |
+| `wrangler.toml` | Asset-only Cloudflare Workers deployment; it has no server script or storage bindings. |
 | `src/style.css` | Tailwind/DaisyUI source compiled to the ignored `build/style.css` asset. |
 
 ## Pages
@@ -41,11 +42,13 @@ Snippets are highlighted at compile time with [`dioxus-code`](https://crates.io/
 
 Every example reads a single endpoint, resolved once at startup in this order:
 `?endpoint=...` query string → the `TUS_ENDPOINT` env var baked in at build time
-→ the same-origin, app-relative `files` endpoint provided by the demo's service worker. The
-header's endpoint switcher re-points the whole demo at another server by
-reloading with a fresh `?endpoint=`.
+→ the build's default. Local builds default to `http://localhost:8081/files`;
+Cloudflare builds default to the same-origin, app-relative `files` endpoint
+provided by the demo's service worker. The header can toggle browser-local mode
+or re-point the whole demo at another server. Either action reloads with a fresh
+`?endpoint=`.
 
-The default endpoint runs entirely in the browser. It executes the real
+The browser-local endpoint runs entirely in the browser. It executes the real
 `tus-protocol` state machine, stores upload metadata and accepted offsets in
 IndexedDB so reload/resume works, and discards each upload chunk after it has
 been processed. File contents never reach the static hosting server and are not
@@ -56,35 +59,38 @@ with chunks up to 4 MiB.
 
 - Rust with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
 - The [Dioxus CLI](https://dioxuslabs.com/learn/0.7/getting_started) (`cargo install dioxus-cli`)
-- [`wasm-pack`](https://rustwasm.github.io/wasm-pack/installer/) (`cargo install wasm-pack`)
 - [Bun](https://bun.sh) for the Tailwind + DaisyUI stylesheet build
+- [Dagger](https://docs.dagger.io/install/) for the Rust service-worker build
 
-The Dagger path below needs none of the local tooling above, just Dagger.
+The fully containerized path below needs only Dagger.
 
 ## Run locally
 
-Install the Tailwind toolchain, build the stylesheet and Rust service worker,
-then serve the app:
+Install the Tailwind toolchain, build the stylesheet, export the Rust service
+worker from Dagger, then serve the app:
 
 ```sh
 bun install
 bun run build
+dagger call service-worker export --path ./public/service-worker
 dx serve --port 8080
 ```
 
 `build/style.css` is generated from `src/style.css` and is git-ignored, so run
 `bun run build:css` after changing RSX utility classes. `bun run watch` rebuilds
 it continuously during development. The worker's generated JavaScript and WASM
-under `public/service-worker/` are also ignored; run
-`bun run build:service-worker` after changing the worker or `tus-protocol`.
+under `public/service-worker/` are also ignored; export them again with Dagger
+after changing the worker or `tus-protocol`.
 
-Open `http://localhost:8080`. `localhost` is treated as a secure context, as
-required for service workers. Production deployments must use HTTPS. Set an
-external upload endpoint from the header switcher, or bake one in with
-`TUS_ENDPOINT=https://uploads.example.com/files dx serve`.
+Open `http://localhost:8080`. The local build defaults to the native server at
+`http://localhost:8081/files`; start that server as shown below, enable the
+browser-local toggle, or bake in another endpoint with
+`TUS_ENDPOINT=https://uploads.example.com/files dx serve`. `localhost` is
+treated as a secure context, as required for service workers. Production
+deployments must use HTTPS.
 
-To exercise a native server instead of the browser-local endpoint, start one
-from the repository root and select `http://localhost:8081/files` in the header:
+For non-Dagger local development, start the native server from the repository
+root:
 
 ```sh
 cargo run -p tus-server -- serve \
@@ -96,31 +102,67 @@ cargo run -p tus-server -- serve \
   --state-dir /tmp/tus-state
 ```
 
-To produce a static bundle instead of serving, run `bun run build` followed by
-`dx bundle --platform web`; the bundle is written under `target/dx/` and
-contains the service-worker entry point, generated glue, and WASM binary.
+To produce a static bundle instead of serving, build the stylesheet and export
+the service worker as above, then run `dx bundle --platform web`. The bundle is
+written under `target/dx/` and contains the service-worker entry point,
+generated glue, and WASM binary.
 
 ## Run with Dagger
 
 Dagger builds and runs everything in containers, no local `dx`, `wasm-pack`,
-Bun, Node, or Rust toolchain required. The default demo needs no backend service:
+Bun, Node, Wrangler, or Rust toolchain required. Start the demo and this
+repository's native `tus-server` together:
 
 ```sh
+cd demo
 dagger up
 ```
 
-Then open `http://localhost:8080`. Uploads use the browser-local Rust worker and
-never enter the Dagger container. Point elsewhere anytime with the header's
-endpoint switcher.
+Then open `http://localhost:8080`. Uploads default to the real `tus-server` on
+port 8081. Its data lives in the container and is discarded when Dagger stops.
+Use the header toggle to switch to the browser-local Rust worker, or point to
+another endpoint with the adjacent field. To run only one service, use
+`dagger up service` or `dagger up server`.
 
-Run `dagger up server` separately when you want the optional native server on
-port 8081. Uploads that server handles live in the container and are discarded
-when it stops. To produce the static bundle in a container instead (the Dagger
-counterpart of `dx bundle --platform web` above):
+The local service and generic bundle default to the native endpoint. Override
+that build-time default with `dagger call service --browser-local up`. To
+produce the static bundle in a container instead (the Dagger counterpart of
+`dx bundle --platform web` above):
 
 ```sh
 dagger call build export --path ./dist   # static SPA bundle to ./dist
+dagger call service-worker export --path ./public/service-worker
 ```
+
+The second command exports only the generated service-worker JavaScript and
+WASM for use with a local Dioxus build.
+
+## Cloudflare Workers
+
+The Cloudflare target is the same browser-only static bundle. Cloudflare serves
+the Dioxus app and browser Service Worker as assets; there is no Cloudflare
+Worker script, R2 bucket, Durable Object, or other upload storage. Upload chunks
+are intercepted and discarded in the browser as described above.
+
+Build or run that deployment locally with Dagger:
+
+```sh
+dagger call worker build export --path ./dist-cloudflare
+dagger call worker dev up
+```
+
+Deploy it with explicit Cloudflare credentials:
+
+```sh
+dagger call worker deploy \
+  --account-id "$CLOUDFLARE_ACCOUNT_ID" \
+  --api-token env://CLOUDFLARE_API_TOKEN
+```
+
+The deployment config uses `tus-demo.dioxus.cc` as its custom domain and also
+enables `workers.dev` and preview URLs. CI deploys pushes to `main` to production
+and uploads same-repository pull requests as preview versions. Both deployment
+jobs need `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` repository secrets.
 
 ## CORS
 
@@ -144,6 +186,7 @@ Build-only checks, without serving anything:
 ```sh
 cargo check --target wasm32-unknown-unknown   # the wasm client
 cargo check -p demo-service-worker --target wasm32-unknown-unknown
-bun run build                                 # stylesheet + Rust service worker
-dagger check                                  # release bundle in a container, as CI does
+bun run build                                 # stylesheet
+dagger call service-worker entries            # Rust service worker
+dagger check                                  # web and Cloudflare release bundles, as CI does
 ```

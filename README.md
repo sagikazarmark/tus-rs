@@ -7,6 +7,9 @@
 
 **Rust implementation of the [TUS resumable upload protocol](https://tus.io/).**
 
+> [!WARNING]
+> This project is in early development and may change without notice.
+
 ## Features
 
 - **Standard TUS 1.0.0 core and extension support on the native server path**

@@ -5,8 +5,8 @@ use dioxus::prelude::*;
 
 use crate::components::{DemoFooter, DemoHeader, Sidebar, SidebarNavLink, SidebarNavSection};
 use crate::endpoint::{
-    Endpoint, is_browser_endpoint, navigate_to_endpoint, prepare_browser_endpoint,
-    resolve_endpoint, use_endpoint,
+    Endpoint, is_browser_endpoint, navigate_to_browser_endpoint, navigate_to_endpoint,
+    prepare_browser_endpoint, resolve_endpoint, server_endpoint, use_endpoint,
 };
 use crate::pages::{
     controls::Controls, errors::Errors, existing_url::ExistingUrl, headers::Headers, home::Home,
@@ -183,7 +183,20 @@ fn DemoLayout() -> Element {
 fn EndpointSwitcher() -> Element {
     let current = use_endpoint();
     let browser_local = is_browser_endpoint(&current);
-    let mut value = use_signal(|| current.clone());
+    let mut value = use_signal(|| {
+        if browser_local {
+            server_endpoint()
+        } else {
+            current.clone()
+        }
+    });
+    let toggle_browser_local = move |_| {
+        if browser_local {
+            navigate_to_endpoint(&server_endpoint());
+        } else {
+            navigate_to_browser_endpoint(&current);
+        }
+    };
 
     let submit = move |evt: FormEvent| {
         // Suppress the browser's native form navigation; we do our own
@@ -196,11 +209,20 @@ fn EndpointSwitcher() -> Element {
     };
 
     rsx! {
-        if browser_local {
-            span {
-                class: "badge badge-success badge-outline hidden whitespace-nowrap lg:inline-flex",
-                title: "Upload bytes stay in this browser and are discarded after processing",
-                "Browser-local"
+        label {
+            class: "flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-lg px-2 py-1 text-xs font-medium text-base-content/65 hover:bg-base-200 hover:text-base-content",
+            title: if browser_local {
+                "Switch to the configured TUS server"
+            } else {
+                "Process uploads in this browser and discard their bytes"
+            },
+            span { class: "hidden xl:inline", "Browser-local" }
+            input {
+                class: "toggle toggle-success toggle-sm",
+                r#type: "checkbox",
+                checked: browser_local,
+                aria_label: "Use browser-local TUS endpoint",
+                onchange: toggle_browser_local,
             }
         }
         form {
