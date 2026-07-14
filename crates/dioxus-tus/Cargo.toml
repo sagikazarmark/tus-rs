@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 # Referenced by path rather than through the workspace table: this crate is the
 # only wasm consumer and needs tus-uploader *without* its default native reqwest
 # transport, and Cargo cannot toggle `default-features` on an inherited dep.
-tus-uploader = { path = "../tus-uploader", version = "0.0.1", default-features = false }
+tus-uploader = { path = "../tus-uploader", version = "0.1.0", default-features = false }
 
 async-trait = { workspace = true }
 futures = { workspace = true }
