@@ -5,4 +5,5 @@
 ["","container.from",["docker.io/s3rius/rustus:latest","linux/amd64"],"sha256:abaee862e933ec07ce9723fa6afa4bd0481983d66cbeea9c14b6b33a1404a16c","pin"]
 ["","container.from",["docker.io/tusproject/tusd:latest","linux/arm64"],"sha256:9610f0f8edf4cceeb26f1b3ac9fa4bb4803d61a878e222c1573cda63c9e23374","pin"]
 ["","git.head",["https://github.com/rustsec/advisory-db.git"],"e20296422feea6aab5cd36bf993c68d22e4aa24f","float"]
-["","git.head",["https://github.com/sagikazarmark/daggerverse-beta"],"9bae8a11b063eeb5d9a7c45bcf8eb1a7b43fd041","float"]
+["","git.head",["https://github.com/sagikazarmark/daggerverse-beta"],"2c069e9ebbe703e515e0203064396c469f3a9f79","float"]
+["","git.head",["https://github.com/sagikazarmark/tus-conformance-tests"],"76aa29a8fa98d12318c9a5afc1244a0836e3f5d2","float"]

@@ -3,8 +3,8 @@ engineVersion = "v1.0.0"
 runtime.source = "dang"
 
 [[dependencies]]
-name = "hurl"
-source = "github.com/sagikazarmark/daggerverse-beta/hurl"
+name = "tus-conformance-tests"
+source = "github.com/sagikazarmark/tus-conformance-tests"
 
 [[dependencies]]
 name = "tus"
