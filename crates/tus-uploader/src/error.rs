@@ -225,7 +225,7 @@ impl Error {
     /// string):
     ///
     /// ```
-    /// use tus_client::Error;
+    /// use tus_uploader::Error;
     ///
     /// let io = std::io::Error::other("connection reset");
     /// let error = Error::transport(io);
@@ -254,7 +254,7 @@ impl Error {
     /// message string):
     ///
     /// ```
-    /// use tus_client::Error;
+    /// use tus_uploader::Error;
     ///
     /// let error = Error::source("read returned fewer bytes than requested");
     /// assert!(!error.is_retryable());

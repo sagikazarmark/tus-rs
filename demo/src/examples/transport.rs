@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use dioxus_tus::{
     TusConfig, TusStartOptions, file_from_event,
     transport::GlooNetTransport,
-    tus_client::{Result, Transport, TransportRequest, TransportResponse},
+    tus_uploader::{Result, Transport, TransportRequest, TransportResponse},
     use_tus_upload_with_transport,
 };
 
@@ -10,7 +10,7 @@ use crate::components::{DemoPane, DemoSurface};
 use crate::endpoint::use_endpoint;
 
 /// `use_tus_upload_with_transport` lets you swap the HTTP layer for any
-/// `tus_client::Transport`. Here we wrap the default browser transport
+/// `tus_uploader::Transport`. Here we wrap the default browser transport
 /// ([`GlooNetTransport`]) to log every request and response to a signal, which
 /// the panel below renders live. The same seam is how you'd add auth
 /// middleware, a service-worker proxy, or a mock transport for tests.

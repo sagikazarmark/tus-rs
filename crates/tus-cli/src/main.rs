@@ -9,7 +9,7 @@ use std::{
     io::IsTerminal,
     path::{Path, PathBuf},
 };
-use tus_client::{Client, FileSource, NewUpload, UploadSource};
+use tus_uploader::{Client, FileSource, NewUpload, UploadSource};
 use url::Url;
 
 mod progress;
@@ -99,7 +99,7 @@ enum Command {
 
         /// Maximum bytes per PATCH request. Smaller values force more PATCH
         /// boundaries, which is the unit of resume, useful for testing
-        /// resumability under network faults. Defaults to the tus-client
+        /// resumability under network faults. Defaults to the tus-uploader
         /// default (8 MiB) when unset.
         #[arg(
             long,
@@ -273,7 +273,7 @@ fn apply_upload_options(client: Client, options: UploadOptions) -> Client {
     }
 }
 
-fn print_upload_info(upload: tus_client::UploadInfo, output: OutputFormat) -> Result<()> {
+fn print_upload_info(upload: tus_uploader::UploadInfo, output: OutputFormat) -> Result<()> {
     match output {
         OutputFormat::Human => {
             print_upload_info_human(upload);
@@ -283,14 +283,14 @@ fn print_upload_info(upload: tus_client::UploadInfo, output: OutputFormat) -> Re
     }
 }
 
-fn print_upload_result(upload: tus_client::UploadInfo, output: UploadOutputFormat) {
+fn print_upload_result(upload: tus_uploader::UploadInfo, output: UploadOutputFormat) {
     match output {
         UploadOutputFormat::Human => eprintln!("Upload complete: {}", upload.url()),
         UploadOutputFormat::Url => println!("{}", upload.url()),
     }
 }
 
-fn print_create_result(upload: tus_client::UploadInfo, output: CreateOutputFormat) -> Result<()> {
+fn print_create_result(upload: tus_uploader::UploadInfo, output: CreateOutputFormat) -> Result<()> {
     match output {
         CreateOutputFormat::Human => {
             eprintln!("Upload created: {}", upload.url());
@@ -304,7 +304,7 @@ fn print_create_result(upload: tus_client::UploadInfo, output: CreateOutputForma
     }
 }
 
-fn print_upload_info_human(upload: tus_client::UploadInfo) {
+fn print_upload_info_human(upload: tus_uploader::UploadInfo) {
     println!("url: {}", upload.url());
     println!("offset: {}", upload.offset());
     match upload.length() {
@@ -317,7 +317,7 @@ fn print_upload_info_human(upload: tus_client::UploadInfo) {
     }
 }
 
-fn print_upload_info_json(upload: tus_client::UploadInfo) -> Result<()> {
+fn print_upload_info_json(upload: tus_uploader::UploadInfo) -> Result<()> {
     let output = UploadInfoJson {
         url: upload.url().to_string(),
         offset: upload.offset(),
@@ -328,7 +328,7 @@ fn print_upload_info_json(upload: tus_client::UploadInfo) -> Result<()> {
     Ok(())
 }
 
-fn metadata_to_sorted_strings(metadata: &tus_client::UploadMetadata) -> BTreeMap<String, String> {
+fn metadata_to_sorted_strings(metadata: &tus_uploader::UploadMetadata) -> BTreeMap<String, String> {
     metadata
         .iter()
         .map(|(key, value)| (key.clone(), value.to_string_lossy().into_owned()))
@@ -348,7 +348,7 @@ async fn create_upload(
     length: Option<u64>,
     metadata: Vec<(String, String)>,
     settings: &Settings,
-) -> Result<tus_client::UploadInfo> {
+) -> Result<tus_uploader::UploadInfo> {
     let endpoint = resolve_collection_endpoint(settings)?;
     let client = build_collection_client(endpoint, settings)?;
     let length = resolve_create_length(file, length).await?;
@@ -438,11 +438,11 @@ async fn upload_existing_file(
 }
 
 async fn drive_upload(
-    upload: &tus_client::Upload<tus_client::ReqwestTransport>,
+    upload: &tus_uploader::Upload<tus_uploader::ReqwestTransport>,
     source: FileSource,
     output: UploadOutputFormat,
     options: UploadOptions,
-) -> Result<tus_client::UploadInfo> {
+) -> Result<tus_uploader::UploadInfo> {
     let info = if should_show_progress(output, options) {
         let total = source.len();
         let mut progress = Progress::new(total);

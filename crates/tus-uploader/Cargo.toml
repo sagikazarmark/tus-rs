@@ -1,5 +1,5 @@
 [package]
-name = "tus-client"
+name = "tus-uploader"
 version.workspace = true
 description = "Async TUS client for resumable uploads"
 edition.workspace = true

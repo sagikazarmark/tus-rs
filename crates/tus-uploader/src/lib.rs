@@ -41,7 +41,7 @@ pub use tus_protocol::{Extension, MetadataValue, UploadMetadata};
 // `TransportRequest`, `#[async_trait]` for implementing `Transport`,
 // `UploadSource`, and `HeaderProvider`, protocol types like
 // `UploadMetadata`, and `url::Url` throughout). Depend on these through the
-// re-export so your version can never skew from the one `tus-client` was
+// re-export so your version can never skew from the one `tus-uploader` was
 // built against.
 pub use {async_trait, http, tus_protocol, url};
 

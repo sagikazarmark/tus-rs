@@ -1,4 +1,4 @@
-//! Per-endpoint cache for [`tus_client::ServerCapabilities`] with a 60-second TTL.
+//! Per-endpoint cache for [`tus_uploader::ServerCapabilities`] with a 60-second TTL.
 //!
 //! The TUS hook calls OPTIONS once on the first upload to learn which
 //! extensions the server advertises (creation-with-upload, termination,
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use futures::channel::oneshot;
-use tus_client::{Client, ServerCapabilities, Transport};
+use tus_uploader::{Client, ServerCapabilities, Transport};
 
 use crate::state::TusError;
 
@@ -245,8 +245,8 @@ mod tests {
     use http::{HeaderMap, HeaderName, HeaderValue};
     use wasm_bindgen_test::*;
 
-    use tus_client::url::Url;
-    use tus_client::{Error, Transport, TransportRequest, TransportResponse};
+    use tus_uploader::url::Url;
+    use tus_uploader::{Error, Transport, TransportRequest, TransportResponse};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -273,7 +273,7 @@ mod tests {
 
     #[async_trait(?Send)]
     impl Transport for CountingTransport {
-        async fn send(&self, _req: TransportRequest) -> tus_client::Result<TransportResponse> {
+        async fn send(&self, _req: TransportRequest) -> tus_uploader::Result<TransportResponse> {
             let mut inner = self.0.borrow_mut();
             inner.request_count += 1;
             inner
@@ -305,7 +305,7 @@ mod tests {
 
     #[async_trait(?Send)]
     impl Transport for SlowTransport {
-        async fn send(&self, _req: TransportRequest) -> tus_client::Result<TransportResponse> {
+        async fn send(&self, _req: TransportRequest) -> tus_uploader::Result<TransportResponse> {
             // Force one yield so a peer caller in the same `join` group
             // gets a poll-window in between our register-as-in-flight and
             // our cache-write-on-completion.

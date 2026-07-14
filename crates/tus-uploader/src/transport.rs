@@ -32,7 +32,7 @@ pub use reqwest::ReqwestMiddlewareTransport;
 /// Only `send` will ever be required.
 ///
 /// Implement it with the crate's re-exported `#[async_trait]` macro (shown
-/// below). tus-client keeps the `async_trait` shape as stable API rather than
+/// below). tus-uploader keeps the `async_trait` shape as stable API rather than
 /// native `async fn` in traits, so the returned future's `Send` bound can stay
 /// conditional on the target (required on native, dropped on `wasm32`).
 ///
@@ -50,7 +50,7 @@ pub use reqwest::ReqwestMiddlewareTransport;
 /// ```no_run
 /// use std::sync::Arc;
 ///
-/// use tus_client::{Error, Result, Transport, TransportRequest, TransportResponse};
+/// use tus_uploader::{Error, Result, Transport, TransportRequest, TransportResponse};
 ///
 /// // Non-`Clone` resources live behind an `Arc` so the transport stays `Clone`.
 /// struct HttpClient;
@@ -99,7 +99,7 @@ where
 /// type:
 ///
 /// ```no_run
-/// use tus_client::{BoxTransport, Client, Transport};
+/// use tus_uploader::{BoxTransport, Client, Transport};
 ///
 /// fn build_client<T: Transport>(endpoint: url::Url, transport: T) -> Client<BoxTransport> {
 ///     Client::with_transport(endpoint, BoxTransport::new(transport))

@@ -67,7 +67,7 @@
 //! - **HTTP trailers not supported.** Browser Fetch does not support HTTP
 //!   trailers. The `TusStartOptions` surface here doesn't expose trailer
 //!   checksum mode at all; use header-mode checksums on the
-//!   underlying `tus_client::Client`, or omit checksums entirely.
+//!   underlying `tus_uploader::Client`, or omit checksums entirely.
 //! - **Mid-upload bearer-token renewal not supported.** The token is applied
 //!   once when the upload starts. Call [`TusUploadHandle::abort`] then
 //!   [`TusUploadHandle::start`] again with the new token to renew.
@@ -118,7 +118,7 @@
 //!
 //! ### How do I test the hook with a mock server?
 //! Use [`use_tus_upload_with_transport`] and supply your own
-//! [`tus_client::Transport`] implementation that returns recorded
+//! [`tus_uploader::Transport`] implementation that returns recorded
 //! responses.
 //!
 //! # Stability
@@ -154,13 +154,13 @@ mod queue;
 #[cfg(target_arch = "wasm32")]
 pub mod transport;
 
-/// Re-export of the underlying [`tus_client`] crate.
+/// Re-export of the underlying [`tus_uploader`] crate.
 ///
 /// The custom-transport use case ([`use_tus_upload_with_transport`], which is
-/// generic over [`tus_client::Transport`]) requires naming trait and types
+/// generic over [`tus_uploader::Transport`]) requires naming trait and types
 /// from this crate. Re-exporting it lets consumers do so without adding, and
-/// version-matching, their own direct `tus_client` dependency.
-pub use tus_client;
+/// version-matching, their own direct `tus_uploader` dependency.
+pub use tus_uploader;
 
 pub use config::{TusConfig, TusStartOptions};
 pub use state::{TusError, TusUploadState, UploadStatus};

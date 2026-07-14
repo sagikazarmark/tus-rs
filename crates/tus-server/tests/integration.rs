@@ -128,13 +128,13 @@ mod tcp_tests {
 
     use reqwest::Client;
     use reqwest::header::AUTHORIZATION;
-    use tus_client::{Error as ClientError, NewUpload, ParallelUpload};
+    use tus_uploader::{Error as ClientError, NewUpload, ParallelUpload};
 
-    /// Test-local facade over `tus_client::Client` that keeps the call shapes
+    /// Test-local facade over `tus_uploader::Client` that keeps the call shapes
     /// in these tests compact.
     #[derive(Debug, Clone)]
     struct TusClient {
-        inner: tus_client::Client<tus_client::ReqwestTransport>,
+        inner: tus_uploader::Client<tus_uploader::ReqwestTransport>,
     }
 
     #[derive(Debug, Clone)]
@@ -142,11 +142,11 @@ mod tcp_tests {
         url: String,
         offset: u64,
         length: Option<u64>,
-        metadata: tus_client::UploadMetadata,
+        metadata: tus_uploader::UploadMetadata,
     }
 
-    impl From<tus_client::UploadInfo> for TusUpload {
-        fn from(info: tus_client::UploadInfo) -> Self {
+    impl From<tus_uploader::UploadInfo> for TusUpload {
+        fn from(info: tus_uploader::UploadInfo) -> Self {
             Self {
                 url: info.url().to_string(),
                 offset: info.offset(),
@@ -159,7 +159,7 @@ mod tcp_tests {
     impl TusClient {
         fn new(endpoint: impl AsRef<str>) -> Result<Self, ClientError> {
             Ok(Self {
-                inner: tus_client::Client::new(url::Url::parse(endpoint.as_ref())?),
+                inner: tus_uploader::Client::new(url::Url::parse(endpoint.as_ref())?),
             })
         }
 
@@ -198,7 +198,7 @@ mod tcp_tests {
         fn with_checksum_trailer(mut self, algorithm: tus_protocol::ChecksumAlgorithm) -> Self {
             self.inner = self
                 .inner
-                .with_checksum(tus_client::ChecksumMode::Trailer(algorithm));
+                .with_checksum(tus_uploader::ChecksumMode::Trailer(algorithm));
             self
         }
 
@@ -578,7 +578,7 @@ mod tcp_tests {
     }
 
     #[tokio::test]
-    async fn tus_client_uploads_and_deletes_over_tcp() {
+    async fn tus_uploader_uploads_and_deletes_over_tcp() {
         let mut server = spawn_server(&[]);
         wait_for_http(&mut server).await;
 
@@ -619,12 +619,12 @@ mod tcp_tests {
         let err = client.head(&upload.url).await.unwrap_err();
         assert!(matches!(
             err,
-            ClientError::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::NOT_FOUND
+            ClientError::UnexpectedResponse { status, .. } if status == tus_uploader::http::StatusCode::NOT_FOUND
         ));
     }
 
     #[tokio::test]
-    async fn tus_client_resumes_partial_upload_over_tcp() {
+    async fn tus_uploader_resumes_partial_upload_over_tcp() {
         let mut server = spawn_server(&[]);
         wait_for_http(&mut server).await;
 
@@ -671,7 +671,7 @@ mod tcp_tests {
     }
 
     #[tokio::test]
-    async fn tus_client_recovers_from_stale_state_after_restart() {
+    async fn tus_uploader_recovers_from_stale_state_after_restart() {
         let root = tempfile::tempdir().unwrap();
         let mut server = spawn_server_in_root(root.path(), &[]);
         wait_for_http(&mut server).await;
@@ -745,7 +745,7 @@ mod tcp_tests {
     }
 
     #[tokio::test]
-    async fn tus_client_parallel_uploads_over_tcp_with_all_extensions() {
+    async fn tus_uploader_parallel_uploads_over_tcp_with_all_extensions() {
         let mut server = spawn_server(&["--all-extensions"]);
         wait_for_http(&mut server).await;
 
@@ -779,7 +779,7 @@ mod tcp_tests {
     }
 
     #[tokio::test]
-    async fn tus_client_uploads_with_checksum_headers_over_tcp() {
+    async fn tus_uploader_uploads_with_checksum_headers_over_tcp() {
         let mut server = spawn_server(&["--all-extensions"]);
         wait_for_http(&mut server).await;
 
@@ -811,7 +811,7 @@ mod tcp_tests {
     }
 
     #[tokio::test]
-    async fn tus_client_uploads_with_checksum_trailers_over_tcp() {
+    async fn tus_uploader_uploads_with_checksum_trailers_over_tcp() {
         let mut server = spawn_server(&["--all-extensions"]);
         wait_for_http(&mut server).await;
 
@@ -980,7 +980,7 @@ mod tcp_tests {
             .storage_root
             .join(format!("{upload_id}/parts/0000000001"));
         let state_path = server.state_dir.join(format!("{upload_id}.json"));
-        let tus_client = TusClient::new(files_endpoint(&server)).unwrap();
+        let tus_uploader = TusClient::new(files_endpoint(&server)).unwrap();
 
         assert!(
             state_path.exists(),
@@ -995,7 +995,7 @@ mod tcp_tests {
         loop {
             let state_gone = !state_path.exists();
             let upload_gone = !upload_path.exists() && !staged_part_path.exists();
-            let status = match tus_client.head(&upload_url).await {
+            let status = match tus_uploader.head(&upload_url).await {
                 Ok(_) => 200,
                 Err(ClientError::UnexpectedResponse { status, .. }) => status.as_u16(),
                 Err(error) => panic!("unexpected HEAD failure: {error:?}"),
@@ -1118,7 +1118,7 @@ mod tcp_tests {
     }
 
     #[tokio::test]
-    async fn tus_client_authenticates_with_bearer_token_over_tcp() {
+    async fn tus_uploader_authenticates_with_bearer_token_over_tcp() {
         let mut server = spawn_server(&["--auth-token", "secret-token"]);
         wait_for_http(&mut server).await;
 
@@ -1134,7 +1134,7 @@ mod tcp_tests {
             .unwrap_err();
         assert!(matches!(
             unauthorized,
-            ClientError::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::UNAUTHORIZED
+            ClientError::UnexpectedResponse { status, .. } if status == tus_uploader::http::StatusCode::UNAUTHORIZED
         ));
 
         let client = TusClient::new(&endpoint)

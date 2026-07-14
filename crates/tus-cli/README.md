@@ -6,7 +6,7 @@
 **Command-line client for the [tus resumable upload protocol](https://tus.io/).**
 
 `tus-cli` provides the `tus` binary for uploading files to tus-compatible
-servers. It is built on [`tus-client`](https://crates.io/crates/tus-client) and
+servers. It is built on [`tus-uploader`](https://crates.io/crates/tus-uploader) and
 supports creating uploads, resuming existing upload resources, inspecting upload
 state, terminating uploads, metadata, bearer-token authentication, and config
 files.
@@ -138,11 +138,11 @@ set in the config file as an upload default.
 
 ## Protocol Support
 
-`tus-cli` targets tus 1.0.0 client upload workflows through `tus-client`.
+`tus-cli` targets tus 1.0.0 client upload workflows through `tus-uploader`.
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| Core protocol | Supported | Uses `POST`, `HEAD`, `PATCH`, and `DELETE` through `tus-client`. |
+| Core protocol | Supported | Uses `POST`, `HEAD`, `PATCH`, and `DELETE` through `tus-uploader`. |
 | Creation | Supported | `create` creates an empty upload URL; `upload <FILE>` creates and uploads when an endpoint is configured. |
 | Resume | Supported | `upload <FILE> <UPLOAD_URL>` reads the current offset and continues from there. |
 | Metadata | Supported | `--metadata KEY=VALUE` sends upload metadata during creation. |
@@ -153,7 +153,7 @@ set in the config file as an upload default.
 `tus-cli` is a native command-line tool. It uploads from a file-backed source so
 large files are read in upload chunks instead of being buffered fully in memory.
 Upload behavior, retry handling, chunking, resume offset validation, and URL
-resolution are delegated to `tus-client`.
+resolution are delegated to `tus-uploader`.
 
 ## License
 

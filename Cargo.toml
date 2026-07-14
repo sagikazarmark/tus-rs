@@ -14,10 +14,10 @@ homepage = "https://github.com/sagikazarmark/tus-rs"
 dioxus-tus = { path = "crates/dioxus-tus", version = "0.0.1" }
 tus-axum = { path = "crates/tus-axum", version = "0.0.1" }
 tus-cli = { path = "crates/tus-cli", version = "0.0.1" }
-tus-client = { path = "crates/tus-client", version = "0.0.1" }
 tus-hook-http = { path = "crates/tus-hook-http", version = "0.0.1" }
 tus-protocol = { path = "crates/tus-protocol", version = "0.0.1" }
 tus-storage-opendal = { path = "crates/tus-storage-opendal", version = "0.0.1" }
+tus-uploader = { path = "crates/tus-uploader", version = "0.0.1" }
 
 anyhow = "1"
 async-trait = "0.1"

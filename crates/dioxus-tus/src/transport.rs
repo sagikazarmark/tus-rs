@@ -2,14 +2,14 @@ use async_trait::async_trait;
 use gloo_net::http::RequestBuilder;
 use http::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode};
 use std::str::FromStr;
-use tus_client::{Error, Transport, TransportBody, TransportRequest, TransportResponse};
+use tus_uploader::{Error, Transport, TransportBody, TransportRequest, TransportResponse};
 
 #[derive(Clone)]
 pub struct GlooNetTransport;
 
 #[async_trait(?Send)]
 impl Transport for GlooNetTransport {
-    async fn send(&self, request: TransportRequest) -> tus_client::Result<TransportResponse> {
+    async fn send(&self, request: TransportRequest) -> tus_uploader::Result<TransportResponse> {
         let (parts, body) = request.into_parts();
         let url = parts.uri.to_string();
         let mut builder = RequestBuilder::new(&url).method(parts.method.clone());
@@ -78,7 +78,7 @@ impl Transport for GlooNetTransport {
 }
 
 // The `BytesWithTrailer` fail-closed path is intentionally not unit-tested
-// here: `tus_client::TransportBody` is `#[non_exhaustive]`, so an external
+// here: `tus_uploader::TransportBody` is `#[non_exhaustive]`, so an external
 // crate (this one) cannot construct the `BytesWithTrailer` variant to feed it
 // in, and `GlooNetTransport::send` performs a real browser `fetch`, which needs
 // a live server and a browser runtime to exercise. The trailer rejection is a

@@ -65,9 +65,9 @@ pub enum TusError {
     FileTooLarge { file_size: u64, max_size: u64 },
 }
 
-impl From<tus_client::Error> for TusError {
-    fn from(e: tus_client::Error) -> Self {
-        use tus_client::Error;
+impl From<tus_uploader::Error> for TusError {
+    fn from(e: tus_uploader::Error) -> Self {
+        use tus_uploader::Error;
         match e {
             Error::MissingHeader { header, .. } => TusError::MissingHeader(header.to_string()),
             Error::InvalidHeader { header, value, .. } => TusError::InvalidHeader {
@@ -137,7 +137,7 @@ impl From<tus_client::Error> for TusError {
                     TusError::Transport(s)
                 }
             }
-            // `tus_client::Error` is `#[non_exhaustive]`; a variant added in a
+            // `tus_uploader::Error` is `#[non_exhaustive]`; a variant added in a
             // future release degrades to a generic transport error carrying
             // its `Display` text rather than failing to compile.
             other => TusError::Transport(other.to_string()),

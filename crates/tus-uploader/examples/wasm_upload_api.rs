@@ -6,17 +6,21 @@ mod wasm {
     struct CustomUploadSource(Vec<u8>);
 
     #[async_trait::async_trait(?Send)]
-    impl tus_client::UploadSource for CustomUploadSource {
+    impl tus_uploader::UploadSource for CustomUploadSource {
         fn len(&self) -> u64 {
             self.0.len() as u64
         }
 
-        async fn read_chunk(&mut self, offset: u64, max_len: usize) -> tus_client::Result<Vec<u8>> {
+        async fn read_chunk(
+            &mut self,
+            offset: u64,
+            max_len: usize,
+        ) -> tus_uploader::Result<Vec<u8>> {
             // A custom source signals its own misbehavior with the public
             // `Error::source` constructor, so the failure is reported as the
             // semantically-correct permanent variant rather than mislabeled.
             let offset = usize::try_from(offset)
-                .map_err(|_| tus_client::Error::source("offset exceeds addressable range"))?;
+                .map_err(|_| tus_uploader::Error::source("offset exceeds addressable range"))?;
             let Some(bytes) = self.0.get(offset..) else {
                 return Ok(Vec::new());
             };
@@ -26,11 +30,11 @@ mod wasm {
     }
 
     async fn compile_wasm_upload_api<T>(
-        client: tus_client::Client<T>,
+        client: tus_uploader::Client<T>,
         upload_url: url::Url,
-    ) -> tus_client::Result<()>
+    ) -> tus_uploader::Result<()>
     where
-        T: tus_client::Transport,
+        T: tus_uploader::Transport,
     {
         let upload = client.upload_at(upload_url)?;
         let custom_source = CustomUploadSource(Vec::new());
@@ -41,15 +45,15 @@ mod wasm {
             .upload_with_progress(Vec::new(), &mut |_uploaded, _total| {})
             .await?;
         client
-            .upload_from(Vec::new(), tus_client::UploadMetadata::new())
+            .upload_from(Vec::new(), tus_uploader::UploadMetadata::new())
             .await?;
         client
-            .upload_from(custom_source, tus_client::UploadMetadata::new())
+            .upload_from(custom_source, tus_uploader::UploadMetadata::new())
             .await?;
         client
             .upload_from_with_progress(
                 Vec::new(),
-                tus_client::UploadMetadata::new(),
+                tus_uploader::UploadMetadata::new(),
                 &mut |_uploaded, _total| {},
             )
             .await?;

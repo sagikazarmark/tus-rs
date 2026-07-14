@@ -2,7 +2,7 @@
 mod platform {
     use std::{collections::HashMap, env, error::Error, path::PathBuf};
 
-    use tus_client::{Client, FileSource};
+    use tus_uploader::{Client, FileSource};
     use url::Url;
 
     pub type MainResult = Result<(), Box<dyn Error>>;

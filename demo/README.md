@@ -34,7 +34,7 @@ one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
 | `/resume` | Resuming | `scan_resumable()` + `resume_entry()` + `resume_persisted()`: resume across a tab reload |
 | `/existing-url` | Resuming | `start_with_url()` / `with_existing_url()` + `state.upload_url`: resume a server-issued URL |
 | `/errors` | Advanced | Branching on the typed `TusError` surface (CORS, server status, oversize, …) |
-| `/transport` | Advanced | `use_tus_upload_with_transport()`: a custom `tus_client::Transport` that logs requests |
+| `/transport` | Advanced | `use_tus_upload_with_transport()`: a custom `tus_uploader::Transport` that logs requests |
 
 Snippets are highlighted at compile time with [`dioxus-code`](https://crates.io/crates/dioxus-code)'s `code!` macro (its tree-sitter parser cross-compiles a C sysroot for wasm, so the build needs `clang`, the devenv shell and the Dagger container both provide it). Styled with [Tailwind CSS](https://tailwindcss.com) + [DaisyUI](https://daisyui.com) using a custom light-default theme (`src/style.css`).
 

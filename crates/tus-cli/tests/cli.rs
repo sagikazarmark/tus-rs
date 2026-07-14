@@ -17,11 +17,11 @@ use axum::{
 };
 use tokio::net::TcpListener;
 use tus_axum::TusState;
-use tus_client::{Client, NewUpload};
 use tus_protocol::{
     Config, NoopHookExecutor, ProtocolHandle, UploadMetadata, locking::memory::MemoryLocker,
     state::memory::MemoryStateStore, storage::memory::MemoryStorage,
 };
+use tus_uploader::{Client, NewUpload};
 
 fn tus_bin() -> &'static str {
     env!("CARGO_BIN_EXE_tus")
@@ -439,7 +439,7 @@ async fn upload_uses_config_file_for_endpoint_and_bearer_token() {
         spawn_server_with_bearer(Config::default(), Some("secret-token")).await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config-upload.txt");
-    let config_path = dir.path().join("tus-client.toml");
+    let config_path = dir.path().join("tus-uploader.toml");
     tokio::fs::write(&path, b"hello").await.unwrap();
     tokio::fs::write(
         &config_path,
@@ -541,7 +541,7 @@ async fn create_then_terminate_removes_created_upload() {
         .unwrap_err();
     assert!(matches!(
         err,
-        tus_client::Error::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::NOT_FOUND
+        tus_uploader::Error::UnexpectedResponse { status, .. } if status == tus_uploader::http::StatusCode::NOT_FOUND
     ));
 
     handle.abort();
@@ -624,7 +624,7 @@ async fn upload_uses_config_file_chunk_size_for_patch_requests() {
     let (endpoint, handle, patch_requests) = spawn_recording_server(Config::default()).await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config-chunked-upload.txt");
-    let config_path = dir.path().join("tus-client.toml");
+    let config_path = dir.path().join("tus-uploader.toml");
     tokio::fs::write(&path, b"abcdefghij").await.unwrap();
     tokio::fs::write(
         &config_path,
@@ -1195,7 +1195,7 @@ async fn terminate_accepts_absolute_path_upload_url() {
         .unwrap_err();
     assert!(matches!(
         err,
-        tus_client::Error::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::NOT_FOUND
+        tus_uploader::Error::UnexpectedResponse { status, .. } if status == tus_uploader::http::StatusCode::NOT_FOUND
     ));
 
     handle.abort();
@@ -1228,7 +1228,7 @@ async fn terminate_terminates_the_upload() {
         .unwrap_err();
     assert!(matches!(
         err,
-        tus_client::Error::UnexpectedResponse { status, .. } if status == tus_client::http::StatusCode::NOT_FOUND
+        tus_uploader::Error::UnexpectedResponse { status, .. } if status == tus_uploader::http::StatusCode::NOT_FOUND
     ));
 
     handle.abort();

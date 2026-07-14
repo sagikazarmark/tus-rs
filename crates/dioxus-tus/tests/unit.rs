@@ -42,16 +42,16 @@ fn no_token_when_both_are_none() {
 // and `build_metadata` moved to `src/config.rs`, which can reach them.
 
 // Mock transport, helpers, and the client-driven integration/error-mapping
-// tests are native-only; `tus_client::Client::with_transport` and
+// tests are native-only; `tus_uploader::Client::with_transport` and
 // `tokio::test` don't make sense under wasm32. Gating the helpers too keeps
 // wasm clippy from flagging them as dead code when the dependent tests are
 // gated out.
 //
-// The new `tus_client::Error` variants are all `#[non_exhaustive]` and cannot
+// The new `tus_uploader::Error` variants are all `#[non_exhaustive]` and cannot
 // be constructed from outside the crate, so the error-mapping and
 // retry-classification tests that used to build `ClientError` variants
 // directly now drive a `MockTransport` through the client to produce genuine
-// `tus_client::Error`s and then assert on the mapped `TusError` /
+// `tus_uploader::Error`s and then assert on the mapped `TusError` /
 // `is_retryable_error` result.
 #[cfg(not(target_arch = "wasm32"))]
 mod native_client {
@@ -60,14 +60,14 @@ mod native_client {
     use dioxus_tus::retry::is_retryable_error;
     use http::{HeaderMap, HeaderName, HeaderValue};
     use std::collections::VecDeque;
-    use tus_client::url::Url;
-    use tus_client::{Client, Error, Transport, TransportRequest, TransportResponse};
+    use tus_uploader::url::Url;
+    use tus_uploader::{Client, Error, Transport, TransportRequest, TransportResponse};
 
     #[derive(Clone, Default)]
     struct MockTransport {
         requests: std::sync::Arc<std::sync::Mutex<Vec<TransportRequest>>>,
         responses:
-            std::sync::Arc<std::sync::Mutex<VecDeque<tus_client::Result<TransportResponse>>>>,
+            std::sync::Arc<std::sync::Mutex<VecDeque<tus_uploader::Result<TransportResponse>>>>,
     }
 
     impl MockTransport {
@@ -81,7 +81,7 @@ mod native_client {
 
     #[async_trait]
     impl Transport for MockTransport {
-        async fn send(&self, req: TransportRequest) -> tus_client::Result<TransportResponse> {
+        async fn send(&self, req: TransportRequest) -> tus_uploader::Result<TransportResponse> {
             self.requests.lock().unwrap().push(req);
             self.responses
                 .lock()
@@ -215,7 +215,7 @@ mod native_client {
     }
 
     // =================================================================
-    // From<tus_client::Error> for TusError mapping. Pin the error
+    // From<tus_uploader::Error> for TusError mapping. Pin the error
     // contract so downstream consumers can rely on which variant they
     // get. Errors are produced by driving the mock through the client.
     // =================================================================
@@ -312,9 +312,9 @@ mod native_client {
     // NOTE: The `invalid_default_header_redacts_*` /
     // `invalid_default_header_keeps_other_values` tests (4) and
     // `client_offset_beyond_source_maps_to_transport` (1) were removed.
-    // They constructed `tus_client::Error` variants (`InvalidDefaultHeader`,
+    // They constructed `tus_uploader::Error` variants (`InvalidDefaultHeader`,
     // `OffsetBeyondSource`) directly, which is no longer possible now that
-    // every `tus_client::Error` variant is `#[non_exhaustive]` and
+    // every `tus_uploader::Error` variant is `#[non_exhaustive]` and
     // unconstructable from outside the crate. In addition, the
     // auth-header-redaction path is no longer emitted by the client: it now
     // takes a pre-validated `HeaderMap` and the engine validates bearer
@@ -445,7 +445,7 @@ fn blob_slice_start_past_end_returns_empty() {
 }
 
 // =====================================================================
-// From<tus_client::Error> for TusError: transport CORS heuristic. These
+// From<tus_uploader::Error> for TusError: transport CORS heuristic. These
 // use the externally-constructible `Error::transport(msg)` constructor;
 // `TusError::from` inspects the transport error's `source.to_string()`,
 // which equals the string passed here, so the per-browser heuristic fires.
@@ -455,7 +455,7 @@ use dioxus_tus::TusError;
 
 #[test]
 fn client_transport_failed_to_fetch_maps_to_cors() {
-    let e = tus_client::Error::transport("TypeError: Failed to fetch");
+    let e = tus_uploader::Error::transport("TypeError: Failed to fetch");
     let mapped: TusError = e.into();
     matches!(mapped, TusError::Cors)
         .then_some(())
@@ -464,7 +464,7 @@ fn client_transport_failed_to_fetch_maps_to_cors() {
 
 #[test]
 fn client_transport_network_error_maps_to_cors() {
-    let e = tus_client::Error::transport("NetworkError when attempting to fetch resource");
+    let e = tus_uploader::Error::transport("NetworkError when attempting to fetch resource");
     let mapped: TusError = e.into();
     matches!(mapped, TusError::Cors)
         .then_some(())
@@ -479,7 +479,7 @@ fn client_transport_network_error_maps_to_cors() {
 /// `TusError::Cors` to show the CORS-help UI.
 #[test]
 fn client_transport_load_failed_maps_to_cors() {
-    let e = tus_client::Error::transport("TypeError: Load failed");
+    let e = tus_uploader::Error::transport("TypeError: Load failed");
     let mapped: TusError = e.into();
     matches!(mapped, TusError::Cors)
         .then_some(())
@@ -488,7 +488,7 @@ fn client_transport_load_failed_maps_to_cors() {
 
 #[test]
 fn client_transport_other_string_maps_to_transport() {
-    let e = tus_client::Error::transport("connection reset by peer");
+    let e = tus_uploader::Error::transport("connection reset by peer");
     let mapped: TusError = e.into();
     match mapped {
         TusError::Transport(s) => assert!(s.contains("connection reset")),
@@ -542,6 +542,6 @@ use dioxus_tus::retry::is_retryable_error;
 
 #[test]
 fn retry_classification_transport_is_retryable() {
-    let e = tus_client::Error::transport("connection reset");
+    let e = tus_uploader::Error::transport("connection reset");
     assert!(is_retryable_error(&e));
 }

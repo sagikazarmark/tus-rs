@@ -9,9 +9,9 @@
 //! plumbing required) and so a single source of truth governs both the
 //! engine and the test assertions.
 
-use tus_client::Error;
+use tus_uploader::Error;
 
-/// Classifies a [`tus_client::Error`] as retryable or not.
+/// Classifies a [`tus_uploader::Error`] as retryable or not.
 ///
 /// Retryable conditions:
 /// - 5xx responses (transient server errors).
@@ -37,7 +37,7 @@ pub fn is_retryable_error(e: &Error) -> bool {
 /// Status-code half of [`is_retryable_error`]. Exposed separately so
 /// callers that already have a parsed status (e.g. surfaced through
 /// [`crate::state::TusError::Server`]) can reuse the rule without
-/// reconstructing a [`tus_client::Error`].
+/// reconstructing a [`tus_uploader::Error`].
 pub fn is_retryable_status(status: u16) -> bool {
     status >= 500 || status == 408 || status == 409 || status == 429
 }

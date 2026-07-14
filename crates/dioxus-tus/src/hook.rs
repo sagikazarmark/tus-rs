@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use dioxus::prelude::*;
-use tus_client::{Client, NewUpload, UploadInfo};
+use tus_uploader::{Client, NewUpload, UploadInfo};
 use web_sys::File;
 
 use crate::blob::{blob_size, blob_slice_to_bytes};
@@ -197,9 +197,9 @@ pub(crate) enum RunOutcome {
 
 fn validate_server_offset(offset: u64, file_size: u64) -> Result<(), TusError> {
     if offset > file_size {
-        // `tus_client::Error`'s variants are `#[non_exhaustive]` and cannot be
+        // `tus_uploader::Error`'s variants are `#[non_exhaustive]` and cannot be
         // constructed outside that crate, so build the mapped `TusError`
-        // directly (matching the `From<tus_client::Error>` text).
+        // directly (matching the `From<tus_uploader::Error>` text).
         return Err(TusError::Transport(format!(
             "server offset {offset} exceeds local file size {file_size}"
         )));
@@ -405,7 +405,7 @@ pub fn use_tus_upload(config: TusConfig) -> (ReadSignal<TusUploadState>, TusUplo
     use_tus_upload_with_transport(config, GlooNetTransport)
 }
 
-/// Like [`use_tus_upload`], but takes a custom [`tus_client::Transport`]
+/// Like [`use_tus_upload`], but takes a custom [`tus_uploader::Transport`]
 /// implementation. Use this for testing (mock transports), service-worker
 /// integration, or any case where the default browser fetch via
 /// [`crate::transport::GlooNetTransport`] isn't the right plumbing.
@@ -417,7 +417,7 @@ pub fn use_tus_upload_with_transport<T>(
     transport: T,
 ) -> (ReadSignal<TusUploadState>, TusUploadHandle)
 where
-    T: tus_client::Transport + Clone + 'static,
+    T: tus_uploader::Transport + Clone + 'static,
 {
     let state: Signal<TusUploadState> = use_signal(TusUploadState::default);
 
@@ -483,7 +483,7 @@ pub(crate) async fn run_command_loop<T, S>(
     state: &mut S,
     transport: T,
 ) where
-    T: tus_client::Transport + Clone + 'static,
+    T: tus_uploader::Transport + Clone + 'static,
     S: StateSink,
 {
     use futures::StreamExt;
@@ -595,17 +595,17 @@ pub(crate) async fn run_upload<T, S>(
     transport: T,
 ) -> Result<RunOutcome, TusError>
 where
-    T: tus_client::Transport,
+    T: tus_uploader::Transport,
     S: StateSink,
 {
     use futures::StreamExt;
 
-    // `with_max_chunk_size` is intentionally NOT set here: tus-client's chunk
+    // `with_max_chunk_size` is intentionally NOT set here: tus-uploader's chunk
     // size only governs its higher-level upload-loop helpers, which this
     // engine does not call. The engine slices chunks itself (see the
     // `'chunk_loop` below) using `config.chunk_size` and drives one PATCH per
     // slice via `Upload::upload_chunk`.
-    let endpoint_url = tus_client::url::Url::parse(&config.endpoint)
+    let endpoint_url = tus_uploader::url::Url::parse(&config.endpoint)
         .map_err(|e| TusError::InvalidUrl(e.to_string()))?;
     let mut client = Client::with_transport(endpoint_url, transport)
         .with_max_retries(config.max_retries)
@@ -701,7 +701,7 @@ where
                 // surfacing the auth error. Callers wanting to discard the
                 // entry on auth failure should use `TusQueueHandle::remove_item`.
                 Err(e) => match &e {
-                    tus_client::Error::UnexpectedResponse { status, body, .. }
+                    tus_uploader::Error::UnexpectedResponse { status, body, .. }
                         if matches!(status.as_u16(), 400 | 410 | 404) =>
                     {
                         crate::persistence::remove(&mk);
@@ -776,7 +776,7 @@ where
                     Err(e)
                         if matches!(
                             &e,
-                            tus_client::Error::UnexpectedResponse { status, .. }
+                            tus_uploader::Error::UnexpectedResponse { status, .. }
                                 if matches!(status.as_u16(), 405 | 412 | 415 | 501)
                         ) =>
                     {
@@ -1060,7 +1060,7 @@ where
 
         // Retry loop for transient failures. Clone is paid only when a retry
         // is needed (rare); the success path moves the chunk by reference
-        // through tus-client's Vec parameter.
+        // through tus-uploader's Vec parameter.
         //
         // The retry backoff races against the command channel so Abort,
         // Start, and Pause aren't held until the next sleep elapses;
@@ -1322,7 +1322,7 @@ mod engine_tests {
     use http::{HeaderMap, HeaderName, HeaderValue, Method};
     use wasm_bindgen_test::*;
 
-    use tus_client::{Error, Transport, TransportBody, TransportRequest, TransportResponse};
+    use tus_uploader::{Error, Transport, TransportBody, TransportRequest, TransportResponse};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -1400,7 +1400,7 @@ mod engine_tests {
 
     #[async_trait(?Send)]
     impl Transport for MockTransport {
-        async fn send(&self, req: TransportRequest) -> tus_client::Result<TransportResponse> {
+        async fn send(&self, req: TransportRequest) -> tus_uploader::Result<TransportResponse> {
             // Read the delay before pushing the request; otherwise the
             // borrow conflicts with the awaited delay future.
             let delay_ms = self.0.borrow().delay_ms;

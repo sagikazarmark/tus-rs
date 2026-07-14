@@ -28,8 +28,8 @@ fn make_file(name: &str, content: &[u8]) -> web_sys::File {
 #[wasm_bindgen_test]
 async fn gloo_transport_creates_upload_and_gets_location() {
     use dioxus_tus::transport::GlooNetTransport;
-    use tus_client::url::Url;
-    use tus_client::{Client, NewUpload, UploadMetadata};
+    use tus_uploader::url::Url;
+    use tus_uploader::{Client, NewUpload, UploadMetadata};
 
     let endpoint = test_endpoint();
     let client = Client::with_transport(Url::parse(&endpoint).unwrap(), GlooNetTransport);
@@ -51,8 +51,8 @@ async fn gloo_transport_creates_upload_and_gets_location() {
 #[wasm_bindgen_test]
 async fn patch_chunk_delivers_bytes_and_advances_offset() {
     use dioxus_tus::transport::GlooNetTransport;
-    use tus_client::url::Url;
-    use tus_client::{Client, NewUpload, UploadMetadata};
+    use tus_uploader::url::Url;
+    use tus_uploader::{Client, NewUpload, UploadMetadata};
 
     let endpoint = test_endpoint();
     let client = Client::with_transport(Url::parse(&endpoint).unwrap(), GlooNetTransport);
@@ -109,8 +109,8 @@ async fn read_blob_slice(blob: &web_sys::Blob, start: u64, end: u64) -> Vec<u8> 
 #[wasm_bindgen_test]
 async fn full_upload_via_client_and_blob_slice() {
     use dioxus_tus::transport::GlooNetTransport;
-    use tus_client::url::Url;
-    use tus_client::{Client, NewUpload, UploadMetadata};
+    use tus_uploader::url::Url;
+    use tus_uploader::{Client, NewUpload, UploadMetadata};
 
     let endpoint = test_endpoint();
     let content = b"wasm hook test data";
@@ -159,8 +159,8 @@ async fn full_upload_via_client_and_blob_slice() {
 #[wasm_bindgen_test]
 async fn resume_from_existing_url_continues_from_server_offset() {
     use dioxus_tus::transport::GlooNetTransport;
-    use tus_client::url::Url;
-    use tus_client::{Client, NewUpload, UploadMetadata};
+    use tus_uploader::url::Url;
+    use tus_uploader::{Client, NewUpload, UploadMetadata};
 
     let endpoint = test_endpoint();
     let content = b"resume-target-bytes-padding-padding";

@@ -57,7 +57,7 @@ fn features() -> Vec<Feature> {
         },
         Feature {
             title: "Bring your own transport",
-            body: "Swap the HTTP layer for any tus_client::Transport: middleware, proxies, or a test mock.",
+            body: "Swap the HTTP layer for any tus_uploader::Transport: middleware, proxies, or a test mock.",
             route: Route::Transport {},
             cta: "See custom transport",
         },

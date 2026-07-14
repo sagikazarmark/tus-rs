@@ -1420,7 +1420,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tus-client",
+ "tus-uploader",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5009,33 +5009,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "tus-axum",
- "tus-client",
  "tus-protocol",
+ "tus-uploader",
  "url",
-]
-
-[[package]]
-name = "tus-client"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "bytes",
- "fastrand",
- "gloo-timers 0.4.0",
- "http",
- "http-body-util",
- "js-sys",
- "reqwest 0.13.4",
- "reqwest-middleware",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tus-axum",
- "tus-protocol",
- "url",
- "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -5106,10 +5082,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tus-axum",
- "tus-client",
  "tus-hook-http",
  "tus-protocol",
  "tus-storage-opendal",
+ "tus-uploader",
  "url",
 ]
 
@@ -5127,6 +5103,30 @@ dependencies = [
  "tracing",
  "tus-protocol",
  "uuid",
+]
+
+[[package]]
+name = "tus-uploader"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "fastrand",
+ "gloo-timers 0.4.0",
+ "http",
+ "http-body-util",
+ "js-sys",
+ "reqwest 0.13.4",
+ "reqwest-middleware",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tus-axum",
+ "tus-protocol",
+ "url",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

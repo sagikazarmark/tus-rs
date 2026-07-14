@@ -1,11 +1,11 @@
-# tus-client
+# tus-uploader
 
-[![crates.io](https://img.shields.io/crates/v/tus-client?style=flat-square)](https://crates.io/crates/tus-client)
-[![docs.rs](https://img.shields.io/docsrs/tus-client?style=flat-square)](https://docs.rs/tus-client)
+[![crates.io](https://img.shields.io/crates/v/tus-uploader?style=flat-square)](https://crates.io/crates/tus-uploader)
+[![docs.rs](https://img.shields.io/docsrs/tus-uploader?style=flat-square)](https://docs.rs/tus-uploader)
 
 **Async Rust client for the [tus resumable upload protocol](https://tus.io/).**
 
-`tus-client` drives uploads to tus-compatible servers from Rust applications. It
+`tus-uploader` drives uploads to tus-compatible servers from Rust applications. It
 provides a resource-oriented API for creating upload resources, resuming existing
 upload URLs, uploading offset-addressable sources, retrying transient PATCH
 failures, and using custom transports.
@@ -18,7 +18,7 @@ transports or single-threaded runtimes.
 
 ```toml
 [dependencies]
-tus-client = "0.0.1"
+tus-uploader = "0.0.1"
 ```
 
 ## Quick Start
@@ -26,11 +26,11 @@ tus-client = "0.0.1"
 ```rust,no_run
 use std::collections::HashMap;
 
-use tus_client::Client;
+use tus_uploader::Client;
 use url::Url;
 
 #[tokio::main]
-async fn main() -> tus_client::Result<()> {
+async fn main() -> tus_uploader::Result<()> {
     let endpoint = Url::parse("http://127.0.0.1:8080/files")?;
 
     let mut metadata = HashMap::new();
@@ -49,7 +49,7 @@ async fn main() -> tus_client::Result<()> {
 The repository also includes a native file upload example:
 
 ```bash
-cargo run -p tus-client --example upload_file -- http://127.0.0.1:8080/files ./hello.txt
+cargo run -p tus-uploader --example upload_file -- http://127.0.0.1:8080/files ./hello.txt
 ```
 
 ## Client API
@@ -103,7 +103,7 @@ runtime that should not pull in reqwest.
 
 ## Protocol Support
 
-`tus-client` targets tus 1.0.0 upload workflows.
+`tus-uploader` targets tus 1.0.0 upload workflows.
 
 | Capability | Status | Notes |
 |------------|--------|-------|

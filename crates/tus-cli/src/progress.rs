@@ -1,6 +1,6 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::io::IsTerminal;
-use tus_client::UploadProgress;
+use tus_uploader::UploadProgress;
 
 pub(crate) struct Progress {
     bar: ProgressBar,

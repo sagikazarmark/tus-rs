@@ -105,7 +105,7 @@ and error mapping.
 - **WASM only.** Hook is gated `#[cfg(target_arch = "wasm32")]`.
 - **HTTP trailers not supported** by browser Fetch. `TusStartOptions` doesn't
   expose trailer-mode checksums; use header-mode on the underlying
-  `tus_client::Client` or omit checksums.
+  `tus_uploader::Client` or omit checksums.
 - **Mid-upload bearer-token renewal not supported.** Abort and re-start
   with the new token.
 

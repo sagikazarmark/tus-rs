@@ -64,7 +64,7 @@ done now, before 1.0. Internal source-failure call sites migrate from
 `Error::Source { message }` to `Error::source(...)`, and the bundled custom-source
 example demonstrates the constructor on a failure branch.
 
-[`UploadSource::read_chunk`]: ../../crates/tus-client/src/client/upload.rs
-[`HeaderProvider::headers`]: ../../crates/tus-client/src/client.rs
+[`UploadSource::read_chunk`]: ../../crates/tus-uploader/src/client/upload.rs
+[`HeaderProvider::headers`]: ../../crates/tus-uploader/src/client.rs
 [upload source]: ../../CONTEXT.md
 [header provider]: ../../CONTEXT.md

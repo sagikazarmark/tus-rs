@@ -1115,7 +1115,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
- "tus-client",
+ "tus-uploader",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3295,22 +3295,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tus-client"
-version = "0.0.1"
-dependencies = [
- "async-trait",
- "base64",
- "fastrand",
- "gloo-timers 0.4.0",
- "http",
- "js-sys",
- "thiserror 2.0.18",
- "tokio",
- "tus-protocol",
- "url",
-]
-
-[[package]]
 name = "tus-protocol"
 version = "0.0.1"
 dependencies = [
@@ -3326,6 +3310,22 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tus-uploader"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "base64",
+ "fastrand",
+ "gloo-timers 0.4.0",
+ "http",
+ "js-sys",
+ "thiserror 2.0.18",
+ "tokio",
+ "tus-protocol",
+ "url",
 ]
 
 [[package]]

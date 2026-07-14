@@ -10,7 +10,7 @@ pub fn Transport() -> Element {
         PageHeader {
             eyebrow: "Advanced",
             title: "Custom transport",
-            intro: "use_tus_upload_with_transport accepts any tus_client::Transport, so you own the HTTP layer: auth middleware, a service-worker proxy, request logging, or a mock for tests. This example wraps the default browser transport to log every request.",
+            intro: "use_tus_upload_with_transport accepts any tus_uploader::Transport, so you own the HTTP layer: auth middleware, a service-worker proxy, request logging, or a mock for tests. This example wraps the default browser transport to log every request.",
         }
         ExampleSection {
             title: "use_tus_upload_with_transport",

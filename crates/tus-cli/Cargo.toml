@@ -15,7 +15,7 @@ name = "tus"
 path = "src/main.rs"
 
 [dependencies]
-tus-client = { workspace = true, features = ["source-file"] }
+tus-uploader = { workspace = true, features = ["source-file"] }
 
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -30,8 +30,8 @@ url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 tus-axum = { workspace = true }
-tus-client = { workspace = true }
 tus-protocol = { workspace = true, features = ["lock-memory", "state-memory", "storage-memory"] }
+tus-uploader = { workspace = true }
 
 axum = { workspace = true }
 tempfile = { workspace = true }

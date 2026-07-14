@@ -42,7 +42,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
-tus-client = { workspace = true }
+tus-uploader = { workspace = true }
 
 reqwest = { workspace = true, default-features = false, features = ["rustls"] }
 serde_json = { workspace = true }

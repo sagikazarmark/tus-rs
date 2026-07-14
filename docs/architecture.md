@@ -13,7 +13,7 @@ those interfaces unless a real adapter need justifies a new seam.
 | `tus-axum` | `create_router`, `create_router_with_download`, `TusState`, extractors, `Error`, and CORS helper | Axum routing, extraction, body-frame conversion, error mapping, and response conversion. |
 | `tus-server` | `tus-server serve` and `tus-server cleanup` | Standalone server assembly, config loading, OpenDAL storage wiring, file-backed state, in-process locking, optional HTTP hooks, health endpoints, auth, request limits, shutdown, and expired upload reclamation scheduling. |
 | Backend adapters | `Storage`, `StorageReader`, `StateStore`, `UploadInventory`, `Locker`, `HookExecutor`, and `Hook` | Provider-specific persistence, object keys, leases, retries, and operational details. |
-| Clients and CLI | `tus-client` and the `tus` binary | Client-side creation, resume, PATCH chunking, metadata, and termination workflows. |
+| Clients and CLI | `tus-uploader` and the `tus` binary | Client-side creation, resume, PATCH chunking, metadata, and termination workflows. |
 
 `tus_protocol::Protocol` and `tus_protocol::ProtocolHandle` are the public
 request-handling interface. Lower-level lifecycle helpers are internal
