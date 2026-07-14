@@ -3,5 +3,9 @@ engineVersion = "v1.0.0"
 runtime.source = "dang"
 
 [[dependencies]]
+name = "hurl"
+source = "github.com/sagikazarmark/daggerverse-beta/hurl"
+
+[[dependencies]]
 name = "tus"
 source = "../../.."

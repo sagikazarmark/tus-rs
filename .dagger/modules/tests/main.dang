@@ -13,6 +13,75 @@ type Tests {
   cli(tusdVersion: String! = "latest", rustusVersion: String! = "latest"): CliTests! {
     CliTests(tusdVersion, rustusVersion)
   }
+
+  """
+  The tus server tests.
+  """
+  server: ServerTests! {
+    ServerTests
+  }
+}
+
+type ServerTests {
+  """
+  Run the tus protocol conformance suite against tus-server.
+  """
+  conformance: Void @check @cache(policy: FunctionCachePolicy.Never) {
+    let server = Dagger
+      .container
+      .from("debian:trixie")
+      .withExec(["mkdir", "-p", "/data", "/state"])
+      .withMountedFile("/usr/local/bin/tus-server", Dagger.tus.server)
+      .withExposedPort(1080)
+      .asService([
+        "/usr/local/bin/tus-server",
+        "serve",
+        "--addr", "0.0.0.0:1080",
+        "--base-url", "http://tus:1080",
+        "--all-extensions",
+        "--disable-concatenation-unfinished",
+        "--expiration", "1h",
+        "--storage-uri", "fs:///data",
+        "--state-dir", "/state",
+      ])
+      .withHostname("tus")
+    let tests = Dagger
+      .git("https://github.com/sagikazarmark/tus-compliance-tests.git")
+      .branch("main")
+      .tree
+    let variables = Dagger
+      .directory
+      .withNewFile(
+        "variables.env",
+        "base_url=http://tus:1080/files\ntus_version=1.0.0\n",
+      )
+      .file("variables.env")
+    let result = Dagger
+      .hurl(version: "7.1.0")
+      .withServiceBinding(server, port: 1080)
+      .run(
+        source: tests,
+        test: true,
+        globs: [
+          "tests/core/**/*.hurl",
+          "tests/extensions/checksum/**/*.hurl",
+          "tests/extensions/checksum-trailer/**/*.hurl",
+          "tests/extensions/concatenation/**/*.hurl",
+          "tests/extensions/creation/**/*.hurl",
+          "tests/extensions/creation-defer-length/**/*.hurl",
+          "tests/extensions/creation-with-upload/**/*.hurl",
+          "tests/extensions/expiration/**/*.hurl",
+          "tests/extensions/termination/**/*.hurl",
+        ],
+        variablesFile: variables,
+      )
+
+    if (result.exitCode != 0) {
+      raise result.stderr
+    }
+
+    assert { result.exitCode == 0 }
+  }
 }
 
 type CliTests {
