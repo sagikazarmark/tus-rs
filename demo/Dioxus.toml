@@ -8,14 +8,3 @@ title = "dioxus-tus demo"
 [web.watcher]
 reload_html = true
 watch_path = ["src"]
-
-# Stylesheets are loaded from the component tree via
-# `document::Stylesheet { href: asset!("/build/style.css") }` in
-# src/app.rs, so the content-hashed asset is the single source of truth.
-# Listing the same file here as well would inject a second, unhashed
-# <link> tag for the same CSS.
-[web.resource]
-style = []
-
-[web.resource.dev]
-style = []
