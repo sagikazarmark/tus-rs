@@ -1,7 +1,7 @@
 name = "demo"
 engineVersion = "v1.0.0"
 runtime.source = "dang"
-include = ["!.devenv", "!build", "!dist", "!node_modules", "!target"]
+include = ["!.devenv", "!.wrangler", "!build", "!dist", "!node_modules", "!target"]
 
 [[dependencies]]
 name = "dioxus"
@@ -18,3 +18,11 @@ source = "github.com/sagikazarmark/daggerverse-beta/rust"
 [[dependencies]]
 name = "tus"
 source = "../"
+
+[[dependencies]]
+name = "wasm-pack"
+source = "github.com/sagikazarmark/daggerverse-beta/wasm-pack"
+
+[[dependencies]]
+name = "wrangler"
+source = "github.com/sagikazarmark/daggerverse-beta/wrangler"

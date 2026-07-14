@@ -1,4 +1,6 @@
+/.wrangler/
 /build/
 /dist/
 /node_modules/
+/public/service-worker/
 /target/

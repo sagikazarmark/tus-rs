@@ -78,6 +78,11 @@ pub fn Home() -> Element {
             Link { to: Route::Queue {}, class: "btn btn-ghost", "Explore the queue" }
         }
 
+        DocsCallout {
+            title: "Private by default",
+            "The default endpoint is a Rust TUS service worker. Upload chunks stay inside this browser, file contents are discarded after processing, and only resumable offsets and metadata remain in IndexedDB. Use the endpoint switcher to exercise a real server instead."
+        }
+
         div { class: "mt-10 grid gap-4 sm:grid-cols-2",
             for feature in features() {
                 Link {
