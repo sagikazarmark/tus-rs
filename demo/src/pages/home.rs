@@ -80,7 +80,7 @@ pub fn Home() -> Element {
 
         DocsCallout {
             title: "Private by default",
-            "The default endpoint is a Rust TUS service worker. Upload chunks stay inside this browser, file contents are discarded after processing, and only resumable offsets and metadata remain in IndexedDB. Use the endpoint switcher to exercise a real server instead."
+            "Cloudflare builds default to a Rust TUS service worker. Upload chunks stay inside this browser, file contents are discarded after processing, and only resumable offsets and metadata remain in IndexedDB. Local builds default to the native server; use the endpoint switcher to change modes."
         }
 
         div { class: "mt-10 grid gap-4 sm:grid-cols-2",

@@ -42,7 +42,7 @@ pub fn DocsCallout(
     rsx! {
         div { class: "mt-8 rounded-2xl border border-info/40 bg-info/5 p-5",
             div { class: "flex items-center gap-2",
-                span { class: "text-lg", "Docs" }
+                span { class: "text-sm font-semibold uppercase tracking-wider text-info", "Docs" }
                 p { class: "font-semibold text-base-content", "{title}" }
             }
             div { class: "mt-2 max-w-[70ch] text-sm leading-6 text-base-content/70", {children} }
@@ -53,7 +53,7 @@ pub fn DocsCallout(
                         href: "{action.href}",
                         target: "_blank",
                         rel: "noopener noreferrer",
-                        "{action.label}"
+                        "{action.label} ↗"
                     }
                 }
             }
@@ -61,15 +61,19 @@ pub fn DocsCallout(
     }
 }
 
-/// Muted one-line status/result readout for interactive examples.
+/// Muted one-line status/result readout for interactive examples. Renders
+/// nothing while `status` is empty so callers can mount it unconditionally.
 #[component]
 pub fn StatusLine(#[props(into)] status: String) -> Element {
     if status.is_empty() {
         return rsx! {};
     }
-
     rsx! {
-        p { class: "mt-3 rounded-lg bg-base-100 px-3 py-2 text-sm text-base-content/75", "{status}" }
+        p {
+            role: "status",
+            class: "mt-3 rounded-lg bg-base-100 px-3 py-2 text-sm text-base-content/75",
+            "{status}"
+        }
     }
 }
 

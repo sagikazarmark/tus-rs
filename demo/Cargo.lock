@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "dioxus-tus"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "dioxus",
@@ -3296,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "tus-protocol"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -3314,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "tus-uploader"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",

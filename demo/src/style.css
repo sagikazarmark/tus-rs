@@ -1,57 +1,13 @@
 @import "tailwindcss" source(none);
 
-/* The Rust component tree is the only place utility classes appear. */
 @source "./**/*.rs";
 
 @plugin "daisyui" {
-  themes: false;
+  themes: light --default, dark --prefersdark;
 }
 
-/* A single custom, light-by-default theme so the demo has its own identity
-   rather than DaisyUI's stock palette. Indigo primary, cyan secondary, amber
-   accent, cool neutrals. */
-@plugin "daisyui/theme" {
-  name: "tus";
-  default: true;
-  prefersdark: false;
-  color-scheme: light;
-
-  --color-base-100: oklch(99% 0.003 265);
-  --color-base-200: oklch(97% 0.006 265);
-  --color-base-300: oklch(92.5% 0.011 265);
-  --color-base-content: oklch(26% 0.03 270);
-
-  --color-primary: oklch(54% 0.2 275);
-  --color-primary-content: oklch(98% 0.01 275);
-  --color-secondary: oklch(64% 0.13 210);
-  --color-secondary-content: oklch(99% 0.01 210);
-  --color-accent: oklch(72% 0.15 60);
-  --color-accent-content: oklch(24% 0.04 60);
-  --color-neutral: oklch(32% 0.03 270);
-  --color-neutral-content: oklch(97% 0.008 270);
-
-  --color-info: oklch(65% 0.13 240);
-  --color-info-content: oklch(99% 0.008 240);
-  --color-success: oklch(64% 0.14 155);
-  --color-success-content: oklch(99% 0.008 155);
-  --color-warning: oklch(80% 0.15 80);
-  --color-warning-content: oklch(30% 0.05 80);
-  --color-error: oklch(60% 0.19 25);
-  --color-error-content: oklch(99% 0.008 25);
-
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 1rem;
-  --border: 1px;
-}
-
-html,
-body {
-  min-height: 100%;
-}
-
-body {
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
-    Arial, sans-serif;
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
 }

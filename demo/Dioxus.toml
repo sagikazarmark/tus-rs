@@ -6,5 +6,4 @@ default_platform = "web"
 title = "dioxus-tus demo"
 
 [web.watcher]
-reload_html = true
 watch_path = ["public", "src"]

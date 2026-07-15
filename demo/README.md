@@ -4,15 +4,15 @@ A single Dioxus web app that showcases [`dioxus-tus`](../crates/dioxus-tus)
 **feature by feature** and doubles as a docs-by-example gallery. Every page
 mounts a real, working uploader with the exact source that produced it, so
 the snippet you read is the code that runs. All pages share one router layout,
-one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
+one endpoint switcher, and the shared system light/dark Tailwind/DaisyUI theme.
 
 ## Structure
 
 | Path | Role |
 | --- | --- |
-| `src/examples/` | Small, pure uploader components, one per feature. Mounted live *and* quoted as the on-page source. |
+| `src/examples{.rs,/...}` | Small, pure uploader components, one per feature. Mounted live *and* quoted as the on-page source. |
 | `src/examples/presentation.rs` | Upload-specific display helpers such as byte counts, speed, and ETA formatting. |
-| `src/pages/` | Route components: prose plus the example's live render and its source. |
+| `src/pages{.rs,/...}` | Route components: prose plus the example's live render and its source. |
 | `src/app.rs` | Router (`Route`), the shared shell (header, endpoint switcher, grouped sidebar). |
 | `src/components{.rs,/...}` | Project-agnostic docs-gallery presentation grouped by responsibility. |
 | `src/endpoint.rs` | Resolves the TUS endpoint, starts the browser-local worker, and shares the endpoint through context. |
@@ -36,7 +36,7 @@ one endpoint switcher, and one Tailwind/DaisyUI theme (light by default).
 | `/errors` | Advanced | Branching on the typed `TusError` surface (CORS, server status, oversize, …) |
 | `/transport` | Advanced | `use_tus_upload_with_transport()`: a custom `tus_uploader::Transport` that logs requests |
 
-Snippets are highlighted at compile time with [`dioxus-code`](https://crates.io/crates/dioxus-code)'s `code!` macro (its tree-sitter parser cross-compiles a C sysroot for wasm, so the build needs `clang`, the devenv shell and the Dagger container both provide it). Styled with [Tailwind CSS](https://tailwindcss.com) + [DaisyUI](https://daisyui.com) using a custom light-default theme (`src/style.css`).
+Snippets are highlighted at compile time with [`dioxus-code`](https://crates.io/crates/dioxus-code)'s `code!` macro (its tree-sitter parser cross-compiles a C sysroot for wasm, so the build needs `clang`; the devenv shell and Dagger container both provide it). Styling uses the shared system light/dark [Tailwind CSS](https://tailwindcss.com) + [DaisyUI](https://daisyui.com) baseline from `src/style.css`.
 
 ## The TUS endpoint
 
@@ -58,8 +58,8 @@ with chunks up to 4 MiB.
 ## Prerequisites
 
 - Rust with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
-- The [Dioxus CLI](https://dioxuslabs.com/learn/0.7/getting_started) (`cargo install dioxus-cli`)
-- [Bun](https://bun.sh) for the Tailwind + DaisyUI stylesheet build
+- The [Dioxus CLI](https://dioxuslabs.com/learn/0.7/getting_started) (`cargo install dioxus-cli --version 0.7.9 --locked`)
+- Node and npm for the Tailwind + DaisyUI stylesheet build
 - [Dagger](https://docs.dagger.io/install/) for the Rust service-worker build
 
 The fully containerized path below needs only Dagger.
@@ -70,14 +70,15 @@ Install the Tailwind toolchain, build the stylesheet, export the Rust service
 worker from Dagger, then serve the app:
 
 ```sh
-bun install
-bun run build
+cd demo
+npm ci
+npm run build
 dagger call service-worker export --path ./public/service-worker
-dx serve --port 8080
+dx serve --platform web --port 8080
 ```
 
 `build/style.css` is generated from `src/style.css` and is git-ignored, so run
-`bun run build:css` after changing RSX utility classes. `bun run watch` rebuilds
+`npm run build` after changing RSX utility classes. `npm run watch` rebuilds
 it continuously during development. The worker's generated JavaScript and WASM
 under `public/service-worker/` are also ignored; export them again with Dagger
 after changing the worker or `tus-protocol`.
@@ -110,7 +111,7 @@ generated glue, and WASM binary.
 ## Run with Dagger
 
 Dagger builds and runs everything in containers, no local `dx`, `wasm-pack`,
-Bun, Node, Wrangler, or Rust toolchain required. Start the demo and this
+Node, npm, Wrangler, or Rust toolchain required. Start the demo and this
 repository's native `tus-server` together:
 
 ```sh
@@ -186,7 +187,7 @@ Build-only checks, without serving anything:
 ```sh
 cargo check --target wasm32-unknown-unknown   # the wasm client
 cargo check -p demo-service-worker --target wasm32-unknown-unknown
-bun run build                                 # stylesheet
+npm run build                                 # stylesheet
 dagger call service-worker entries            # Rust service worker
 dagger check                                  # web and Cloudflare release bundles, as CI does
 ```

@@ -2,12 +2,13 @@
 name = "demo"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.92"
 publish = false
 
 [dependencies]
 async-trait = "0.1"
-dioxus = { version = "0.7", features = ["router", "web"] }
-dioxus-code = "0.1"
+dioxus = { version = "0.7", default-features = false, features = ["asset", "document", "hooks", "html", "launch", "macro", "router", "signals", "web"] }
+dioxus-code = "0.1.2"
 dioxus-tus = { path = "../crates/dioxus-tus" }
 gloo-timers = { version = "0.4", features = ["futures"] }
 js-sys = "0.3"
@@ -15,8 +16,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Event", "EventTarget", "File", "FileList", "HtmlInputElement", "Location", "Navigator", "RegistrationOptions", "ServiceWorker", "ServiceWorkerContainer", "ServiceWorkerUpdateViaCache", "Url", "Window"] }
 
-# Size-tuned wasm profile, mirroring the dioxus-clerk demo: optimize for size
-# and strip everything the browser bundle doesn't need.
+# Size-tuned wasm profile shared by the demos.
 [profile.release]
 opt-level = "z"
 debug = false

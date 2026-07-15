@@ -31,10 +31,6 @@ type Demo {
     self.dioxus = Dagger.dioxus(
       container: rustContainer,
       noCache: true, # Disabling target cache: if it gets evicted during a build, the build will fail.
-      wasmPackVersion: "v0.15.0",
-      binaryenVersion: "version_130",
-      esbuildVersion: "0.28.1",
-      tailwindVersion: "v4.3.2",
       cargoRegistryIndexCache: cargoRegistryIndexCache,
       cargoRegistryArchiveCache: cargoRegistryArchiveCache,
       cargoGitDbCache: cargoGitDbCache,
