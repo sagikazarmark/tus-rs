@@ -12,10 +12,6 @@ name = "javascript-environment"
 source = "github.com/sagikazarmark/daggerverse-beta/javascript-environment"
 
 [[dependencies]]
-name = "rust"
-source = "github.com/sagikazarmark/daggerverse-beta/rust"
-
-[[dependencies]]
 name = "tus"
 source = "../"
 

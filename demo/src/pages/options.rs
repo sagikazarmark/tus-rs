@@ -8,7 +8,7 @@ use crate::examples::options::OptionsExample;
 pub fn Options() -> Element {
     rsx! {
         PageHeader {
-            eyebrow: "Advanced",
+            eyebrow: "Configuration",
             title: "Tokens, metadata & config",
             intro: "TusConfig tunes client-level behaviour once at construction: chunk size, retry count, retry backoff, a default bearer token, and the creation-with-upload threshold. TusStartOptions carries per-upload concerns: a bearer token override and custom Upload-Metadata.",
         }
