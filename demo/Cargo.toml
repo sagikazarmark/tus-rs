@@ -16,14 +16,14 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Event", "EventTarget", "File", "FileList", "HtmlInputElement", "Location", "Navigator", "RegistrationOptions", "ServiceWorker", "ServiceWorkerContainer", "ServiceWorkerUpdateViaCache", "Url", "Window"] }
 
-# Size-tuned wasm profile shared by the demos.
 [profile.release]
 opt-level = "z"
 debug = false
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+# wasm-bindgen needs the target_features section when generating Worker catch wrappers.
+strip = false
 incremental = false
 
 [workspace]

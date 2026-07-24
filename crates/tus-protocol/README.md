@@ -43,16 +43,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 The default feature set is empty.
 
-| Feature | Purpose |
-|---------|---------|
-| `storage-memory` | In-memory upload bytes for tests and development. |
-| `state-memory` | In-memory upload state for tests and development. |
-| `lock-memory` | In-process upload locking for native single-server deployments. |
-| `storage-file` | Native filesystem-backed upload storage. |
-| `state-file` | Native filesystem-backed upload state. |
-| `lock-file` | Native filesystem-backed upload locks. |
-| `checksum` | Checksum validation algorithms. |
-| `native` | Native async runtime support used by file and lock backends. |
+| Feature          | Purpose                                                         |
+| ---------------- | --------------------------------------------------------------- |
+| `storage-memory` | In-memory upload bytes for tests and development.               |
+| `state-memory`   | In-memory upload state for tests and development.               |
+| `lock-memory`    | In-process upload locking for native single-server deployments. |
+| `storage-file`   | Native filesystem-backed upload storage.                        |
+| `state-file`     | Native filesystem-backed upload state.                          |
+| `lock-file`      | Native filesystem-backed upload locks.                          |
+| `checksum`       | Checksum validation algorithms.                                 |
+| `native`         | Native async runtime support used by file and lock backends.    |
 
 On `wasm32` targets (such as Cloudflare Workers), trait bounds automatically
 relax to non-`Send` futures; no feature flag is needed. The built-in memory and
@@ -63,16 +63,16 @@ implementations of `Storage`, `StateStore`, and `Locker`.
 
 `tus-protocol` implements tus 1.0.0 server behavior for the native protocol path.
 
-| Capability | Status | Notes |
-|------------|--------|-------|
-| Core protocol | Supported | `POST`, `HEAD`, `PATCH`, `OPTIONS`, offsets, metadata, and version negotiation. |
-| Creation | Supported | Create uploads with `POST`. |
-| Creation-With-Upload | Supported | Accept upload bytes in the initial `POST` when enabled. |
-| Creation-Defer-Length | Supported | Create uploads before the final size is known. |
-| Termination | Supported | Delete uploads with `DELETE`. |
-| Expiration | Supported | Expiration timestamps and rejection of expired unfinished/intermediate uploads. |
-| Concatenation | Supported | Server-side final uploads from partial uploads. |
-| Checksum | Supported | Header and trailer checksum validation when `checksum` is enabled. |
+| Capability            | Status    | Notes                                                                           |
+| --------------------- | --------- | ------------------------------------------------------------------------------- |
+| Core protocol         | Supported | `POST`, `HEAD`, `PATCH`, `OPTIONS`, offsets, metadata, and version negotiation. |
+| Creation              | Supported | Create uploads with `POST`.                                                     |
+| Creation-With-Upload  | Supported | Accept upload bytes in the initial `POST` when enabled.                         |
+| Creation-Defer-Length | Supported | Create uploads before the final size is known.                                  |
+| Termination           | Supported | Delete uploads with `DELETE`.                                                   |
+| Expiration            | Supported | Expiration timestamps and rejection of expired unfinished/intermediate uploads. |
+| Concatenation         | Supported | Server-side final uploads from partial uploads.                                 |
+| Checksum              | Supported | Header and trailer checksum validation when `checksum` is enabled.              |
 
 Compliance notes:
 
@@ -93,12 +93,12 @@ Compliance notes:
 
 The protocol is built around three required backend traits plus one optional read seam:
 
-| Trait | Responsibility |
-|-------|----------------|
-| `Storage` | Stores upload bytes for the upload lifecycle, and owns storage-local handle facts. |
-| `StorageReader` | Optionally reads stored bytes for non-standard download or inspection paths. |
-| `StateStore` | Persists protocol upload state plus opaque `StorageHandle` snapshots. |
-| `Locker` | Coordinates concurrent access to a single upload ID. |
+| Trait           | Responsibility                                                                     |
+| --------------- | ---------------------------------------------------------------------------------- |
+| `Storage`       | Stores upload bytes for the upload lifecycle, and owns storage-local handle facts. |
+| `StorageReader` | Optionally reads stored bytes for non-standard download or inspection paths.       |
+| `StateStore`    | Persists protocol upload state plus opaque `StorageHandle` snapshots.              |
+| `Locker`        | Coordinates concurrent access to a single upload ID.                               |
 
 Use the built-in memory backends for tests and local development. Use the file
 backends or custom implementations for durable deployments. Third-party or
@@ -121,14 +121,14 @@ headers. `PreCreate` and `PreReceive` may replace user metadata before an
 operation is committed. `PreFinish` is gate-only. Post-hooks are best-effort
 notifications; failures are logged and do not fail already-committed requests.
 
-| Request path | Hook events | Notes |
-|--------------|-------------|-------|
-| `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may add response headers or replace user metadata before storage/state creation. |
+| Request path                          | Hook events                                                                                                            | Notes                                                                                                                                                                                                                                                                                  |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` regular or partial upload      | `PreCreate`, `PostCreate`                                                                                              | `PreCreate` may add response headers or replace user metadata before storage/state creation.                                                                                                                                                                                           |
 | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` if the body completes the upload | `PreReceive` gates the initial body before it is collected and may add response headers or replace metadata after `PreCreate`. `PreFinish` gates a completing body after validation. Post-hooks run only after storage and state commit; commit failure rolls back without post-hooks. |
-| `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete | Final upload facts are derived from referenced partials before `PreCreate`; `PreCreate` may add response headers or replace user metadata. `PreFinish` is gate-only. |
-| `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload | `PreReceive` may add response headers or replace user metadata before bytes are committed. `PreFinish` is gate-only. |
-| `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PreTerminate` may add response headers. |
-| `HEAD` or optional `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths can materialize or repair final concatenation uploads from complete parts. `PreFinish` is gate-only. |
+| `POST` final concatenation upload     | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` if every referenced partial is complete                       | Final upload facts are derived from referenced partials before `PreCreate`; `PreCreate` may add response headers or replace user metadata. `PreFinish` is gate-only.                                                                                                                   |
+| `PATCH`                               | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` if the patch completes the upload                           | `PreReceive` may add response headers or replace user metadata before bytes are committed. `PreFinish` is gate-only.                                                                                                                                                                   |
+| `DELETE`                              | `PreTerminate`, `PostTerminate`                                                                                        | Requires the Termination extension. `PreTerminate` may add response headers.                                                                                                                                                                                                           |
+| `HEAD` or optional `GET`              | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization                                  | Read paths can materialize or repair final concatenation uploads from complete parts. `PreFinish` is gate-only.                                                                                                                                                                        |
 
 ## Runtime Notes
 
@@ -145,8 +145,8 @@ locker implementation.
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 

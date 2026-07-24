@@ -31,11 +31,11 @@ TOML or YAML) < `TUS_*` environment variables < CLI flags. Run
 A stock server bounds resource usage out of the box. Pass `0` to any of these
 to explicitly opt out:
 
-| Setting | Default | Meaning of `0` |
-| --- | --- | --- |
-| `--max-request-body-bytes` | 1 GiB | unlimited request bodies |
-| `--request-body-read-timeout` | 60 s | stalled bodies are never timed out |
-| `--max-chunk-size` | 256 MiB | unlimited per-PATCH chunk size |
+| Setting                       | Default | Meaning of `0`                     |
+| ----------------------------- | ------- | ---------------------------------- |
+| `--max-request-body-bytes`    | 1 GiB   | unlimited request bodies           |
+| `--request-body-read-timeout` | 60 s    | stalled bodies are never timed out |
+| `--max-chunk-size`            | 256 MiB | unlimited per-PATCH chunk size     |
 
 ### Running behind a proxy
 
@@ -62,8 +62,8 @@ to acknowledge that. Without `--force` the command refuses to run.
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 

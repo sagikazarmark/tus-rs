@@ -10,4 +10,3 @@ devenv.local.yaml
 .pre-commit-config.yaml
 
 target/
-.env

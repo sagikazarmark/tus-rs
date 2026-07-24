@@ -74,15 +74,15 @@ tus terminate http://127.0.0.1:8080/files/<id>
 
 ## Commands
 
-| Command | Purpose |
-|---------|---------|
-| `tus create <FILE>` | Create a new upload URL using the file length without uploading file contents. |
-| `tus create --length <SIZE>` | Create a new upload URL with an explicit upload length. |
-| `tus upload <FILE>` | Create a new upload at the configured collection endpoint and upload the file. |
-| `tus upload <FILE> <UPLOAD_URL>` | Upload the file to an existing upload resource, resuming from the remote offset. |
-| `tus info <UPLOAD_URL>` | Print the upload URL, current offset, length, and metadata. |
-| `tus info --output json <UPLOAD_URL>` | Print upload information as JSON. |
-| `tus terminate <UPLOAD_URL>` | Delete or cancel an upload resource. |
+| Command                               | Purpose                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------- |
+| `tus create <FILE>`                   | Create a new upload URL using the file length without uploading file contents.   |
+| `tus create --length <SIZE>`          | Create a new upload URL with an explicit upload length.                          |
+| `tus upload <FILE>`                   | Create a new upload at the configured collection endpoint and upload the file.   |
+| `tus upload <FILE> <UPLOAD_URL>`      | Upload the file to an existing upload resource, resuming from the remote offset. |
+| `tus info <UPLOAD_URL>`               | Print the upload URL, current offset, length, and metadata.                      |
+| `tus info --output json <UPLOAD_URL>` | Print upload information as JSON.                                                |
+| `tus terminate <UPLOAD_URL>`          | Delete or cancel an upload resource.                                             |
 
 `UPLOAD_URL` may be an absolute URL. When `--endpoint` is configured, it may
 also be an upload ID relative to that endpoint or an absolute path on the same
@@ -102,8 +102,7 @@ Metadata is only used when creating a new upload URL. It cannot be combined with
 an existing upload URL.
 
 Explicit lengths accept bare bytes or standard byte-size suffixes. `KB`, `MB`,
-`GB`, and `TB` use powers of 1000; `KiB`, `MiB`, `GiB`, and `TiB` use powers of
-1024.
+`GB`, and `TB` use powers of 1000; `KiB`, `MiB`, `GiB`, and `TiB` use powers of 1024.
 
 ```bash
 tus --endpoint http://127.0.0.1:8080/files create --length 123KiB
@@ -115,11 +114,11 @@ tus --endpoint http://127.0.0.1:8080/files create --length 321KB
 Global settings can be supplied with command-line flags, environment variables,
 or a TOML, YAML, or JSON config file.
 
-| Setting | Flag | Environment | Config key |
-|---------|------|-------------|------------|
-| Collection endpoint | `--endpoint <URL>` | `TUS_ENDPOINT` | `endpoint` |
-| Bearer token | `--bearer-token <TOKEN>` | `TUS_BEARER_TOKEN` | `bearer_token` |
-| Config file | `--config <PATH>` | `TUS_CONFIG` | n/a |
+| Setting             | Flag                     | Environment        | Config key     |
+| ------------------- | ------------------------ | ------------------ | -------------- |
+| Collection endpoint | `--endpoint <URL>`       | `TUS_ENDPOINT`     | `endpoint`     |
+| Bearer token        | `--bearer-token <TOKEN>` | `TUS_BEARER_TOKEN` | `bearer_token` |
+| Config file         | `--config <PATH>`        | `TUS_CONFIG`       | n/a            |
 
 Example TOML config:
 
@@ -131,22 +130,22 @@ bearer_token = "secret-token"
 Upload-specific options are supplied on `tus upload`. `chunk_size` can also be
 set in the config file as an upload default.
 
-| Setting | Flag | Environment | Config key |
-|---------|------|-------------|------------|
+| Setting          | Flag                              | Environment      | Config key   |
+| ---------------- | --------------------------------- | ---------------- | ------------ |
 | PATCH chunk size | `tus upload --chunk-size <BYTES>` | `TUS_CHUNK_SIZE` | `chunk_size` |
-| Disable progress | `tus upload --no-progress` | n/a | n/a |
+| Disable progress | `tus upload --no-progress`        | n/a              | n/a          |
 
 ## Protocol Support
 
 `tus-cli` targets tus 1.0.0 client upload workflows through `tus-uploader`.
 
-| Capability | Status | Notes |
-|------------|--------|-------|
-| Core protocol | Supported | Uses `POST`, `HEAD`, `PATCH`, and `DELETE` through `tus-uploader`. |
-| Creation | Supported | `create` creates an empty upload URL; `upload <FILE>` creates and uploads when an endpoint is configured. |
-| Resume | Supported | `upload <FILE> <UPLOAD_URL>` reads the current offset and continues from there. |
-| Metadata | Supported | `--metadata KEY=VALUE` sends upload metadata during creation. |
-| Termination | Supported | `terminate` deletes uploads when the server advertises termination support. |
+| Capability    | Status    | Notes                                                                                                     |
+| ------------- | --------- | --------------------------------------------------------------------------------------------------------- |
+| Core protocol | Supported | Uses `POST`, `HEAD`, `PATCH`, and `DELETE` through `tus-uploader`.                                        |
+| Creation      | Supported | `create` creates an empty upload URL; `upload <FILE>` creates and uploads when an endpoint is configured. |
+| Resume        | Supported | `upload <FILE> <UPLOAD_URL>` reads the current offset and continues from there.                           |
+| Metadata      | Supported | `--metadata KEY=VALUE` sends upload metadata during creation.                                             |
+| Termination   | Supported | `terminate` deletes uploads when the server advertises termination support.                               |
 
 ## Runtime Notes
 
@@ -159,8 +158,8 @@ resolution are delegated to `tus-uploader`.
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 
