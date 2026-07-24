@@ -98,19 +98,19 @@ or `DELETE` directly. The non-standard GET download endpoint is opt-in through
 `create_router_with_download` and requires storage that implements
 `tus_protocol::StorageReader`.
 
-| Route | Purpose |
-|-------|---------|
-| `OPTIONS /files` and `OPTIONS /files/{upload_id}` | Advertise tus protocol version, extensions, limits, and checksum algorithms. |
-| `POST /files` | Create uploads. |
-| `HEAD /files/{upload_id}` | Inspect upload offset, length, metadata, expiration, and concatenation state. |
-| `PATCH /files/{upload_id}` | Append upload bytes. |
-| `DELETE /files/{upload_id}` | Terminate uploads when the termination extension is enabled. |
-| `POST /files/{upload_id}` with `X-HTTP-Method-Override` | Proxy-friendly fallback for `PATCH` and `DELETE`. |
+| Route                                                   | Purpose                                                                       |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `OPTIONS /files` and `OPTIONS /files/{upload_id}`       | Advertise tus protocol version, extensions, limits, and checksum algorithms.  |
+| `POST /files`                                           | Create uploads.                                                               |
+| `HEAD /files/{upload_id}`                               | Inspect upload offset, length, metadata, expiration, and concatenation state. |
+| `PATCH /files/{upload_id}`                              | Append upload bytes.                                                          |
+| `DELETE /files/{upload_id}`                             | Terminate uploads when the termination extension is enabled.                  |
+| `POST /files/{upload_id}` with `X-HTTP-Method-Override` | Proxy-friendly fallback for `PATCH` and `DELETE`.                             |
 
 `create_router_with_download` adds:
 
-| Route | Purpose |
-|-------|---------|
+| Route                    | Purpose                                                                |
+| ------------------------ | ---------------------------------------------------------------------- |
 | `GET /files/{upload_id}` | Download a completed upload unless downloads are disabled in `Config`. |
 
 CORS middleware is applied only when allowed origins are configured through
@@ -124,32 +124,32 @@ are selected through `tus-protocol` feature flags.
 
 Common `tus-protocol` features for axum servers:
 
-| Feature | Purpose |
-|---------|---------|
-| `storage-memory` | In-memory upload bytes for tests and local development. |
-| `state-memory` | In-memory upload state for tests and local development. |
-| `lock-memory` | In-process upload locking for native single-server deployments. |
-| `storage-file` | Native filesystem-backed upload storage. |
-| `state-file` | Native filesystem-backed upload state. |
-| `lock-file` | Native filesystem-backed upload locks. |
-| `checksum` | Checksum validation algorithms. |
+| Feature          | Purpose                                                         |
+| ---------------- | --------------------------------------------------------------- |
+| `storage-memory` | In-memory upload bytes for tests and local development.         |
+| `state-memory`   | In-memory upload state for tests and local development.         |
+| `lock-memory`    | In-process upload locking for native single-server deployments. |
+| `storage-file`   | Native filesystem-backed upload storage.                        |
+| `state-file`     | Native filesystem-backed upload state.                          |
+| `lock-file`      | Native filesystem-backed upload locks.                          |
+| `checksum`       | Checksum validation algorithms.                                 |
 
 ## Protocol Support
 
 `tus-axum` exposes the native `tus-protocol` server behavior through axum.
 
-| Capability | Status | Notes |
-|------------|--------|-------|
-| Core protocol | Supported | `POST`, `HEAD`, `PATCH`, `OPTIONS`, offsets, metadata, and version negotiation. |
-| Creation | Supported | Create uploads with `POST`. |
-| Creation-With-Upload | Supported | Accept upload bytes in the initial `POST` when enabled. |
-| Creation-Defer-Length | Supported | Create uploads before the final size is known. |
-| Termination | Supported | Delete uploads with `DELETE`. |
-| Expiration | Supported | Expiration timestamps and rejection of expired unfinished/intermediate uploads. |
-| Concatenation | Supported | Server-side final uploads from partial uploads. |
-| Checksum | Supported | Header and trailer checksum validation when `tus-protocol/checksum` is enabled. |
-| Method override | Supported | Standard tus core `X-HTTP-Method-Override` fallback for `PATCH` and `DELETE` through `POST` on upload resources. |
-| Download | Opt-in | Non-standard convenience `GET` endpoint for completed uploads through `create_router_with_download`, configurable through `Config`. |
+| Capability            | Status    | Notes                                                                                                                               |
+| --------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Core protocol         | Supported | `POST`, `HEAD`, `PATCH`, `OPTIONS`, offsets, metadata, and version negotiation.                                                     |
+| Creation              | Supported | Create uploads with `POST`.                                                                                                         |
+| Creation-With-Upload  | Supported | Accept upload bytes in the initial `POST` when enabled.                                                                             |
+| Creation-Defer-Length | Supported | Create uploads before the final size is known.                                                                                      |
+| Termination           | Supported | Delete uploads with `DELETE`.                                                                                                       |
+| Expiration            | Supported | Expiration timestamps and rejection of expired unfinished/intermediate uploads.                                                     |
+| Concatenation         | Supported | Server-side final uploads from partial uploads.                                                                                     |
+| Checksum              | Supported | Header and trailer checksum validation when `tus-protocol/checksum` is enabled.                                                     |
+| Method override       | Supported | Standard tus core `X-HTTP-Method-Override` fallback for `PATCH` and `DELETE` through `POST` on upload resources.                    |
+| Download              | Opt-in    | Non-standard convenience `GET` endpoint for completed uploads through `create_router_with_download`, configurable through `Config`. |
 
 `Config::allow_empty_creation(false)` is an opt-in non-compliant protocol mode
 inherited from `tus-protocol`. Leave the default enabled for standard Creation
@@ -191,8 +191,8 @@ upload resource with `X-HTTP-Method-Override: PATCH` or
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 

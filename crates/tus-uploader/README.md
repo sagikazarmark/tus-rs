@@ -56,14 +56,14 @@ cargo run -p tus-uploader --example upload_file -- http://127.0.0.1:8080/files .
 
 `Client` exposes two styles of upload operation:
 
-| API | Purpose |
-|-----|---------|
-| `Client::upload_from(source, metadata)` | Create a new upload resource and upload a source to it. |
-| `Client::upload_from_with_progress(source, metadata, progress)` | Create and upload while reporting remote offset advances. |
-| `Client::create_upload(NewUpload)` | Create a remote upload resource without sending the full source. Returns `(Upload, UploadInfo)`: the resource reference plus the state observed at creation. |
-| `Client::upload_at(upload_url)` | Resolve an existing upload URL reference and return an `Upload`. |
-| `Upload::info()` | Read the current remote offset, length, and metadata. |
-| `Upload::terminate()` | Terminate an upload when the server supports termination. |
+| API                                                             | Purpose                                                                                                                                                      |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Client::upload_from(source, metadata)`                         | Create a new upload resource and upload a source to it.                                                                                                      |
+| `Client::upload_from_with_progress(source, metadata, progress)` | Create and upload while reporting remote offset advances.                                                                                                    |
+| `Client::create_upload(NewUpload)`                              | Create a remote upload resource without sending the full source. Returns `(Upload, UploadInfo)`: the resource reference plus the state observed at creation. |
+| `Client::upload_at(upload_url)`                                 | Resolve an existing upload URL reference and return an `Upload`.                                                                                             |
+| `Upload::info()`                                                | Read the current remote offset, length, and metadata.                                                                                                        |
+| `Upload::terminate()`                                           | Terminate an upload when the server supports termination.                                                                                                    |
 
 Server capabilities discovered via `Client::server_capabilities()` (the tus
 `OPTIONS` probe) are cached per client, so repeated uploads through the same
@@ -85,13 +85,13 @@ resume and parallel uploads. Larger or platform-specific sources can implement
 The default feature set enables the reqwest transport (with reqwest's default
 features, including TLS) and checksum support.
 
-| Feature | Purpose |
-|---------|---------|
-| `checksum` | Enable per-chunk checksum support through `tus-protocol/checksum`. |
-| `reqwest-native-tls` | Re-enable reqwest's `native-tls` backend when default features are disabled. |
-| `reqwest-rustls` | Re-enable reqwest's `rustls` backend when default features are disabled. |
-| `source-file` | Expose native Tokio filesystem upload sources (pulls in `tokio/fs`). |
-| `transport-reqwest` | Enable the default reqwest-backed transport and `Client::new`. |
+| Feature                        | Purpose                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| `checksum`                     | Enable per-chunk checksum support through `tus-protocol/checksum`.               |
+| `reqwest-native-tls`           | Re-enable reqwest's `native-tls` backend when default features are disabled.     |
+| `reqwest-rustls`               | Re-enable reqwest's `rustls` backend when default features are disabled.         |
+| `source-file`                  | Expose native Tokio filesystem upload sources (pulls in `tokio/fs`).             |
+| `transport-reqwest`            | Enable the default reqwest-backed transport and `Client::new`.                   |
 | `transport-reqwest-middleware` | Accept `reqwest_middleware::ClientWithMiddleware` as a reqwest transport client. |
 
 Disable default features when providing a custom transport or when building for a
@@ -105,14 +105,14 @@ runtime that should not pull in reqwest.
 
 `tus-uploader` targets tus 1.0.0 upload workflows.
 
-| Capability | Status | Notes |
-|------------|--------|-------|
-| Core protocol | Supported | `OPTIONS`, `POST`, `HEAD`, and `PATCH` requests with offsets, metadata, and version negotiation. |
-| Creation | Supported | Create upload resources with `Client::create_upload` or as part of `Client::upload_from`. |
-| Creation-With-Upload | Supported | Small sources can be sent in the initial `POST` when the server advertises support. |
-| Termination | Supported | Terminate upload resources with `Upload::terminate`. |
-| Concatenation | Supported on native | `Client::upload_parallel` creates partial uploads and concatenates them. |
-| Checksum | Supported | Header checksums are supported everywhere; trailer checksums require the native reqwest transport and fail with a permanent error on `wasm32`. |
+| Capability           | Status              | Notes                                                                                                                                          |
+| -------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core protocol        | Supported           | `OPTIONS`, `POST`, `HEAD`, and `PATCH` requests with offsets, metadata, and version negotiation.                                               |
+| Creation             | Supported           | Create upload resources with `Client::create_upload` or as part of `Client::upload_from`.                                                      |
+| Creation-With-Upload | Supported           | Small sources can be sent in the initial `POST` when the server advertises support.                                                            |
+| Termination          | Supported           | Terminate upload resources with `Upload::terminate`.                                                                                           |
+| Concatenation        | Supported on native | `Client::upload_parallel` creates partial uploads and concatenates them.                                                                       |
+| Checksum             | Supported           | Header checksums are supported everywhere; trailer checksums require the native reqwest transport and fail with a permanent error on `wasm32`. |
 
 ## Runtime Notes
 
@@ -136,8 +136,8 @@ concurrency model.
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 

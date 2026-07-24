@@ -54,7 +54,7 @@ For pre-hooks, return a JSON response whose fields map to
 ```json
 {
   "proceed": false,
-  "metadata": {"filename": "example.bin"},
+  "metadata": { "filename": "example.bin" },
   "reject_status": 403,
   "reject_message": "upload rejected"
 }
@@ -76,8 +76,8 @@ against the exact version this crate uses.
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](../../LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](../../LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 
