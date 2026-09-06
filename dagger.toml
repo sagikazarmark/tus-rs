@@ -1,19 +1,21 @@
 ignore = [".devenv", "target"]
 
+[modules.tus]
+source = "."
+entrypoint = true
+
 [modules.tests]
 source = ".dagger/modules/tests"
+
+settings.rustVersion = "1.98-slim-trixie"
 
 [modules.rust]
 source = "github.com/sagikazarmark/daggerverse-beta/rust"
 
-[modules.rust.settings]
-version = "1.97-slim-trixie"
+settings.version = "1.98-slim-trixie"
 
 [modules.dagger-gha]
 source = "github.com/sagikazarmark/daggerverse-beta/dagger-gha"
-
-[modules.dagger-gha.settings]
-lock = '"PINNED"'
 
 [modules.dang]
 source = "github.com/sagikazarmark/daggerverse-beta/dang"

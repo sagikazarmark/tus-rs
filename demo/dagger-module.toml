@@ -8,17 +8,5 @@ name = "dioxus"
 source = "github.com/sagikazarmark/daggerverse-beta/dioxus"
 
 [[dependencies]]
-name = "node-environment"
-source = "github.com/sagikazarmark/daggerverse-beta/node-environment"
-
-[[dependencies]]
 name = "tus"
 source = "../"
-
-[[dependencies]]
-name = "wasm-pack"
-source = "github.com/sagikazarmark/daggerverse-beta/wasm-pack"
-
-[[dependencies]]
-name = "wrangler"
-source = "github.com/sagikazarmark/daggerverse-beta/wrangler"

@@ -1,8 +1,12 @@
 type Tests {
-  let tus: Tus!
+  let cliBinary: File!
+  let serverBinary: File!
 
-  new {
-    self.tus = Dagger.tus
+  new(ws: Workspace!, rustVersion: String!) {
+    let tus = Dagger.tus(ws: ws, rustVersion: rustVersion)
+
+    self.cliBinary = tus.cli
+    self.serverBinary = tus.server
 
     self
   }
@@ -11,18 +15,23 @@ type Tests {
   The tus CLI tests.
   """
   cli(tusdVersion: String! = "latest", rustusVersion: String! = "latest"): CliTests! {
-    CliTests(tusdVersion, rustusVersion)
+    CliTests(self.cliBinary, tusdVersion, rustusVersion)
   }
 
   """
   The tus server tests.
   """
   server: ServerTests! {
-    ServerTests
+    ServerTests(self.serverBinary)
   }
 }
 
 type ServerTests {
+  """
+  The tus-server binary under test.
+  """
+  let binary: File!
+
   """
   Run the tus protocol conformance suite against tus-server.
   """
@@ -31,7 +40,7 @@ type ServerTests {
       .container
       .from("debian:trixie")
       .withExec(["mkdir", "-p", "/data", "/state"])
-      .withMountedFile("/usr/local/bin/tus-server", Dagger.tus.server)
+      .withMountedFile("/usr/local/bin/tus-server", self.binary)
       .withExposedPort(8080)
       .asService([
         "/usr/local/bin/tus-server",
@@ -62,6 +71,11 @@ type ServerTests {
 }
 
 type CliTests {
+  """
+  The tus CLI binary under test.
+  """
+  let cli: File!
+
   let tusdVersion: String!
   let rustusVersion: String!
 
@@ -80,7 +94,7 @@ type CliTests {
         "-upload-dir=/srv/tusd/data",
       ])
 
-    CliTestSuite(server)
+    CliTestSuite(self.cli, server)
   }
 
   """
@@ -103,14 +117,16 @@ type CliTests {
       .withExec(["mkdir", "-p", "/data"])
       .withExposedPort(1080)
 
-    CliTestSuite(server)
+    CliTestSuite(self.cli, server)
   }
 }
 
 type CliTestSuite {
+  let cli: File!
   let server: Container!
 
-  new(server: Container!) {
+  new(cli: File!, server: Container!) {
+    self.cli = cli
     self.server = server
 
     self
@@ -123,7 +139,7 @@ type CliTestSuite {
       .withEnvVariable("DEBIAN_FRONTEND", "noninteractive")
       .withExec(["apt-get", "update"])
       .withExec(["apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl"])
-      .withMountedFile("/usr/local/bin/tus", Dagger.tus.cli)
+      .withMountedFile("/usr/local/bin/tus", self.cli)
   }
 
   basic: Void @check {

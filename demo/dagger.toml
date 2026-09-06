@@ -1,16 +1,15 @@
 [modules.demo]
 source = "."
-entrypoint = true
 
 [modules.demo.settings]
-rustVersion = "1.97-trixie"
+rustVersion = "1.98-trixie"
+
+[modules.worker]
+source = "github.com/sagikazarmark/daggerverse-beta/worker"
+
+[modules.worker.settings]
+bundleAsContainer = "demo:worker-bundle-as-container"
+config = "wrangler.toml"
 
 [modules.dagger-gha]
 source = "github.com/sagikazarmark/daggerverse-beta/dagger-gha"
-
-[modules.dagger-gha.settings]
-lock = '"PINNED"'
-
-[modules.wasm-pack]
-source = "github.com/sagikazarmark/daggerverse-beta/wasm-pack"
-check.skip = ["wasm-pack:test"]
