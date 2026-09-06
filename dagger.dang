@@ -1,8 +1,8 @@
 type Tus {
   let rust: Rust!
 
-  new {
-    self.rust = Dagger.rust(version: "1.97-slim-trixie")
+  new(ws: Workspace!, rustVersion: String!) {
+    self.rust = Dagger.rust(ws: ws, version: rustVersion)
 
     self
   }
@@ -10,14 +10,14 @@ type Tus {
   """
   The tus CLI binary.
   """
-  cli(ws: Workspace!): File! {
-    self.rust.build(ws, bin: ["tus"]).file("tus")
+  cli: File! {
+    self.rust.build(bin: ["tus"]).file("tus")
   }
 
   """
   The tus server binary.
   """
-  server(ws: Workspace!): File! {
-    self.rust.build(ws, bin: ["tus-server"]).file("tus-server")
+  server: File! {
+    self.rust.build(bin: ["tus-server"]).file("tus-server")
   }
 }

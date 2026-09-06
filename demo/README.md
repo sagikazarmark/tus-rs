@@ -73,7 +73,7 @@ worker from Dagger, then serve the app:
 cd demo
 npm ci
 npm run build
-dagger call service-worker export --path ./public/service-worker
+dagger call demo service-worker export --path ./public/service-worker
 dx serve --platform web --port 8080
 ```
 
@@ -123,16 +123,16 @@ Then open `http://localhost:8080`. Uploads default to the real `tus-server` on
 port 8081. Its data lives in the container and is discarded when Dagger stops.
 Use the header toggle to switch to the browser-local Rust worker, or point to
 another endpoint with the adjacent field. To run only one service, use
-`dagger up service` or `dagger up server`.
+`dagger up demo:service` or `dagger up demo:server`.
 
 The local service and generic bundle default to the native endpoint. Override
-that build-time default with `dagger call service --browser-local up`. To
+that build-time default with `dagger call demo service --browser-local up`. To
 produce the static bundle in a container instead (the Dagger counterpart of
 `dx bundle --platform web` above):
 
 ```sh
-dagger call build export --path ./dist   # static SPA bundle to ./dist
-dagger call service-worker export --path ./public/service-worker
+dagger call demo build export --path ./dist   # static SPA bundle to ./dist
+dagger call demo service-worker export --path ./public/service-worker
 ```
 
 The second command exports only the generated service-worker JavaScript and
@@ -145,10 +145,11 @@ the Dioxus app and browser Service Worker as assets; there is no Cloudflare
 Worker script, R2 bucket, Durable Object, or other upload storage. Upload chunks
 are intercepted and discarded in the browser as described above.
 
-Build or run that deployment locally with Dagger:
+Build or run that deployment locally with Dagger (the `worker` module is wired
+to the demo's bundle and `wrangler.toml` in `dagger.toml`):
 
 ```sh
-dagger call worker build export --path ./dist-cloudflare
+dagger call demo worker-bundle export --path ./dist-cloudflare
 dagger call worker dev up
 ```
 
@@ -188,6 +189,6 @@ Build-only checks, without serving anything:
 cargo check --target wasm32-unknown-unknown   # the wasm client
 cargo check -p demo-service-worker --target wasm32-unknown-unknown
 npm run build                                 # stylesheet
-dagger call service-worker entries            # Rust service worker
+dagger call demo service-worker entries       # Rust service worker
 dagger check                                  # web and Cloudflare release bundles, as CI does
 ```

@@ -13,7 +13,7 @@ use crate::pages::{
     minimal::Minimal, options::Options, queue::Queue, resume::Resume, transport::Transport,
 };
 
-const STYLE: Asset = asset!("/build/style.css");
+const STYLE: Asset = asset!("/assets/style.css");
 
 /// Every page hangs off the one [`DemoLayout`], so the header, sidebar, and
 /// endpoint context are shared across the gallery.
