@@ -3,7 +3,7 @@ use crate::hooks::{HookExecutor, HookRequestInfo};
 use crate::state::{StateStore, UploadState, WriteMode};
 use crate::storage::Storage;
 
-use super::UploadCompletion;
+use super::{UploadCompletion, ensure_active};
 
 pub(crate) async fn reconcile_state_offset<S, St>(
     storage: &S,
@@ -18,7 +18,7 @@ where
 }
 
 /// Detects whether stored bytes have reached the declared length for an upload
-/// whose recorded state does not yet mark it complete.
+/// whose recorded state has not committed successful finish validation.
 ///
 /// Returns `Some(length)` when the backing object's size equals the declared
 /// `Upload-Length`, a crash-recovery completion is pending, and `None` when
@@ -29,7 +29,7 @@ async fn detect_stored_completion<S>(storage: &S, state: &UploadState) -> Result
 where
     S: Storage + ?Sized,
 {
-    if state.is_complete() || state.is_partial() {
+    if state.is_complete() && !state.is_finish_pending() {
         return Ok(None);
     }
 
@@ -70,12 +70,16 @@ pub(crate) async fn stored_bytes_complete_upload<S>(
 where
     S: Storage + ?Sized,
 {
+    // Partials remain temporary concatenation resources even after all bytes
+    // arrive, and must still be reclaimable under their expiration policy.
+    if state.is_partial() {
+        return Ok(false);
+    }
     Ok(detect_stored_completion(storage, state).await?.is_some())
 }
 
-/// Completes an upload whose bytes reached the declared length before the state
-/// write landed, a crash between the durable storage append and the state
-/// update, running the same finish gate as the normal completion path.
+/// Completes an upload after a crash between append and state persistence, or
+/// retries finish validation left pending by rejection or cancellation.
 ///
 /// When stored bytes have reached the length, this runs the `PreFinish` gate
 /// against the would-be-completed state (a rejection fails the request and
@@ -94,17 +98,25 @@ where
     St: StateStore + ?Sized,
     H: HookExecutor + ?Sized,
 {
+    // Unlike regular completed content, partials must honor expiration before
+    // recovering a finish gate, including a crash before the offset write.
+    if state.is_partial() {
+        ensure_active(state)?;
+    }
     let Some(length) = detect_stored_completion(storage, state).await? else {
         return Ok(false);
     };
 
-    // Run the finish gate before completion is persisted so a `PreFinish`
-    // rejection leaves the upload exactly as it was, mirroring the normal
-    // receive completion path (`receive.rs`).
+    // Preserve the persisted state until finish validation is committed. For
+    // old incomplete records, storage remains sufficient evidence to retry;
+    // new completing receives have already persisted the pending flag.
     let completion = UploadCompletion::new(hooks, request_info);
     let mut completed = state.clone();
     completed.set_offset(length);
-    completion.finish_gate(completed).await?;
+    completed.set_finish_pending(true);
+    completion
+        .commit_finish(state_store, &mut completed)
+        .await?;
 
     tracing::warn!(
         upload_id = %state.id(),
@@ -113,8 +125,7 @@ where
         "recovering completed upload offset against stored bytes"
     );
 
-    state.set_offset(length);
-    state_store.set(state, WriteMode::Update).await?;
+    *state = completed;
 
     completion.after_commit(state).await;
 
@@ -156,6 +167,9 @@ where
     );
 
     state.set_offset(actual_offset);
+    if !state.is_complete() {
+        state.set_finish_pending(false);
+    }
     state_store.set(state, WriteMode::Update).await?;
     Ok(())
 }

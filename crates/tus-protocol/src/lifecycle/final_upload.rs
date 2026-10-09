@@ -474,7 +474,9 @@ where
             return Err(Error::NotPartialUpload(id.clone().into_string()));
         }
 
-        if !part_state.is_complete() && !allow_unfinished {
+        // A rejected or interrupted partial finish gate must not be bypassed
+        // by materializing a final upload, even with unfinished concatenation.
+        if part_state.is_finish_pending() || (!part_state.is_complete() && !allow_unfinished) {
             return Err(Error::IncompleteUpload(id.clone().into_string()));
         }
 
@@ -513,6 +515,10 @@ where
             .get(part_id)
             .await?
             .ok_or_else(|| Error::Expired(state.id().to_string()))?;
+
+        if part_state.is_finish_pending() {
+            return Err(Error::IncompleteUpload(part_id.clone()));
+        }
 
         if part_state.is_expired() {
             return Err(Error::Expired(state.id().to_string()));
@@ -554,7 +560,7 @@ pub(crate) fn summarize_final_parts(parts: &[UploadState]) -> Result<FinalUpload
             }
         }
 
-        if !part_state.is_complete() {
+        if !part_state.is_complete() || part_state.is_finish_pending() {
             all_complete = false;
         }
     }

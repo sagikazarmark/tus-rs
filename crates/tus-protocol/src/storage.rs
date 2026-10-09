@@ -44,9 +44,10 @@ use crate::runtime::MaybeSendSync;
 /// [`Storage::size`] reports only accepted bytes: protocol recovery adopts
 /// `size()` as the accepted offset and completes an upload once it reaches the
 /// declared length, without re-validating content. Reporting the actual size of
-/// a partial write for recovery to reconcile is permitted only for a genuine
-/// crash, a process that died mid-append and never returned, and even then only
-/// the smaller, partial byte count, never full-length content.
+/// a partial write for recovery to reconcile is permitted only when its entire
+/// input was validated before those bytes became visible. Cancellation or a
+/// crash must never expose bytes from a stream whose terminal validation has
+/// not succeeded.
 ///
 /// # Upload ID safety
 ///
@@ -100,8 +101,8 @@ pub trait Storage: MaybeSendSync {
     ///
     /// A backend that finalizes incrementally as data drains (for example,
     /// completing a multipart object) must not let a completing append's bytes
-    /// become `size()`-visible at the upload length until the append has returned
-    /// `Ok`: it must stage the completing write and expose it only once the
+    /// become `size()`-visible at the upload length until body validation has
+    /// succeeded: it must stage the completing write and expose it only once the
     /// stream has terminated without an `Err`. Otherwise a clean end-of-data that
     /// the protocol has not yet accepted, or a crash mid-finalize, would leave a
     /// corrupt or premature upload marked complete.

@@ -42,7 +42,10 @@
 //! - **Pre-hooks** (`PreCreate`, `PreReceive`, `PreFinish`, `PreTerminate`)
 //!   are gates: the protocol awaits the result and acts on it. A pre-hook
 //!   that returns [`PreHookResult::reject`] aborts the operation; a pre-hook
-//!   error fails the request. Run-to-completion is part of the contract.
+//!   error fails the request. Finish validation is persisted separately from
+//!   accepted bytes: rejection, cancellation, or a failed validation-state write
+//!   leaves it pending for the next HEAD/PATCH/GET. `PreFinish` may therefore run
+//!   more than once and must tolerate retries.
 //!   `PreCreate`, `PreReceive`, and `PreTerminate` may add response headers.
 //!   `PreCreate` and `PreReceive` may replace user metadata through
 //!   [`PreHookResult::proceed_with_metadata`]. `PreFinish` is gate-only: it may
@@ -77,9 +80,9 @@
 //! | `POST` regular or partial upload | `PreCreate`, `PostCreate` | `PreCreate` may reject, add response headers, or replace user metadata before storage/state creation. `PostCreate` runs after storage and state are committed. |
 //! | `POST` with Creation-With-Upload body | `PreCreate`, `PreReceive`, `PostCreate`, `PostReceive`, plus `PreFinish`/`PostFinish` when the initial body completes the upload | `PreReceive` runs before the body is collected and may reject, add response headers, or replace user metadata after `PreCreate`. `PreFinish` runs after the initial body is committed; because the upload resource is new, a rejection rolls the whole creation back and no post-hooks fire. It is gate-only. |
 //! | `POST` final concatenation upload | `PreCreate`, `PostCreate`, plus `PreFinish`/`PostFinish` when every referenced partial is complete | Final upload state is derived from referenced partials before `PreCreate`; `PreCreate` may reject, add response headers, or replace user metadata. `PreFinish` gates the final record before it is materialized; it is gate-only. |
-//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. `PreFinish` runs after the completing bytes and state are durably committed; a rejection fails the PATCH response and skips `PostFinish`, but the upload remains stored and complete. It is gate-only. |
+//! | `PATCH` | `PreReceive`, `PostReceive`, plus `PreFinish`/`PostFinish` when the patch completes the upload | `PreReceive` may reject, add response headers, or replace user metadata before bytes are committed. `PreFinish` runs after the completing bytes and state are durably committed; a rejection fails the PATCH response and skips `PostFinish`, but the accepted bytes remain stored with finish validation pending. HEAD/PATCH/GET must pass the gate before reporting completion or serving content. It is gate-only. |
 //! | `DELETE` | `PreTerminate`, `PostTerminate` | Requires the Termination extension. `PreTerminate` may reject or add response headers. `PostTerminate` runs after state deletion and best-effort storage deletion. |
-//! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for lazy final-upload materialization | Read paths reconcile final concatenation uploads. If complete referenced parts can materialize or repair the final upload, `PreFinish` gates that commit and `PostFinish` follows it. `PreFinish` is gate-only. |
+//! | `HEAD` or `GET` | none normally; `PreFinish`/`PostFinish` may run for pending finish validation, storage recovery, or lazy final-upload materialization | Read paths retry pending finish validation and reconcile final concatenation uploads. A partial with pending validation cannot be concatenated until a request to that partial passes its gate. `PreFinish` gates the commit and `PostFinish` follows it. `PreFinish` is gate-only. |
 //!
 //! ## Completion ordering differs by path (by design)
 //!
@@ -97,7 +100,7 @@
 //!   before `PreFinish` runs and cannot be un-committed, so `PostReceive`
 //!   fires for those bytes even if `PreFinish` then rejects completion. A
 //!   `PreFinish` rejection fails the PATCH response and skips `PostFinish`,
-//!   but the upload remains stored and complete on disk.
+//!   but the accepted bytes remain stored with finish validation pending.
 //!
 //! The consequence for hook authors: on the `PATCH` path, do not treat
 //! `PostReceive` side effects as conditional on `PreFinish` acceptance. If a

@@ -127,7 +127,11 @@ pub trait UploadInventory: MaybeSendSync {
 }
 
 /// Current persistence schema version written by [`UploadState`].
-pub const UPLOAD_STATE_SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 adds durable pending finish validation. Version 1 records still
+/// load, treating absent finish history as already validated. Older binaries
+/// do not enforce the pending flag; do not downgrade with validation pending.
+pub const UPLOAD_STATE_SCHEMA_VERSION: u32 = 2;
 
 fn default_schema_version() -> u32 {
     // Files written before the field existed are version 1.
@@ -199,6 +203,11 @@ pub struct UploadState {
     /// Advertised protocol expiration deadline. None if expiration is disabled.
     expires_at: Option<DateTime<Utc>>,
 
+    /// Completing bytes are durable, but the finish gate has not been committed.
+    /// Older records default to false: their finish validation history is unknown.
+    #[serde(default)]
+    finish_pending: bool,
+
     // === Concatenation Extension ===
     /// Whether this is a partial upload (for concatenation).
     is_partial: bool,
@@ -231,6 +240,7 @@ impl UploadState {
             storage_key: None,
             created_at: Utc::now(),
             expires_at: None,
+            finish_pending: false,
             is_partial: false,
             is_final: false,
             parts: None,
@@ -244,7 +254,7 @@ impl UploadState {
         Self::new(uuid::Uuid::new_v4().to_string())
     }
 
-    /// Returns the persistence schema version this state was loaded with.
+    /// Returns the persistence schema version of this snapshot.
     pub fn schema_version(&self) -> u32 {
         self.schema_version
     }
@@ -392,12 +402,28 @@ impl UploadState {
         self.metadata = metadata.into();
     }
 
-    /// Returns whether the upload is complete.
+    /// Returns whether all declared bytes have been accepted.
+    ///
+    /// Finish validation may still be pending; see [`Self::is_finish_pending`].
     pub fn is_complete(&self) -> bool {
         match self.length {
             Some(length) => self.offset >= length,
             None => false, // Deferred length is never "complete" until length is set
         }
+    }
+
+    /// Returns whether finish validation must succeed before serving completion.
+    ///
+    /// The protocol retries this gate on subsequent requests after rejection,
+    /// cancellation, or a failed state write. Hooks must tolerate retries.
+    pub fn is_finish_pending(&self) -> bool {
+        self.finish_pending
+    }
+
+    pub(crate) fn set_finish_pending(&mut self, pending: bool) {
+        debug_assert!(!pending || self.is_complete());
+        self.schema_version = UPLOAD_STATE_SCHEMA_VERSION;
+        self.finish_pending = pending;
     }
 
     /// Returns whether this upload expires before the given cutoff.
@@ -713,6 +739,28 @@ mod tests {
             value.get("schema_version").and_then(|v| v.as_u64()),
             Some(u64::from(UPLOAD_STATE_SCHEMA_VERSION))
         );
+    }
+
+    #[test]
+    fn pending_finish_survives_serialization_and_legacy_completed_states_still_load() {
+        let mut state = UploadState::new("upload-1").with_length(5);
+        state.set_offset(5);
+        state.set_finish_pending(true);
+        let mut value = serde_json::to_value(&state).unwrap();
+        let restored: UploadState = serde_json::from_value(value.clone()).unwrap();
+        assert!(restored.is_complete());
+        assert!(restored.is_finish_pending());
+        assert_eq!(restored.schema_version(), 2);
+
+        let object = value.as_object_mut().unwrap();
+        object.remove("finish_pending");
+        object.insert("schema_version".into(), 1.into());
+        let mut legacy: UploadState = serde_json::from_value(value).unwrap();
+        assert!(legacy.is_complete());
+        assert!(!legacy.is_finish_pending());
+        assert_eq!(legacy.schema_version(), 1);
+        legacy.set_finish_pending(true);
+        assert_eq!(legacy.schema_version(), UPLOAD_STATE_SCHEMA_VERSION);
     }
 
     #[test]

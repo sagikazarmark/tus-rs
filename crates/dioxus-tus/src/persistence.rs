@@ -26,6 +26,7 @@
 //! upload URL.
 
 use serde::{Deserialize, Serialize};
+use tus_uploader::url::Url;
 
 /// Key prefix scoping our entries inside the page's localStorage namespace.
 ///
@@ -124,46 +125,11 @@ pub(crate) fn storage_key(match_key: &str) -> String {
     format!("{STORAGE_KEY_PREFIX}{match_key}")
 }
 
-fn parse_origin(s: &str) -> Option<(String, String, u16)> {
-    // URL crate isn't a dep here; do a simple scheme://host[:port] split.
-    // This is sufficient because we only compare/log tus-server URLs, and
-    // TUS URLs are always plain http(s). Any URL the parse can't recognise
-    // returns None and callers fail closed or log an opaque marker.
-    let scheme_end = s.find("://")?;
-    let scheme = s[..scheme_end].to_ascii_lowercase();
-    let rest = &s[scheme_end + 3..];
-    // The authority ends at the first '/', '?', or '#'. Without the
-    // query/fragment terminators a URL like `https://x.test?token=...`
-    // would parse the host as `x.test?token=...`.
-    let path_start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..path_start];
-    let host_port = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    if host_port.is_empty() {
-        return None;
-    }
-    let (host, explicit_port) = if let Some(colon) = host_port.rfind(':') {
-        // Watch out for IPv6 brackets, but we don't support those here;
-        // tus URLs are typically named hosts. Conservative: take the last
-        // colon as the port separator only if everything after parses as u16.
-        let after = &host_port[colon + 1..];
-        if let Ok(p) = after.parse::<u16>() {
-            (host_port[..colon].to_ascii_lowercase(), Some(p))
-        } else {
-            (host_port.to_ascii_lowercase(), None)
-        }
-    } else {
-        (host_port.to_ascii_lowercase(), None)
-    };
-    // Canonicalise an omitted port to the scheme default so
-    // `https://x/files` and `https://x:443/files` compare equal.
-    let port = explicit_port.or(match scheme.as_str() {
-        "http" | "ws" => Some(80),
-        "https" | "wss" => Some(443),
-        _ => None,
-    })?;
-    Some((scheme, host, port))
+fn parse_http_url(value: &str) -> Option<Url> {
+    // Use the same WHATWG parser as the uploader/browser. In particular,
+    // backslashes terminate authority in HTTP URLs, and hosts are canonicalized.
+    let url = Url::parse(value).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.has_host()).then_some(url)
 }
 
 /// Validates that `upload_url`'s origin matches `endpoint`'s origin.
@@ -171,15 +137,14 @@ fn parse_origin(s: &str) -> Option<(String, String, u16)> {
 /// Defends against same-origin localStorage poisoning where a stored
 /// entry's `upload_url` points at an attacker-controlled host.
 ///
-/// Returns `true` when the URLs share scheme + host + port, OR when
-/// either URL fails to parse (in which case we conservatively reject by
-/// returning false).
+/// Returns `true` when HTTP(S) URLs share a canonical scheme + host + port.
+/// Invalid URLs and unsupported schemes return `false`.
 ///
 /// `pub(crate)`: internal same-origin defence, not part of the public surface.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn origin_matches(endpoint: &str, upload_url: &str) -> bool {
-    match (parse_origin(endpoint), parse_origin(upload_url)) {
-        (Some(a), Some(b)) => a == b,
+    match (parse_http_url(endpoint), parse_http_url(upload_url)) {
+        (Some(a), Some(b)) => a.origin() == b.origin(),
         _ => false,
     }
 }
@@ -190,8 +155,11 @@ pub(crate) fn origin_matches(endpoint: &str, upload_url: &str) -> bool {
 /// query, or fragment, because those may contain bearer-equivalent tokens.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn redact_upload_url_for_log(upload_url: &str) -> String {
-    match parse_origin(upload_url) {
-        Some((scheme, host, port)) => format!("{scheme}://{host}:{port}/<upload-url-redacted>"),
+    match parse_http_url(upload_url) {
+        Some(url) => format!(
+            "{}/<upload-url-redacted>",
+            url.origin().ascii_serialization()
+        ),
         None => "<invalid-upload-url-redacted>".to_string(),
     }
 }
@@ -200,22 +168,10 @@ pub(crate) fn redact_upload_url_for_log(upload_url: &str) -> String {
 /// credentials, query strings, and fragments.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) fn redact_endpoint_for_log(endpoint: &str) -> String {
-    let Some((scheme, host, port)) = parse_origin(endpoint) else {
+    let Some(url) = parse_http_url(endpoint) else {
         return "<invalid-endpoint-redacted>".to_string();
     };
-
-    let path = endpoint
-        .find("://")
-        .and_then(|scheme_end| {
-            let rest = &endpoint[scheme_end + 3..];
-            let path_start = rest.find('/')?;
-            Some(&rest[path_start..])
-        })
-        .and_then(|path| path.split(['?', '#']).next())
-        .filter(|path| !path.is_empty())
-        .unwrap_or("");
-
-    format!("{scheme}://{host}:{port}{path}")
+    format!("{}{}", url.origin().ascii_serialization(), url.path())
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1002,6 +958,49 @@ mod tests {
     fn origin_does_not_match_malformed() {
         assert!(!origin_matches("not a url", "also not a url"));
         assert!(!origin_matches("http://x/files", "https:/x/files"));
+    }
+
+    #[test]
+    fn origin_rejects_backslash_authority_confusion_and_non_http_schemes() {
+        assert!(!origin_matches(
+            "https://trusted.example/files",
+            r"https://attacker.example\@trusted.example/files/id",
+        ));
+        assert!(!origin_matches("file:///files", "file:///files/id"));
+        assert!(!origin_matches(
+            "wss://x.test/files",
+            "wss://x.test/files/id"
+        ));
+        assert!(!origin_matches(
+            "https://x.test/files",
+            "https://x.test:99999/files/id"
+        ));
+    }
+
+    #[test]
+    fn origin_uses_canonical_ipv6_and_internationalized_hosts() {
+        assert!(origin_matches(
+            "https://[::1]/files",
+            "https://[0:0:0:0:0:0:0:1]:443/files/id"
+        ));
+        assert!(origin_matches(
+            "https://bücher.example/files",
+            "https://xn--bcher-kva.example/files/id"
+        ));
+    }
+
+    #[test]
+    fn url_redaction_uses_parsed_authority_and_path() {
+        assert_eq!(
+            redact_upload_url_for_log(
+                r"https://attacker.example\@trusted.example/files/secret?token=secret"
+            ),
+            "https://attacker.example/<upload-url-redacted>",
+        );
+        assert_eq!(
+            redact_endpoint_for_log("https://user:password@x.test?token=/secret#fragment"),
+            "https://x.test/",
+        );
     }
 
     #[test]

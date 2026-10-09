@@ -11,11 +11,11 @@
 //! - [`create`](Storage::create) creates the file exclusively (`O_CREAT |
 //!   O_EXCL`), `fsync`s it, and `fsync`s the parent directory so the new entry
 //!   survives a crash.
-//! - [`append`](Storage::append) streams bytes to disk and `fdatasync`s them
-//!   before returning success. If the request body stream errors mid-append,
-//!   the file is truncated back to the request's `expected_offset` and
-//!   `fdatasync`ed, so a failed PATCH never leaves partially written bytes
-//!   past the acknowledged offset.
+//! - [`append`](Storage::append) stages streamed request bodies in a temporary
+//!   file until EOF validation succeeds, then copies accepted bytes into the
+//!   upload and `fdatasync`s it. Cancellation while receiving a body cannot
+//!   expose unverified bytes. A returned write error truncates the upload back
+//!   to the request's `expected_offset` and `fdatasync`s it.
 //! - [`concat`](Storage::concat) writes the combined output to a temporary
 //!   file, `fsync`s it, atomically renames it into place, and `fsync`s the
 //!   parent directory, so a concatenated target never appears partially built.
@@ -169,19 +169,57 @@ impl Storage for FileStorage {
             )));
         }
 
+        // Drain the entire stream, including terminal length/checksum errors,
+        // before making any of its bytes visible to size-based recovery. Only
+        // the new body is staged; the existing upload is never copied.
+        let mut staged = match data {
+            ChunkStream::Buffered(bytes) => PreparedAppend::Buffered(bytes),
+            ChunkStream::Stream(stream) => {
+                // tempfile opens synchronously; keep filesystem work off the
+                // async executor just like tokio::fs does for the body writes.
+                let root = self.root.clone();
+                let prefix = format!("{}.patch-", handle.key());
+                let temp = tokio::task::spawn_blocking(move || {
+                    tempfile::Builder::new().prefix(&prefix).tempfile_in(root)
+                })
+                .await
+                .map_err(Error::storage)?
+                .map_err(Error::Io)?;
+                let (file, temp_path) = temp.into_parts();
+                let mut file = File::from_std(file);
+                write_chunk_stream(&mut file, ChunkStream::Stream(stream)).await?;
+                file.flush().await.map_err(Error::Io)?;
+                file.seek(SeekFrom::Start(0)).await.map_err(Error::Io)?;
+                PreparedAppend::Staged {
+                    reader: file,
+                    _path: temp_path,
+                }
+            }
+        };
+
         let mut file = OpenOptions::new()
             .append(true)
             .open(&path)
             .await
             .map_err(Error::Io)?;
-        // Bytes stream straight to disk. If the stream fails mid-append, the
-        // file is truncated back to the committed offset so a failed PATCH
-        // never leaves partial bytes behind.
-        match write_chunk_stream(&mut file, data).await {
-            Ok(()) => {
-                file.sync_data().await.map_err(Error::Io)?;
-                Ok(handle)
+        let result = async {
+            match &mut staged {
+                PreparedAppend::Staged { reader, .. } => {
+                    tokio::io::copy(reader, &mut file)
+                        .await
+                        .map_err(Error::Io)?;
+                }
+                PreparedAppend::Buffered(bytes) => {
+                    file.write_all(bytes).await.map_err(Error::Io)?
+                }
             }
+            file.sync_data().await.map_err(Error::Io)
+        }
+        .await;
+        // Close the staged reader before its path guard removes the file.
+        drop(staged);
+        match result {
+            Ok(()) => Ok(handle),
             Err(error) => {
                 file.set_len(expected_offset).await.map_err(Error::Io)?;
                 file.sync_data().await.map_err(Error::Io)?;
@@ -214,6 +252,29 @@ impl Storage for FileStorage {
 
     async fn delete(&self, handle: &StorageHandle) -> Result<()> {
         let path = self.path_for_handle(handle)?;
+
+        // TempPath removes staged bodies on ordinary cancellation/error. A
+        // process exit skips Drop; reclaim those bodies with their upload so
+        // expiration/termination cannot orphan an arbitrarily large PATCH.
+        let prefix = format!("{}.patch-", handle.key());
+        let mut entries = match fs::read_dir(&self.root).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(Error::Io(error)),
+        };
+        while let Some(entry) = entries.next_entry().await.map_err(Error::Io)? {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
+                match fs::remove_file(entry.path()).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(Error::Io(error)),
+                }
+            }
+        }
 
         match fs::remove_file(path).await {
             Ok(()) => Ok(()),
@@ -263,6 +324,15 @@ impl StorageReader for FileStorage {
         let reader = file.take(end - start);
         Ok(Box::pin(ReaderStream::new(reader)))
     }
+}
+
+/// Drop the reader before removing its temporary path, including on cancellation.
+enum PreparedAppend {
+    Buffered(Bytes),
+    Staged {
+        reader: File,
+        _path: tempfile::TempPath,
+    },
 }
 
 /// Best-effort fsync of the directory containing `path` so a create or
@@ -475,6 +545,31 @@ mod tests {
 
         storage.delete(&handle).await.unwrap();
         assert_eq!(storage.size(&handle).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn delete_reclaims_only_its_own_staged_bodies_even_if_upload_is_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).await.unwrap();
+        let handle = storage.create("upload-1").await.unwrap();
+        let other = storage.create("upload-2").await.unwrap();
+        let orphan = temp_dir
+            .path()
+            .join(format!("{}.patch-orphan", handle.key()));
+        let unrelated = temp_dir
+            .path()
+            .join(format!("{}.patch-orphan", other.key()));
+        fs::write(&orphan, b"unverified").await.unwrap();
+        fs::write(&unrelated, b"other upload").await.unwrap();
+        fs::remove_file(storage.path_for_handle(&handle).unwrap())
+            .await
+            .unwrap();
+
+        storage.delete(&handle).await.unwrap();
+        storage.delete(&handle).await.unwrap();
+        assert!(!orphan.exists());
+        assert!(unrelated.exists());
+        assert_eq!(storage.size(&other).await.unwrap(), Some(0));
     }
 
     #[tokio::test]

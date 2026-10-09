@@ -88,6 +88,7 @@ where
 
             let handle = self.storage.create(state.id()).await?;
             state.set_storage_handle(handle);
+            state.set_finish_pending(state.is_complete());
             if let Err(err) = self.state_store.set(&state, WriteMode::CreateNew).await {
                 // Best-effort rollback: the storage object created above must
                 // not leak when the state record cannot be persisted.
@@ -108,7 +109,7 @@ where
             // resource is new, so a gate rejection rolls the creation back.
             let completion = UploadCompletion::new(self.hooks, hook_contexts.request_info());
             if state.is_complete()
-                && let Err(err) = completion.finish_gate(state.clone()).await
+                && let Err(err) = completion.commit_finish(self.state_store, &mut state).await
             {
                 // Best-effort rollback of the just-created resource; log
                 // failures so an orphaned storage object or state record leaves

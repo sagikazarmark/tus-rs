@@ -26,7 +26,7 @@ conformance-state = []
 conformance-storage = []
 
 # Storage implementations
-storage-file = ["native", "tokio/fs", "tokio/io-util"]
+storage-file = ["native", "dep:tempfile", "tokio/fs", "tokio/io-util", "tokio/rt"]
 storage-memory = []
 
 # State storage implementations
@@ -57,6 +57,7 @@ serde = { workspace = true, features = ["derive"] }
 # Only the file-backed state store serializes to JSON; gated under `state-file`
 # via `dep:serde_json`. Tests use it unconditionally through dev-dependencies.
 serde_json = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

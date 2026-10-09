@@ -19,12 +19,13 @@ completed upload and runs the finish gate. Neither re-validates content, because
 the per-request checksum is ephemeral and never persisted.
 
 This is only sound if `Storage::size` reports **accepted** bytes, never bytes
-from an append that did not succeed. The hazard is specific: a checksum failure
-on a *completing* chunk arrives at full byte count but wrong content, so a backend
+from a body that did not pass terminal validation. The hazard is specific: a
+checksum failure on a *completing* chunk arrives at full byte count but wrong
+content, so a backend
 that flushes frames as they arrive and then exposes those bytes through `size()`
 would have corrupt, full-length content adopted as a completed upload. A partial
-write (fewer bytes) is safe to expose, recovery adopts the smaller offset, but a
-full-length wrong-content chunk is not.
+write is safe to expose only after its input stream has passed terminal
+validation. An unchecked prefix can itself contain corrupt bytes.
 
 ## Decision
 
@@ -35,12 +36,13 @@ full-length wrong-content chunk is not.
   most `expected_offset`. Leaving the failed bytes in place ("leave enough actual
   size for recovery to reconcile") is **not** permitted for a returned error.
 - A completing append's bytes must not become `size()`-visible at the upload
-  `length` until `append` has returned `Ok`. A backend that finalizes
-  incrementally must stage the completing write and expose it only once it has
-  fully succeeded.
-- "Report actual size for recovery" applies only to a genuine crash of a
-  *partial* write (a process that died mid-append and never returned), and even
-  then only reports the smaller, partial byte count, never full-length content.
+  `length` until the input stream has terminated successfully, including its
+  terminal validation. A backend that finalizes incrementally must stage the
+  write and expose it only after that validation succeeds.
+- Recovery may adopt bytes left by a cancelled or crashed append only when
+  its entire input passed validation before those bytes became visible. A
+  validated append may reach storage before its state write lands; this is
+  the legitimate storage-completion recovery path.
 
 This invariant is already enforced by the storage conformance suite
 (`storage::conformance`), which asserts that a failed body stream leaves the
@@ -74,13 +76,16 @@ discards the staged part on any terminal error and promotes the completing part
 atomically behind a durable completion marker, so `size()` never reflects an
 un-accepted completing chunk even across a crash.
 
-The `FileStorage` backend satisfies the terminal-error contract (it truncates
-back to `expected_offset` on error) but retains a narrow residual crash window:
-it appends the completing chunk directly to the main file, so a process crash
-after the operating system flushes the final bytes but before `append` returns
-could leave a full-length file that recovery adopts. Closing it would require a
-per-completing-PATCH full-file copy or restructuring `FileStorage` into a
-parts-staging model, which is disproportionate for a page-cache-timing-dependent
-window on the local/development backend. It is documented as a known limitation;
-deployments that need a zero-window guarantee for streamed checksummed uploads
-should use a staging backend such as OpenDAL.
+`FileStorage` spools each streamed PATCH body to a temporary file, drains EOF
+and terminal validation, then copies that body's accepted bytes into the upload
+and syncs them before returning success. It stages only the new body, rather
+than copying the existing upload, and keeps memory bounded. Buffered bodies
+have already been validated and continue to append directly. Returned copy or
+sync errors truncate back to `expected_offset`.
+
+Cancellation during intake cannot expose unchecked bytes to recovery. A crash
+or cancellation during the later copy can leave a prefix of the validated body,
+which recovery may adopt. This adds a temporary disk allocation of one PATCH
+body and a write/read pass for streamed input. Temporary files are removed on
+ordinary errors and cancellation; process-crash leftovers are removed when the
+owning upload is deleted or reclaimed.

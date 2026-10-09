@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::hooks::{
     HookContext, HookEvent, HookExecutor, HookRequestInfo, execute_post_best_effort,
 };
-use crate::state::UploadState;
+use crate::state::{StateStore, UploadState, WriteMode};
 
 use super::PreHookGate;
 
@@ -36,6 +36,26 @@ where
         PreHookGate::Finish
             .run(self.hooks, self.request_info, state)
             .await?;
+        Ok(())
+    }
+
+    /// Commits successful finish validation separately from accepted bytes.
+    ///
+    /// Keep the persisted pending flag until both the gate and state write
+    /// succeed, so cancellation or rejection cannot bypass validation later.
+    pub(crate) async fn commit_finish<St>(
+        &self,
+        state_store: &St,
+        state: &mut UploadState,
+    ) -> Result<()>
+    where
+        St: StateStore + ?Sized,
+    {
+        self.finish_gate(state.clone()).await?;
+        let mut finished = state.clone();
+        finished.set_finish_pending(false);
+        state_store.set(&finished, WriteMode::Update).await?;
+        *state = finished;
         Ok(())
     }
 
@@ -104,5 +124,87 @@ mod tests {
                 message
             } if message.is_empty()
         ));
+    }
+
+    #[cfg(feature = "state-memory")]
+    #[tokio::test]
+    async fn failed_finish_commit_preserves_pending_state_for_retry() {
+        use crate::state::memory::MemoryStateStore;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct FailingStore {
+            inner: MemoryStateStore,
+            fail: AtomicBool,
+        }
+
+        #[async_trait::async_trait]
+        impl StateStore for FailingStore {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+            async fn set(&self, state: &UploadState, mode: WriteMode) -> Result<()> {
+                if !state.is_finish_pending() && self.fail.load(Ordering::SeqCst) {
+                    return Err(Error::Internal("finish commit failed".into()));
+                }
+                self.inner.set(state, mode).await
+            }
+            async fn get(&self, id: &str) -> Result<Option<UploadState>> {
+                self.inner.get(id).await
+            }
+            async fn delete(&self, id: &str) -> Result<()> {
+                self.inner.delete(id).await
+            }
+            async fn list_expired(
+                &self,
+                before: chrono::DateTime<chrono::Utc>,
+            ) -> Result<Vec<String>> {
+                self.inner.list_expired(before).await
+            }
+        }
+
+        let store = FailingStore {
+            inner: MemoryStateStore::new(),
+            fail: AtomicBool::new(true),
+        };
+        let mut state = UploadState::new("upload-1").with_length(5);
+        state.set_offset(5);
+        state.set_finish_pending(true);
+        store.set(&state, WriteMode::CreateNew).await.unwrap();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let hooks = HookChain::new().on_pre_finish({
+            let calls = calls.clone();
+            move |_| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(PreHookResult::proceed())
+                }
+            }
+        });
+        let request_info = HookRequestInfo::default();
+        let completion = UploadCompletion::new(&hooks, &request_info);
+        assert!(completion.commit_finish(&store, &mut state).await.is_err());
+        assert!(state.is_finish_pending());
+        assert!(
+            store
+                .get(state.id())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_finish_pending()
+        );
+
+        store.fail.store(false, Ordering::SeqCst);
+        completion.commit_finish(&store, &mut state).await.unwrap();
+        assert!(!state.is_finish_pending());
+        assert!(
+            !store
+                .get(state.id())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_finish_pending()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

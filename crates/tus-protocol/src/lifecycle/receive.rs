@@ -125,8 +125,10 @@ where
         if completes_upload {
             // The completing bytes are already durable; a PreFinish rejection
             // fails this response and skips PostFinish, but cannot undo the
-            // stored upload.
-            self.completion().finish_gate(state.clone()).await?;
+            // stored upload. Persist pending validation until the gate passes.
+            self.completion()
+                .commit_finish(self.state_store, state)
+                .await?;
             self.completion().after_commit(state).await;
         }
 
@@ -178,7 +180,10 @@ where
         // The upload resource is new, so a PreFinish rejection can still roll
         // the whole creation back instead of leaving a completed upload.
         if state.is_complete()
-            && let Err(err) = self.completion().finish_gate(state.clone()).await
+            && let Err(err) = self
+                .completion()
+                .commit_finish(self.state_store, &mut state)
+                .await
         {
             self.rollback_creation(&state).await;
             return Err(err);
@@ -432,6 +437,7 @@ fn apply_receive_commit(
 ) {
     state.set_storage_handle(handle);
     state.set_offset(projection.projected_offset);
+    state.set_finish_pending(projection.completes_upload);
 }
 
 fn receive_body_limit(config: &Config, state: &UploadState, kind: ReceiveBodyKind) -> Option<u64> {
