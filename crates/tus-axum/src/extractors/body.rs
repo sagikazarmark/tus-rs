@@ -11,7 +11,6 @@ use axum::{
 #[cfg(test)]
 use bytes::Bytes;
 use futures_util::stream;
-use http_body::Body as _;
 use http_body_util::BodyExt;
 
 use tus_protocol::{BodyFrame, RequestBody};
@@ -80,7 +79,7 @@ where
 
     async fn from_request(req: Request<Body>, _state: &S) -> Result<Self, Self::Rejection> {
         let (parts, body) = req.into_parts();
-        let supplied = body_is_supplied(&parts.headers, &body);
+        let supplied = body_is_supplied(&parts.headers);
         if !supplied {
             return Ok(TusBody::absent());
         }
@@ -112,16 +111,16 @@ where
     }
 }
 
-fn body_is_supplied(headers: &HeaderMap, body: &Body) -> bool {
-    if has_offset_content_type(headers) {
-        return true;
-    }
-
-    if let Some(content_length) = content_length(headers) {
-        return content_length > 0;
-    }
-
-    has_chunked_transfer_encoding(headers) || !body.is_end_stream()
+/// A request body counts as supplied when the client advertises data with a
+/// length, chunked framing, or the creation-with-upload content type.
+///
+/// Do not consult `Body::is_end_stream`: an empty HTTP/2 body is an unpolled
+/// stream, so it reports `false` even though no DATA frame will ever arrive.
+/// Treating that as data makes a plain creation fail with 415.
+fn body_is_supplied(headers: &HeaderMap) -> bool {
+    has_offset_content_type(headers)
+        || content_length(headers).is_some_and(|length| length > 0)
+        || has_chunked_transfer_encoding(headers)
 }
 
 fn has_offset_content_type(headers: &HeaderMap) -> bool {
@@ -211,6 +210,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_streaming_axum_body_without_headers_is_absent() {
+        // HTTP/2 delivers an empty body as a stream that is not end-of-stream
+        // until polled. It must not be mistaken for supplied data.
+        let empty_stream = futures::stream::empty::<Result<Bytes, Infallible>>();
+        let request = Request::builder()
+            .body(Body::from_stream(empty_stream))
+            .unwrap();
+
+        let body = TusBody::from_request(request, &()).await.unwrap().0;
+
+        assert!(matches!(body, RequestBody::Absent));
+    }
+
+    #[tokio::test]
     async fn offset_content_type_marks_empty_axum_body_supplied() {
         let request = Request::builder()
             .header("content-type", "application/offset+octet-stream")
@@ -236,7 +249,10 @@ mod tests {
         let body = Full::new(Bytes::from_static(b"hello"))
             .with_trailers(std::future::ready(Some(Ok::<_, Infallible>(trailers))))
             .map_err(|never| match never {});
-        let request = Request::builder().body(Body::new(body)).unwrap();
+        let request = Request::builder()
+            .header("content-length", "5")
+            .body(Body::new(body))
+            .unwrap();
 
         let body = TusBody::from_request(request, &()).await.unwrap().0;
         let RequestBody::Stream(mut stream) = body else {
